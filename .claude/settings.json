@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(source \"$HOME/.cargo/env\" && cargo *)",
+      "Bash(source \"$HOME/.cargo/env\" && rustc *)",
+      "Bash(source \"$HOME/.cargo/env\")",
+      "Bash(cargo *)",
+      "Bash(rustc *)"
+    ]
+  }
+}

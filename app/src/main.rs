@@ -1,12 +1,14 @@
 mod gpu;
+mod midi_overlay;
 mod ui;
 mod video_quad;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use gpu::Gpu;
+use midi_overlay::MidiOverlay;
 use ui::UiState;
 use video_pipeline::VideoPipeline;
 use video_quad::VideoQuad;
@@ -24,13 +26,18 @@ struct AppState {
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
-    pipeline: VideoPipeline,
+    pipeline: Option<VideoPipeline>,
+    midi_overlay: MidiOverlay,
     ui_state: UiState,
     last_instant: Instant,
 }
 
 impl AppState {
-    fn new(event_loop: &ActiveEventLoop, video_path: &std::path::Path) -> Self {
+    fn new(
+        event_loop: &ActiveEventLoop,
+        video_path: Option<&Path>,
+        midi_path: Option<&Path>,
+    ) -> Self {
         let window_attributes = Window::default_attributes()
             .with_title("freemusic")
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
@@ -42,6 +49,7 @@ impl AppState {
 
         let gpu = Gpu::new(window.clone());
         let video_quad = VideoQuad::new(&gpu.device, gpu.config.format);
+        let midi_overlay = MidiOverlay::new(&gpu);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -58,9 +66,6 @@ impl AppState {
             egui_wgpu::RendererOptions::default(),
         );
 
-        let pipeline = VideoPipeline::open(video_path).expect("failed to open video file");
-        let duration_seconds = pipeline.duration_seconds();
-
         let mut state = Self {
             window,
             gpu,
@@ -68,32 +73,78 @@ impl AppState {
             egui_ctx,
             egui_state,
             egui_renderer,
-            pipeline,
+            pipeline: None,
+            midi_overlay,
             ui_state: UiState {
                 playing: false,
                 position_seconds: 0.0,
-                duration_seconds,
+                duration_seconds: 0.0,
                 seek_request: None,
+                dropping: false,
+                midi_name: None,
             },
             last_instant: Instant::now(),
         };
 
-        // Decode and upload the first frame so the window isn't blank before any redraw.
-        if let Ok(frame) = state.pipeline.seek_and_decode(0.0, false) {
-            state.video_quad.upload_frame(
-                &state.gpu.device,
-                &state.gpu.queue,
+        let size = state.window.inner_size();
+        state
+            .midi_overlay
+            .resize(&state.gpu, (size.width as f32, size.height as f32));
+
+        if let Some(path) = video_path {
+            state.load_video(path);
+        }
+        if let Some(path) = midi_path {
+            state.load_midi(path);
+        }
+
+        state
+    }
+
+    /// Opens `path` as the active video, replacing whatever was loaded before (CLI arg at
+    /// startup, or a previous drag-drop). Decodes and uploads the first frame immediately so
+    /// the window isn't blank before the next redraw.
+    fn load_video(&mut self, path: &Path) {
+        let mut pipeline = match VideoPipeline::open(path) {
+            Ok(pipeline) => pipeline,
+            Err(err) => {
+                eprintln!("failed to open video file {path:?}: {err}");
+                return;
+            }
+        };
+
+        self.ui_state.duration_seconds = pipeline.duration_seconds();
+        self.ui_state.position_seconds = 0.0;
+        self.ui_state.playing = false;
+
+        if let Ok(frame) = pipeline.seek_and_decode(0.0, false) {
+            self.video_quad.upload_frame(
+                &self.gpu.device,
+                &self.gpu.queue,
                 frame.width,
                 frame.height,
                 &frame.bgra,
             );
-            let size = state.window.inner_size();
-            state
-                .video_quad
-                .update_viewport(&state.gpu.queue, (size.width, size.height));
+            let size = self.window.inner_size();
+            self.video_quad
+                .update_viewport(&self.gpu.queue, (size.width, size.height));
         }
 
-        state
+        self.pipeline = Some(pipeline);
+    }
+
+    /// Parses `path` as a MIDI file and (re)builds the waterfall overlay for it.
+    fn load_midi(&mut self, path: &Path) {
+        let size = self.window.inner_size();
+        match self
+            .midi_overlay
+            .load(&self.gpu, (size.width as f32, size.height as f32), path)
+        {
+            Ok(()) => {
+                self.ui_state.midi_name = self.midi_overlay.loaded_name().map(str::to_owned);
+            }
+            Err(err) => eprintln!("failed to open midi file {path:?}: {err}"),
+        }
     }
 
     fn redraw(&mut self) {
@@ -111,21 +162,22 @@ impl AppState {
             }
         }
 
-        if let Ok(frame) = self
-            .pipeline
-            .seek_and_decode(self.ui_state.position_seconds, false)
-        {
-            self.video_quad.upload_frame(
-                &self.gpu.device,
-                &self.gpu.queue,
-                frame.width,
-                frame.height,
-                &frame.bgra,
-            );
-            let size = self.window.inner_size();
-            self.video_quad
-                .update_viewport(&self.gpu.queue, (size.width, size.height));
+        if let Some(pipeline) = self.pipeline.as_mut() {
+            if let Ok(frame) = pipeline.seek_and_decode(self.ui_state.position_seconds, false) {
+                self.video_quad.upload_frame(
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    frame.width,
+                    frame.height,
+                    &frame.bgra,
+                );
+                let size = self.window.inner_size();
+                self.video_quad
+                    .update_viewport(&self.gpu.queue, (size.width, size.height));
+            }
         }
+        self.midi_overlay
+            .update(self.ui_state.position_seconds as f32);
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let ui_state = &mut self.ui_state;
@@ -173,9 +225,15 @@ impl AppState {
             &screen_descriptor,
         );
 
+        // Two passes rather than one: `WaterfallRenderer::render` ties its `&mut self` borrow
+        // to the render pass's lifetime parameter, and `wgpu::RenderPass` is invariant over
+        // it, so it can't share a pass that's been `forget_lifetime()`'d to `'static` for
+        // egui-wgpu below. Scoping the scene pass normally (real, non-'static lifetime) keeps
+        // that borrow checker-legal; loading (not clearing) the second pass composites egui on
+        // top of what the first pass drew.
         {
-            let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("main_pass"),
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scene_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -191,8 +249,29 @@ impl AppState {
                 multiview_mask: None,
             });
 
-            let mut render_pass = render_pass.forget_lifetime();
             self.video_quad.render(&mut render_pass);
+            self.midi_overlay.render(&mut render_pass);
+        }
+
+        {
+            let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("egui_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            let mut render_pass = render_pass.forget_lifetime();
             self.egui_renderer
                 .render(&mut render_pass, &paint_jobs, &screen_descriptor);
         }
@@ -218,14 +297,19 @@ impl AppState {
 }
 
 struct App {
-    video_path: PathBuf,
+    video_path: Option<PathBuf>,
+    midi_path: Option<PathBuf>,
     state: Option<AppState>,
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_none() {
-            self.state = Some(AppState::new(event_loop, &self.video_path));
+            self.state = Some(AppState::new(
+                event_loop,
+                self.video_path.as_deref(),
+                self.midi_path.as_deref(),
+            ));
         }
     }
 
@@ -254,6 +338,33 @@ impl ApplicationHandler for App {
                 state
                     .video_quad
                     .update_viewport(&state.gpu.queue, (size.width, size.height));
+                state
+                    .midi_overlay
+                    .resize(&state.gpu, (size.width as f32, size.height as f32));
+                return;
+            }
+            WindowEvent::HoveredFile(_) => {
+                state.ui_state.dropping = true;
+                state.window.request_redraw();
+                return;
+            }
+            WindowEvent::HoveredFileCancelled => {
+                state.ui_state.dropping = false;
+                state.window.request_redraw();
+                return;
+            }
+            WindowEvent::DroppedFile(path) => {
+                state.ui_state.dropping = false;
+                match path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .as_deref()
+                {
+                    Some("mid") | Some("midi") => state.load_midi(path),
+                    _ => state.load_video(path),
+                }
+                state.window.request_redraw();
                 return;
             }
             WindowEvent::RedrawRequested => {
@@ -283,19 +394,16 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    let video_path = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            eprintln!("usage: app <video-file>");
-            std::process::exit(1);
-        });
+    let mut args = std::env::args().skip(1).map(PathBuf::from);
+    let video_path = args.next();
+    let midi_path = args.next();
 
     let event_loop = EventLoop::new().expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let mut app = App {
         video_path,
+        midi_path,
         state: None,
     };
     event_loop.run_app(&mut app).expect("event loop error");

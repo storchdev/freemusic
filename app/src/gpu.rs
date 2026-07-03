@@ -2,8 +2,14 @@ use std::sync::Arc;
 use winit::window::Window;
 
 /// Owns the wgpu device/queue and the surface tied to the app window.
+///
+/// Also keeps `instance`/`adapter` (unused by the video quad path) so a
+/// `neothesia_core::Gpu` wrapper can be built from them for the waterfall overlay,
+/// which owns its own copy of these types rather than sharing ours.
 pub struct Gpu {
     pub surface: wgpu::Surface<'static>,
+    pub instance: wgpu::Instance,
+    pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
@@ -52,6 +58,8 @@ impl Gpu {
 
         Self {
             surface,
+            instance,
+            adapter,
             device,
             queue,
             config,
