@@ -35,6 +35,12 @@ impl Gpu {
         }))
         .expect("failed to find a suitable wgpu adapter");
 
+        let info = adapter.get_info();
+        eprintln!(
+            "[gpu] adapter: {} ({:?}, {:?}, driver={})",
+            info.name, info.backend, info.device_type, info.driver
+        );
+
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("freemusic_device"),
             ..Default::default()

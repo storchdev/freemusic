@@ -812,7 +812,17 @@ impl ApplicationHandler for App {
         };
 
         let response = state.egui_state.on_window_event(&state.window, &event);
-        if response.repaint {
+        // egui-winit sets `repaint: true` for `WindowEvent::RedrawRequested` itself (see
+        // egui-winit's `on_window_event`, which treats it as "a repaint just happened, the
+        // platform may want another one queued"). Requesting another redraw here unconditionally
+        // turns every `RedrawRequested` into its own trigger for the next one — a self-sustaining
+        // loop at the display's full vsync rate (measured ~120Hz on this machine) regardless of
+        // `ui_state.playing`/export state, completely bypassing `redraw`'s own end-of-frame
+        // throttle below. `redraw` (called from the `RedrawRequested` arm further down) already
+        // decides for itself whether to keep the loop going, so this generic repaint-on-any-event
+        // nudge should only fire for other events (mouse moved, focus changed, etc. — a one-shot
+        // redraw to reflect that input, not a continuous loop).
+        if response.repaint && !matches!(event, WindowEvent::RedrawRequested) {
             state.window.request_redraw();
         }
 

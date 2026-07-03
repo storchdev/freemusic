@@ -343,6 +343,61 @@ it, rather than bumping `wgpu` independently.
   differently — still worth doing eventually for the resolution decoupling, but not required to
   unblock milestone 2's compositing.
 
+### Fixed: unthrottled redraw loop pegging the GPU/CPU at all times (perf bug, not tied to a milestone)
+
+- **Symptom**: the app was "incredibly laggy" — reported generally, not tied to any specific
+  interaction. Root cause turned out to have nothing to do with decode speed, texture upload
+  size, or egui overhead (all measured and found unremarkable); it was the *idle* state that was
+  broken. Diagnosed by adding temporary `Instant`-based timing around every stage of `redraw`
+  (decode/upload/egui-run/tessellate/acquire/submit/present) plus a periodic tally of
+  `WindowEvent` variants received, run against `scripts/gen-test-video.sh`'s synthetic clip. The
+  event tally was what actually revealed it: `WindowEvent::RedrawRequested` was firing ~120
+  times/sec (matching this machine's display refresh rate) *before any video was even loaded or
+  played*, with no other input events driving it — i.e. the window was continuously repainting
+  forever at full vsync rate regardless of `ui_state.playing`, burning a full
+  decode-check/egui-run/tessellate/compositor-render/egui-render/submit/present cycle every
+  ~8ms, 24/7, for no reason. (The `acquire` — `Surface::get_current_texture` — stage dominated
+  each of these idle frames at ~7-8ms, which is *expected* Vulkan FIFO/vsync blocking for a
+  continuously-presenting loop, not itself a bug; the bug was that the loop was continuous at
+  all when nothing had changed.)
+- **Cause**: `window_event`'s top-of-function generic repaint nudge —
+  ```rust
+  let response = state.egui_state.on_window_event(&state.window, &event);
+  if response.repaint { state.window.request_redraw(); }
+  ```
+  — ran for *every* incoming `WindowEvent`, including `WindowEvent::RedrawRequested` itself.
+  `egui-winit`'s `on_window_event` (see `egui-winit-0.35.0/src/lib.rs`) returns
+  `repaint: true` for `RedrawRequested` along with most other events — its own doc comment
+  frames this as "a repaint just happened, the platform may want another one queued", i.e. it's
+  deliberately permissive and leaves the actual repaint *policy* up to the caller. This app's
+  policy already existed and was correct — `redraw`'s own last lines only call
+  `window.request_redraw()` when `ui_state.playing || export_run.is_some()` — but the generic
+  top-of-`window_event` check bypassed that policy entirely: handling a `RedrawRequested` event
+  synchronously queued the *next* `RedrawRequested`, forever, independent of `redraw`'s own
+  end-of-frame decision. A self-sustaining loop with no way to stop itself once started (which is
+  immediately, at the first paint after window creation).
+- **Fix**: exclude `WindowEvent::RedrawRequested` from the generic nudge —
+  `if response.repaint && !matches!(event, WindowEvent::RedrawRequested) { ... }` — so the
+  generic check still does its job for events that legitimately want a one-shot repaint (mouse
+  moved, focus changed, modifiers changed, etc.) without re-arming itself on every frame it
+  draws. Verified with the same event-tally instrumentation: idle `RedrawRequested` rate dropped
+  from ~120/sec to ~0-1/sec (only real input causes a redraw now), and idle CPU for the process
+  dropped from continuous background load to ~1-2% (`ps -o pcpu`). Playback (`ui_state.playing`)
+  still self-sustains its own redraw loop correctly via `redraw`'s existing end-of-frame check,
+  confirmed by playing a 30s synthetic clip end-to-end and watching the on-screen frame counter
+  and transport position advance smoothly and land exactly on the expected frame for elapsed
+  wall-clock time.
+- **A separate, unrelated observation from the same debugging session, not a bug**: while
+  testing playback under this environment's background-job Xwayland session, `acquire` was once
+  seen blocking for a full ~1 second per frame, persisting across many consecutive frames. This
+  tracked exactly with the app window being tiled/occluded by Hyprland (not floated — see
+  "Screenshotting/driving the app under native Hyprland" below) rather than any app-level issue:
+  floating, resizing, and centering the window via `hyprctl` before retesting made it disappear
+  completely, and it's consistent with compositors throttling swapchain presentation for
+  occluded/non-visible surfaces. Worth remembering if a future perf report mentions "playback
+  stalls for about a second at a time" specifically — check window occlusion/focus state before
+  assuming it's a decode or render regression.
+
 ### MP4 export (milestone 5)
 
 - **`crates/render` was extracted from `app/src/{video_quad,midi_overlay}.rs`** specifically so
