@@ -20,15 +20,58 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+/// Format of the offscreen preview texture the compositor renders into. Fixed at
+/// `Rgba8Unorm` (not the swapchain's own sRGB format) because `egui_wgpu::Renderer::
+/// register_native_texture` requires exactly that format for a texture displayed via
+/// `egui::Image` — see `AppState::set_canvas_size`.
+const PREVIEW_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// Preview canvas size before any video is loaded, so the offscreen texture and its egui
+/// registration exist from the very first redraw.
+const DEFAULT_CANVAS_SIZE: (u32, u32) = (1280, 720);
+
 /// Bundles the raw handles `render::Compositor` needs from our interactive-window `Gpu`.
+///
+/// `texture_format` is always `PREVIEW_TEXTURE_FORMAT`, not the swapchain's own format — the
+/// compositor now always renders into the offscreen preview texture (see `AppState::redraw`),
+/// never directly onto the swapchain, so it needs to be built against the offscreen texture's
+/// format regardless of what the window surface happens to use.
 fn gpu_handles(gpu: &Gpu) -> render::GpuHandles<'_> {
     render::GpuHandles {
         instance: &gpu.instance,
         adapter: &gpu.adapter,
         device: &gpu.device,
         queue: &gpu.queue,
-        texture_format: gpu.config.format,
+        texture_format: PREVIEW_TEXTURE_FORMAT,
     }
+}
+
+/// Rounds down to an even number (yuv420p/some encoders need it; harmless for the interactive
+/// preview too, and keeps this consistent with `crates/export`'s own `even` helper).
+fn even(value: u32) -> u32 {
+    (value & !1).max(2)
+}
+
+fn create_preview_texture(
+    device: &wgpu::Device,
+    size: (u32, u32),
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("preview_offscreen_texture"),
+        size: wgpu::Extent3d {
+            width: size.0.max(1),
+            height: size.1.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: PREVIEW_TEXTURE_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
 
 struct AppState {
@@ -38,6 +81,13 @@ struct AppState {
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
+    /// Pixel size the compositor renders into — decoupled from the window/surface size (see
+    /// CLAUDE.md's milestone 6c notes). Starts at `DEFAULT_CANVAS_SIZE`, then tracks the loaded
+    /// video's own decoded resolution (rounded even) once one loads.
+    canvas_size: (u32, u32),
+    preview_texture: wgpu::Texture,
+    preview_view: wgpu::TextureView,
+    preview_texture_id: egui::TextureId,
     pipeline: Option<VideoPipeline>,
     video_path: Option<PathBuf>,
     midi_path: Option<PathBuf>,
@@ -47,6 +97,17 @@ struct AppState {
     applied_calibration: KeyboardCalibration,
     ui_state: UiState,
     last_instant: Instant,
+    /// Transport position `pipeline.seek_and_decode` was last called with, so a redraw that
+    /// fires for an unrelated reason while paused (cursor blink in a text field, hover
+    /// animations, mouse movement) doesn't re-invoke video decode at all — previously it called
+    /// `seek_and_decode` unconditionally every redraw, which is usually a cheap no-op but isn't
+    /// always: if the frozen paused position sits even slightly ahead of the last decoded
+    /// frame's own timestamp (routine — the displayed frame's pts is always <= the transport
+    /// position it was shown for), `seek_and_decode`'s "not yet caught up" branch decodes one
+    /// more frame forward and keeps doing so each time it's re-entered, which is exactly what a
+    /// repaint storm while "paused" turns into: visible frame-by-frame stutter with the video
+    /// never actually settling. `None` until the first frame is decoded.
+    last_decoded_position: Option<f64>,
     /// `Some` while a background export thread is running; polled each redraw and cleared once
     /// it reports `Done`/`Cancelled`/`Error`.
     export_run: Option<ExportRun>,
@@ -73,10 +134,10 @@ impl AppState {
         );
 
         let gpu = Gpu::new(window.clone());
-        let size = window.inner_size();
+        let canvas_size = DEFAULT_CANVAS_SIZE;
         let compositor = Compositor::new(
             &gpu_handles(&gpu),
-            (size.width as f32, size.height as f32),
+            (canvas_size.0 as f32, canvas_size.1 as f32),
             &KeyboardCalibration::default(),
         );
 
@@ -89,10 +150,17 @@ impl AppState {
             None,
             None,
         );
-        let egui_renderer = egui_wgpu::Renderer::new(
+        let mut egui_renderer = egui_wgpu::Renderer::new(
             &gpu.device,
             gpu.config.format,
             egui_wgpu::RendererOptions::default(),
+        );
+
+        let (preview_texture, preview_view) = create_preview_texture(&gpu.device, canvas_size);
+        let preview_texture_id = egui_renderer.register_native_texture(
+            &gpu.device,
+            &preview_view,
+            wgpu::FilterMode::Linear,
         );
 
         let mut state = Self {
@@ -102,6 +170,10 @@ impl AppState {
             egui_ctx,
             egui_state,
             egui_renderer,
+            canvas_size,
+            preview_texture,
+            preview_view,
+            preview_texture_id,
             pipeline: None,
             video_path: None,
             midi_path: None,
@@ -113,12 +185,18 @@ impl AppState {
                 seek_request: None,
                 dropping: false,
                 midi_name: None,
+                midi_note_times: Vec::new(),
+                active_tab: ui::Tab::default(),
+                preview_texture_id,
+                canvas_size,
                 sync_offset_seconds: 0.0,
                 calibration: KeyboardCalibration::default(),
                 transform: project::VideoTransform::default(),
                 project_path_text: String::new(),
                 save_requested: false,
                 load_requested: false,
+                open_video_requested: false,
+                open_midi_requested: false,
                 status_message: None,
                 export_path_text: String::new(),
                 export_fps: 30,
@@ -128,6 +206,7 @@ impl AppState {
                 export_message: None,
             },
             last_instant: Instant::now(),
+            last_decoded_position: None,
             export_run: None,
         };
 
@@ -141,9 +220,40 @@ impl AppState {
         state
     }
 
+    /// Switches the preview canvas to a new pixel size, recreating the offscreen texture and
+    /// its egui registration (a bind group tied to the old texture's view can't just be resized
+    /// in place) and rebuilding the waterfall layout for it. No-ops if `size` is unchanged — the
+    /// common case, since this is called on every video load even when the resolution matches
+    /// the previous one.
+    fn set_canvas_size(&mut self, size: (u32, u32)) {
+        if size == self.canvas_size {
+            return;
+        }
+        let (texture, view) = create_preview_texture(&self.gpu.device, size);
+        self.egui_renderer.free_texture(&self.preview_texture_id);
+        self.preview_texture_id = self.egui_renderer.register_native_texture(
+            &self.gpu.device,
+            &view,
+            wgpu::FilterMode::Linear,
+        );
+        self.preview_texture = texture;
+        self.preview_view = view;
+        self.canvas_size = size;
+        self.ui_state.canvas_size = size;
+        self.ui_state.preview_texture_id = self.preview_texture_id;
+        self.compositor.resize(
+            &gpu_handles(&self.gpu),
+            (size.0 as f32, size.1 as f32),
+            &self.ui_state.calibration,
+        );
+        self.applied_calibration = self.ui_state.calibration;
+    }
+
     /// Opens `path` as the active video, replacing whatever was loaded before (CLI arg at
     /// startup, or a previous drag-drop). Decodes and uploads the first frame immediately so
-    /// the window isn't blank before the next redraw.
+    /// the window isn't blank before the next redraw. Resizes the preview canvas to the video's
+    /// own decoded resolution (rounded even) — see CLAUDE.md's milestone 6c notes on why the
+    /// canvas tracks the video rather than the window.
     fn load_video(&mut self, path: &Path) {
         let mut pipeline = match VideoPipeline::open(path) {
             Ok(pipeline) => pipeline,
@@ -158,6 +268,7 @@ impl AppState {
         self.ui_state.playing = false;
 
         if let Ok(frame) = pipeline.seek_and_decode(0.0, false) {
+            self.set_canvas_size((even(frame.width), even(frame.height)));
             self.compositor.upload_frame(
                 &self.gpu.device,
                 &self.gpu.queue,
@@ -165,12 +276,12 @@ impl AppState {
                 frame.height,
                 &frame.bgra,
             );
-            let size = self.window.inner_size();
             self.compositor.update_viewport(
                 &self.gpu.queue,
-                (size.width, size.height),
+                self.canvas_size,
                 &self.ui_state.transform,
             );
+            self.last_decoded_position = Some(0.0);
         }
 
         self.pipeline = Some(pipeline);
@@ -185,16 +296,17 @@ impl AppState {
 
     /// Parses `path` as a MIDI file and (re)builds the waterfall overlay for it.
     fn load_midi(&mut self, path: &Path) {
-        let size = self.window.inner_size();
+        let size = self.canvas_size;
         match self.compositor.load_midi(
             &gpu_handles(&self.gpu),
-            (size.width as f32, size.height as f32),
+            (size.0 as f32, size.1 as f32),
             &self.ui_state.calibration,
             path,
         ) {
             Ok(()) => {
                 self.midi_path = Some(path.to_path_buf());
                 self.ui_state.midi_name = self.compositor.loaded_midi_name().map(str::to_owned);
+                self.ui_state.midi_note_times = self.compositor.note_start_times().to_vec();
             }
             Err(err) => eprintln!("failed to open midi file {path:?}: {err}"),
         }
@@ -277,6 +389,14 @@ impl AppState {
         let dt = now.duration_since(self.last_instant).as_secs_f64();
         self.last_instant = now;
 
+        // Whether this redraw's position change (if any) came from an explicit scrub (the
+        // timeline being dragged/clicked, or in future a keyboard seek) rather than ordinary
+        // playback advancing by `dt`. Passed through to `seek_and_decode` as `!is_scrub` below —
+        // see that function's doc comment for why the two cases need different `exact` behavior
+        // after a reseek: conflating them was a real bug (video snapping back to a stale frame
+        // and stuttering in place whenever a redraw-cadence stall — not an actual scrub —
+        // tripped the same big-forward-jump reseek path a real scrub does).
+        let is_scrub = self.ui_state.seek_request.is_some();
         if let Some(target) = self.ui_state.seek_request.take() {
             self.ui_state.position_seconds = target.clamp(0.0, self.ui_state.duration_seconds);
         } else if self.ui_state.playing {
@@ -287,15 +407,26 @@ impl AppState {
             }
         }
 
-        if let Some(pipeline) = self.pipeline.as_mut() {
-            if let Ok(frame) = pipeline.seek_and_decode(self.ui_state.position_seconds, false) {
-                self.compositor.upload_frame(
-                    &self.gpu.device,
-                    &self.gpu.queue,
-                    frame.width,
-                    frame.height,
-                    &frame.bgra,
-                );
+        // Skip decode entirely if the transport position hasn't actually moved since the last
+        // decoded frame — see `last_decoded_position`'s doc comment for why this guard matters
+        // beyond just avoiding wasted work: without it, a redraw firing for an unrelated reason
+        // while paused (cursor blink, hover, mouse movement) can re-enter `seek_and_decode`'s
+        // "not caught up yet" branch and decode one more frame forward each time, which looks
+        // like the paused video stuttering/looping instead of holding still.
+        if self.last_decoded_position != Some(self.ui_state.position_seconds) {
+            if let Some(pipeline) = self.pipeline.as_mut() {
+                if let Ok(frame) =
+                    pipeline.seek_and_decode(self.ui_state.position_seconds, !is_scrub)
+                {
+                    self.compositor.upload_frame(
+                        &self.gpu.device,
+                        &self.gpu.queue,
+                        frame.width,
+                        frame.height,
+                        &frame.bgra,
+                    );
+                    self.last_decoded_position = Some(self.ui_state.position_seconds);
+                }
             }
         }
         let midi_time = self.ui_state.position_seconds - self.ui_state.sync_offset_seconds;
@@ -310,10 +441,9 @@ impl AppState {
         };
 
         if self.ui_state.calibration != self.applied_calibration {
-            let size = self.window.inner_size();
             self.compositor.resize(
                 &gpu_handles(&self.gpu),
-                (size.width as f32, size.height as f32),
+                (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
                 &self.ui_state.calibration,
             );
             self.applied_calibration = self.ui_state.calibration;
@@ -323,10 +453,9 @@ impl AppState {
         // dirty-checked — unlike `compositor.resize`'s full note-instance rebuild above, this
         // needs no guard, and running it after the egui pass means a slider drag this frame is
         // reflected in this same frame's render rather than lagging by one redraw.
-        let size = self.window.inner_size();
         self.compositor.update_viewport(
             &self.gpu.queue,
-            (size.width, size.height),
+            self.canvas_size,
             &self.ui_state.transform,
         );
 
@@ -337,6 +466,24 @@ impl AppState {
         if self.ui_state.load_requested {
             self.ui_state.load_requested = false;
             self.load_project();
+        }
+        if self.ui_state.open_video_requested {
+            self.ui_state.open_video_requested = false;
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Video", &["mp4", "mov", "mkv", "avi", "webm"])
+                .pick_file()
+            {
+                self.load_video(&path);
+            }
+        }
+        if self.ui_state.open_midi_requested {
+            self.ui_state.open_midi_requested = false;
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("MIDI", &["mid", "midi"])
+                .pick_file()
+            {
+                self.load_midi(&path);
+            }
         }
         if self.ui_state.export_requested {
             self.ui_state.export_requested = false;
@@ -415,17 +562,18 @@ impl AppState {
             &screen_descriptor,
         );
 
-        // Two passes rather than one: `WaterfallRenderer::render` ties its `&mut self` borrow
-        // to the render pass's lifetime parameter, and `wgpu::RenderPass` is invariant over
-        // it, so it can't share a pass that's been `forget_lifetime()`'d to `'static` for
-        // egui-wgpu below. Scoping the scene pass normally (real, non-'static lifetime) keeps
-        // that borrow checker-legal; loading (not clearing) the second pass composites egui on
-        // top of what the first pass drew.
+        // The compositor now renders into the offscreen preview texture, not the swapchain
+        // directly — the egui pass below displays it via `egui::Image` in the central panel
+        // (see CLAUDE.md's milestone 6c notes). This also sidesteps the old two-pass split that
+        // was needed only because `WaterfallRenderer::render` ties its `&mut self` borrow to the
+        // render pass's invariant lifetime parameter: this pass has a real (non-`'static`)
+        // lifetime, same as the old "scene_pass" did, so `WaterfallRenderer` is still fine with
+        // it even though it's a different render target now.
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("scene_pass"),
+                label: Some("preview_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &self.preview_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -443,6 +591,9 @@ impl AppState {
         }
 
         {
+            // `Clear`, not `Load` — the swapchain no longer has a prior pass drawn onto it (the
+            // compositor now renders into the offscreen preview texture above instead), so this
+            // is the only pass touching it this frame.
             let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -450,7 +601,7 @@ impl AppState {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -545,17 +696,10 @@ impl ApplicationHandler for App {
                 return;
             }
             WindowEvent::Resized(size) => {
+                // Only the swapchain follows the window now — the compositor's canvas is
+                // decoupled from it (see `AppState::set_canvas_size`), so a window resize no
+                // longer touches the compositor at all.
                 state.gpu.resize(size.width, size.height);
-                state.compositor.update_viewport(
-                    &state.gpu.queue,
-                    (size.width, size.height),
-                    &state.ui_state.transform,
-                );
-                state.compositor.resize(
-                    &gpu_handles(&state.gpu),
-                    (size.width as f32, size.height as f32),
-                    &state.ui_state.calibration,
-                );
                 return;
             }
             WindowEvent::HoveredFile(_) => {

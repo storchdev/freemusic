@@ -31,6 +31,12 @@ impl Compositor {
         self.midi_overlay.loaded_name()
     }
 
+    /// Sorted note onset times in seconds; empty if no MIDI is loaded. Used by the bottom
+    /// timeline's note-density strip.
+    pub fn note_start_times(&self) -> &[f32] {
+        self.midi_overlay.note_start_times()
+    }
+
     pub fn load_midi(
         &mut self,
         gpu: &GpuHandles,

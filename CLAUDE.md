@@ -19,7 +19,11 @@ data flow, phased milestones, and tracked risks — lives in
 The project is being built milestone-by-milestone per that plan. Milestones 1 (scaffolding +
 plain video playback), 2 (MIDI + note highway overlay), 3 (manual sync + keyboard calibration +
 persistence), 4 (brightness/scale/crop/rotate/tilt/translate video transform), and 5 (MP4 export)
-are implemented so far.
+are implemented so far. Milestone 6 (UI polish/restructure — full draft at
+`~/.claude/plans/m6.md`) is in progress: the offscreen-texture preview + tabbed side panel +
+custom timeline (6c) and native Open Video/MIDI file dialogs (part of 6b) are done — see below.
+Barrier/note-highway styling (6a), the rest of the File menu + keyboard shortcuts (6b/6d), and
+synced audio playback (6e) are not yet implemented.
 
 ## Commands
 
@@ -403,6 +407,98 @@ it, rather than bumping `wgpu` independently.
   so the progress bar keeps advancing even while playback is paused — otherwise the event loop's
   `ControlFlow::Wait` would leave it frozen until some unrelated input woke it up.
 
+### UI restructure: offscreen-texture preview, tabbed side panel, timeline (milestone 6c)
+
+- **Why now**: milestone 3's rationale for floating windows over a side panel — "the video quad
+  still renders directly to the full swapchain, so a side panel would just paint over a strip of
+  it with no way to shrink the video to match" — no longer applies. `app/src/main.rs`'s `redraw`
+  now renders `Compositor` (video quad + MIDI waterfall) into an offscreen
+  `wgpu::TextureFormat::Rgba8Unorm` texture (`AppState::preview_texture`/`preview_view`, sized to
+  `canvas_size`) instead of the swapchain directly, then displays it via `egui::Image` in the
+  central panel. Only the egui pass touches the swapchain now (`LoadOp::Clear`, not `Load` — no
+  prior pass draws onto it first). `Rgba8Unorm` specifically, not an `Srgb` variant:
+  `egui_wgpu::Renderer::register_native_texture` requires exactly that format for a texture shown
+  via `egui::Image`.
+- **Canvas size is decoupled from window size**, same principle as export's own offscreen
+  texture: `AppState::canvas_size` starts at `DEFAULT_CANVAS_SIZE` (1280×720, so the texture and
+  its egui registration exist before any video loads) and is resized to the loaded video's own
+  decoded resolution (rounded even) by `set_canvas_size` — which recreates the texture, frees the
+  old egui `TextureId` and registers a new one (a bind group tied to an old texture's view can't
+  just be resized in place), and rebuilds the waterfall layout for the new pixel dimensions. A
+  window resize no longer touches the compositor at all (`WindowEvent::Resized` just calls
+  `gpu.resize`) — previously it drove `compositor.update_viewport`/`resize` directly since the
+  video filled the window.
+- **The preview image's on-screen rect is computed once per frame, not assumed to be the whole
+  window** (`ui::fit_rect` — contain-fit/letterboxed against the canvas's aspect ratio, inside
+  whatever the central panel's `available_rect_before_wrap()` turns out to be after the side
+  panel and bottom timeline reserve their own space). This was flagged in the plan as 6c's
+  biggest risk: `draw_calibration_handles`/`draw_crop_handles` used to hit-test/paint against
+  `ui.max_rect()` (the whole window — valid back when the video was painted directly onto the
+  swapchain); they now take that computed `image_rect` instead, otherwise unchanged.
+- **Side panel is a hand-rolled tab strip** (`ui::Tab`: `Project` (first — media open + sync
+  offset + project save/load), `Keyboard` (calibration; barrier/note-style land here too once 6a
+  is implemented), `Transform`, `Export`), replacing the four floating windows milestones 3-5
+  used. Built with `egui::Panel::left` — egui 0.35 unified `SidePanel`/`TopBottomPanel` into one
+  `Panel` type with `.left`/`.right`/`.top`/`.bottom` constructors and a single `.show(ui, ..)` —
+  not a floating `egui::Window`, viable now that the video is a shrinkable `egui::Image` instead
+  of something painted under floating windows.
+- **Bottom timeline** (`ui::draw_timeline_panel`/`draw_timeline_scrubber`) replaces the plain
+  `egui::Slider` scrubber: a custom-painted bar with click/drag-to-seek
+  (`ui.allocate_exact_size(.., Sense::click_and_drag())`), a time ruler with a duration-adaptive
+  tick interval (`ruler_tick_interval`, aims for ~10 ticks regardless of clip length), and a
+  note-density strip (`draw_note_density`) bucketing note onset times into 240 columns sized by
+  relative density. That data comes from a new `MidiOverlay::note_start_times`/`Compositor::
+  note_start_times` accessor (sorted onset seconds, cached at MIDI-load time in
+  `midi_overlay::Loaded`) — `main.rs`'s `load_midi` copies it into `ui_state.midi_note_times`
+  each time a MIDI file loads, the same mirror-into-`UiState` pattern already used for
+  `midi_name`.
+- **Native Open Video/Open MIDI dialogs**: `rfd = "0.17"` (added to `app/Cargo.toml`, the version
+  the plan identified as already proven at this exact wgpu 29 stack via Neothesia's own
+  workspace) backs two buttons in the Project tab. Same request/consume-next-redraw pattern as
+  save/load: `ui_state.open_video_requested`/`open_midi_requested` are set by the buttons, and
+  `AppState::redraw` pops the corresponding `rfd::FileDialog::pick_file()` and calls the existing
+  `load_video`/`load_midi` if the user didn't cancel. **Not yet manually verified that a native
+  picker actually appears on this Hyprland/Wayland setup** (`rfd` shells out to a GTK or XDG
+  desktop-portal backend depending on what's installed) — worth confirming, and noting here what
+  backend it actually used, the first time it's tested. The full File menu bar (New/Open/Save/
+  Save As/Exit, Ctrl+S/Ctrl+O) from the original plan's 6b is still outstanding.
+- **Sequencing**: per the plan's explicitly-flagged open decision, this shell was built *before*
+  6a/6b/6d/6e's remaining controls rather than building them as more floating windows first and
+  migrating later — those land directly into these tabs as they're implemented.
+
+### Two playback-timing bugs found testing 6c (pre-existing/newly-triggered, not caused by the UI restructure itself)
+
+- **Paused playback stuttering**: `AppState::redraw` used to call `pipeline.seek_and_decode`
+  unconditionally every redraw. A redraw can still fire while "paused" for unrelated reasons
+  (cursor blink in a focused text field, hover animations, mouse movement) — and repeatedly
+  calling `seek_and_decode` with the *same* frozen position isn't always a no-op: the displayed
+  frame's own timestamp is always slightly `<=` the transport position it was shown for, so each
+  re-entry could trip the "not caught up yet" branch and decode one more frame forward, forever.
+  Fixed by `AppState::last_decoded_position`: decode is now skipped entirely unless the transport
+  position actually changed since the last decode.
+- **Playback jumping back and looping ~20 frames**: a real bug in `video_pipeline::
+  VideoPipeline::seek_and_decode` itself, unrelated to the UI work but only surfaced once actual
+  redraw-cadence hiccups (system load, a slow GPU call — anything that makes real wall-clock time
+  between two redraws exceed a second) started happening on real hardware. The function already
+  distinguished "ordinary playback" from "a scrub" using `MAX_FORWARD_STEP_SECONDS`, but that
+  heuristic is about the *size* of a forward jump, not the *reason* for it — so a redraw-cadence
+  stall (position legitimately advancing via elapsed `dt`, just by a lot in one step) got treated
+  identically to a real scrub: reseek, then show only the first frame decoded afterward, landing
+  on a stale keyframe up to ~2 seconds old. Every following redraw saw the same
+  still-not-caught-up gap, reseeked to nearly the same spot again, and repeated — visually
+  indistinguishable from the video jumping back and stuttering through the same handful of
+  frames. Fixed by having the caller distinguish the two cases explicitly instead of leaving
+  `seek_and_decode` to infer it from jump size alone: `main.rs` now tracks whether a redraw's
+  position change came from consuming `ui_state.seek_request` (an explicit scrub) versus
+  ordinary `dt` advancement, and passes that through as `seek_and_decode`'s `exact` parameter —
+  `exact = true` for ordinary playback (and export, as before) now means "after a reseek, keep
+  decoding forward until we actually reach the target," while `exact = false` stays reserved for
+  real scrubs (cheap, approximate, fine since the user is actively dragging and will settle on a
+  final position themselves). Moving the also-affected "already covered by the held frame"
+  shortcut out from behind `!exact` (it's unconditionally safe — it only returns early when the
+  held frame already satisfies the target) was needed alongside this so ordinary playback ticks
+  didn't lose that optimization just by switching to `exact = true`.
+
 ## Verifying changes to `app` or `video-pipeline`
 
 Since there's no test suite for playback/timing correctness, changes to the decode or render path
@@ -481,6 +577,39 @@ Windows window* too, so PowerShell interop from WSL can find and capture it —
 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <script>.ps1 <out-path>`, converting WSL
 paths to Windows paths with `wslpath -w` first. `System.Windows.Forms.SendKeys` from the same
 script can drive keyboard input (e.g. Space to toggle play) after focusing the window.
+
+### Screenshotting/driving the app under native Hyprland (current dev machine, not WSL2)
+
+Development moved off WSL2 partway through milestone 6 onto a native Arch/Hyprland (Wayland)
+machine. Most of the WSL2 section above still applies unchanged (the X11-backend-forcing trick
+in `run-app.sh`, window-relative-vs-absolute coordinates), but a few things differ:
+
+- `DISPLAY=:0` is a real Xwayland server here too (Hyprland spawns one for XWayland app
+  compatibility, running as `Xwayland :0 -rootless ...`), so nothing about `run-app.sh` needed to
+  change — `find-window.sh`/`screenshot.sh`/`click.sh`/`drag.sh` all keep working as documented
+  above.
+- `xdotool` is **not preinstalled** on this machine's base image (unlike whatever WSL2 image had
+  it already) — `sudo pacman -S xdotool` if `which xdotool` comes back empty.
+- **Hyprland tiles new windows by default**, so a freshly launched app window's geometry is
+  whatever the tiling layout assigns it (observed: a non-16:9 shape like 760×922 logical), not
+  the `1280×720` `with_inner_size` the app actually requested — this makes coordinates computed
+  from a screenshot unreliable until the window is floated. Find the window's address (`hyprctl
+  clients -j`, match on `.title == "freemusic"` — its `.class` is just `"app"`, the binary name,
+  not useful for matching), then `hyprctl dispatch focuswindow "address:<addr>"` →
+  `togglefloating "address:<addr>"` → `resizewindowpixel "exact <W> <H>,address:<addr>"` →
+  `centerwindow`. Even then, the resize can be applied asynchronously — a screenshot taken
+  immediately after dispatching it can still capture the pre-resize size, so re-check the
+  screenshot's own reported dimensions (or re-query `hyprctl clients -j`) before trusting
+  coordinates computed from it, rather than assuming the size you just requested took effect.
+- **Prefer asking the user to drive interactive verification themselves** (clicking tabs,
+  dragging calibration/crop handles, exercising playback) rather than automating it with
+  `click.sh`/`drag.sh` — this was an explicit ask during milestone 6 work, and matches the
+  environment reality above: coordinate-based automation against a tiling WM is slow (every
+  click needs a fresh screenshot to re-derive coordinates against, since geometry can shift
+  between screenshots) and doesn't obviously get more reliable with more scripting. Building,
+  launching (`scripts/run-app.sh`, backgrounded), and killing (`scripts/kill-app.sh`) the app are
+  still squarely useful to do directly — it's specifically the click-and-eyeball-a-screenshot
+  testing loop to hand off.
 
 ### Verifying drag interactions and persistence (milestones 3–4 pattern)
 

@@ -24,6 +24,10 @@ pub struct MidiOverlay {
 struct Loaded {
     midi: MidiFile,
     renderer: WaterfallRenderer,
+    /// Sorted note start times in seconds, cached at load time — used by the bottom timeline's
+    /// note-density strip (`ui::draw_timeline`), which just needs raw onset times, not the full
+    /// per-track structure.
+    note_starts: Vec<f32>,
 }
 
 /// Raw wgpu handles needed to build a `neothesia_core::Gpu` view (see `wrap_gpu`), taken instead
@@ -55,6 +59,14 @@ impl MidiOverlay {
         self.loaded.as_ref().map(|l| l.midi.name.as_str())
     }
 
+    /// Sorted note onset times in seconds, or an empty slice if nothing is loaded.
+    pub fn note_start_times(&self) -> &[f32] {
+        self.loaded
+            .as_ref()
+            .map(|l| l.note_starts.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// Parses `path` as a MIDI file and (re)builds the waterfall pipeline for it.
     pub fn load(
         &mut self,
@@ -74,7 +86,18 @@ impl MidiOverlay {
             keyboard_layout(viewport, calibration),
         );
         apply_left_offset(&mut renderer, &ngpu, viewport.0 * calibration.left_fraction);
-        self.loaded = Some(Loaded { midi, renderer });
+        let mut note_starts: Vec<f32> = midi
+            .tracks
+            .iter()
+            .flat_map(|track| track.notes.iter())
+            .map(|note| note.start.as_secs_f32())
+            .collect();
+        note_starts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        self.loaded = Some(Loaded {
+            midi,
+            renderer,
+            note_starts,
+        });
         Ok(())
     }
 

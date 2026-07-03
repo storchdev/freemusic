@@ -86,14 +86,29 @@ impl VideoPipeline {
     ///
     /// Ordinary playback calls this every redraw with `target_seconds` advancing by a few
     /// milliseconds at a time; in that case no seek happens at all, and if the currently held
-    /// frame is still the correct one to display, the decoder isn't touched either — only a
-    /// backward jump or a forward jump bigger than [`MAX_FORWARD_STEP_SECONDS`] (a scrub) causes
-    /// a real seek.
+    /// frame is still the correct one to display, the decoder isn't touched either. Only a
+    /// backward jump or a forward jump bigger than [`MAX_FORWARD_STEP_SECONDS`] causes a real
+    /// seek — this is meant to catch actual scrubs, but it also fires for something that isn't a
+    /// scrub at all: a redraw-cadence stall (a slow frame from system load, a blocked GPU call,
+    /// anything that makes real wall-clock time jump by more than a second between redraws while
+    /// `target_seconds` was simply advancing via elapsed time, not an explicit seek).
     ///
-    /// `exact = false` (scrubbing/preview) returns the first frame decoded after a seek, which
-    /// lands on/near the nearest preceding keyframe — cheap but approximate. `exact = true`
-    /// (export) keeps decoding forward until the frame's timestamp reaches `target_seconds`, so
-    /// the result is frame-accurate.
+    /// `exact` controls what happens *after* one of those reseeks, and callers should set it
+    /// based on which of those two cases they're actually in — this distinction used to not
+    /// exist, and conflating them was a real bug (reported as "playback jumps back and gets
+    /// stuck looping ~20 frames" once redraw cadence on real hardware turned out to be less
+    /// metronomic than initially assumed): `exact = false` (an explicit scrub — the interactive
+    /// timeline being dragged/clicked) returns the first frame decoded after the seek, which
+    /// lands on/near the nearest preceding keyframe — cheap but approximate, and fine for that
+    /// case since the user is actively dragging and will settle on a final position themselves.
+    /// `exact = true` (export, and — critically — ordinary playback ticks too, even though those
+    /// don't otherwise look like they need "exactness") keeps decoding forward until the frame's
+    /// timestamp reaches `target_seconds`. For ordinary playback this matters specifically for
+    /// the stall case: without it, a stall-triggered reseek would land on a stale, up-to-2-second
+    /// old keyframe and just sit there — every following redraw would see the same
+    /// still-uncaught-up gap, trigger *another* reseek to essentially the same spot, and repeat,
+    /// which looks exactly like the video jumping back and stuttering through the same handful
+    /// of frames instead of smoothly continuing forward.
     pub fn seek_and_decode(
         &mut self,
         target_seconds: f64,
@@ -114,11 +129,19 @@ impl VideoPipeline {
             let target_ts = (target_seconds / f64::from(ffmpeg::rescale::TIME_BASE)) as i64;
             self.input.seek(target_ts, ..target_ts)?;
             self.decoder.flush();
-        } else if !exact {
-            if let Some(frame) = self.current_frame.as_ref() {
-                if target_seconds <= frame.pts_seconds {
-                    return Ok(frame.clone());
-                }
+        } else if let Some(frame) = self.current_frame.as_ref() {
+            // Already covered by the held frame — nothing to decode. This shortcut used to live
+            // behind `!exact` (i.e. only ordinary playback ticks got it, never a caller passing
+            // `exact = true`), but it's unconditionally safe: it only returns early when the
+            // held frame already satisfies `target_seconds`, which `exact` doesn't change the
+            // meaning of. Gating it behind `!exact` had no effect on `export` (which always
+            // requests strictly increasing targets, so the held frame is never already ahead)
+            // but mattered once interactive playback started passing `exact = true` too (see
+            // below) — without this, every redraw would force a fresh decode even when the
+            // currently displayed frame was still perfectly valid, subtly speeding up playback
+            // on any redraw cadence faster than the video's own frame rate.
+            if target_seconds <= frame.pts_seconds {
+                return Ok(frame.clone());
             }
         }
 
