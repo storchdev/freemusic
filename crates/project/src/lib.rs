@@ -14,15 +14,19 @@ pub struct Project {
     pub sync_offset_seconds: f64,
     pub calibration: KeyboardCalibration,
     pub transform: VideoTransform,
+    pub barrier_style: BarrierStyle,
+    pub note_style: NoteStyle,
 }
 
-/// Horizontal bounds of the real keyboard visible in the footage, as fractions of window
-/// width (0.0 = left edge, 1.0 = right edge). Fractions rather than pixels so calibration
-/// survives a window resize or loading a differently-sized video.
+/// Horizontal bounds of the real keyboard visible in the footage (fractions of window width,
+/// 0.0 = left edge, 1.0 = right edge), plus the vertical position of the barrier where falling
+/// notes stop (`barrier_fraction`, 0.0 = top of frame, 1.0 = bottom) — all fractions rather than
+/// pixels so calibration survives a window resize or loading a differently-sized video.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct KeyboardCalibration {
     pub left_fraction: f32,
     pub right_fraction: f32,
+    pub barrier_fraction: f32,
 }
 
 impl Default for KeyboardCalibration {
@@ -30,6 +34,47 @@ impl Default for KeyboardCalibration {
         Self {
             left_fraction: 0.0,
             right_fraction: 1.0,
+            // Matches the hit line's hardcoded position in Neothesia's own vendored waterfall
+            // shader (`keyboard_y = size.y - size.y / 5.0`, i.e. always 80% down) — see
+            // `render::midi_overlay`'s barrier-viewport trick for how an arbitrary
+            // `barrier_fraction` is actually achieved without forking that shader.
+            barrier_fraction: 0.8,
+        }
+    }
+}
+
+/// Style of the horizontal barrier where falling notes stop, drawn as a plain `egui` overlay
+/// (see `ui::draw_barrier_handle`) rather than a wgpu render pass — no shader needed.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BarrierStyle {
+    pub color: [u8; 3],
+    pub thickness: f32,
+}
+
+impl Default for BarrierStyle {
+    fn default() -> Self {
+        Self {
+            color: [255, 255, 255],
+            thickness: 4.0,
+        }
+    }
+}
+
+/// Style of the falling notes themselves: a single base color (sharp/black-key notes get a
+/// darkened `dark` variant derived from it, same idea as Neothesia's own per-track
+/// `ColorSchemaV1` but with one user-picked color instead of a fixed per-track palette) and a
+/// roundedness fraction (0.0 = square corners, 1.0 = Neothesia's own default corner radius).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NoteStyle {
+    pub color: [u8; 3],
+    pub roundedness: f32,
+}
+
+impl Default for NoteStyle {
+    fn default() -> Self {
+        Self {
+            color: [93, 188, 255],
+            roundedness: 1.0,
         }
     }
 }

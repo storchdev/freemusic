@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use audio_playback::AudioPlayback;
 use export::Progress as ExportProgress;
 use gpu::Gpu;
 use project::{KeyboardCalibration, Project};
@@ -95,6 +96,10 @@ struct AppState {
     /// each redraw so a drag only triggers the (fairly heavy, full-rebuild) `compositor.resize`
     /// when it actually changed, not every frame.
     applied_calibration: KeyboardCalibration,
+    /// Same idea as `applied_calibration`, for note color/roundedness — both are baked into each
+    /// `NoteInstance` at build time (see `render::midi_overlay::apply_note_adjustments`), so a
+    /// change also needs a full `compositor.resize`, not just a per-frame uniform write.
+    applied_note_style: project::NoteStyle,
     ui_state: UiState,
     last_instant: Instant,
     /// Transport position `pipeline.seek_and_decode` was last called with, so a redraw that
@@ -111,6 +116,17 @@ struct AppState {
     /// `Some` while a background export thread is running; polled each redraw and cleared once
     /// it reports `Done`/`Cancelled`/`Error`.
     export_run: Option<ExportRun>,
+    /// Live modifier-key state, tracked via `WindowEvent::ModifiersChanged` since
+    /// `WindowEvent::KeyboardInput` itself carries no modifier info — used to distinguish e.g.
+    /// Ctrl+S (save) from a bare S, and Left/Right (5s seek) from Shift+Left/Right (1s seek).
+    modifiers: winit::keyboard::ModifiersState,
+    /// The loaded video's own audio track (if any), played back in sync with the transport —
+    /// see `crates/audio-playback` for why this drives from position rather than its own clock.
+    audio: AudioPlayback,
+    /// `set_playing` last called with; compared each redraw so play/pause is only pushed to the
+    /// `cpal` stream when it actually changes, not every frame (same dirty-check idea as
+    /// `applied_calibration`).
+    audio_playing: bool,
 }
 
 struct ExportRun {
@@ -139,6 +155,7 @@ impl AppState {
             &gpu_handles(&gpu),
             (canvas_size.0 as f32, canvas_size.1 as f32),
             &KeyboardCalibration::default(),
+            &project::NoteStyle::default(),
         );
 
         let egui_ctx = egui::Context::default();
@@ -178,6 +195,7 @@ impl AppState {
             video_path: None,
             midi_path: None,
             applied_calibration: KeyboardCalibration::default(),
+            applied_note_style: project::NoteStyle::default(),
             ui_state: UiState {
                 playing: false,
                 position_seconds: 0.0,
@@ -192,11 +210,17 @@ impl AppState {
                 sync_offset_seconds: 0.0,
                 calibration: KeyboardCalibration::default(),
                 transform: project::VideoTransform::default(),
+                barrier_style: project::BarrierStyle::default(),
+                note_style: project::NoteStyle::default(),
                 project_path_text: String::new(),
                 save_requested: false,
                 load_requested: false,
                 open_video_requested: false,
                 open_midi_requested: false,
+                new_project_requested: false,
+                open_project_requested: false,
+                save_project_as_requested: false,
+                exit_requested: false,
                 status_message: None,
                 export_path_text: String::new(),
                 export_fps: 30,
@@ -208,6 +232,9 @@ impl AppState {
             last_instant: Instant::now(),
             last_decoded_position: None,
             export_run: None,
+            modifiers: winit::keyboard::ModifiersState::empty(),
+            audio: AudioPlayback::new(),
+            audio_playing: false,
         };
 
         if let Some(path) = video_path {
@@ -245,8 +272,10 @@ impl AppState {
             &gpu_handles(&self.gpu),
             (size.0 as f32, size.1 as f32),
             &self.ui_state.calibration,
+            &self.ui_state.note_style,
         );
         self.applied_calibration = self.ui_state.calibration;
+        self.applied_note_style = self.ui_state.note_style;
     }
 
     /// Opens `path` as the active video, replacing whatever was loaded before (CLI arg at
@@ -284,6 +313,11 @@ impl AppState {
             self.last_decoded_position = Some(0.0);
         }
 
+        if let Err(err) = self.audio.load(path) {
+            eprintln!("failed to load audio track for {path:?}: {err}");
+        }
+        self.audio_playing = false;
+
         self.pipeline = Some(pipeline);
         self.video_path = Some(path.to_path_buf());
         if self.ui_state.project_path_text.is_empty() {
@@ -301,6 +335,7 @@ impl AppState {
             &gpu_handles(&self.gpu),
             (size.0 as f32, size.1 as f32),
             &self.ui_state.calibration,
+            &self.ui_state.note_style,
             path,
         ) {
             Ok(()) => {
@@ -324,6 +359,8 @@ impl AppState {
             sync_offset_seconds: self.ui_state.sync_offset_seconds,
             calibration: self.ui_state.calibration,
             transform: self.ui_state.transform,
+            barrier_style: self.ui_state.barrier_style,
+            note_style: self.ui_state.note_style,
         }
     }
 
@@ -362,6 +399,55 @@ impl AppState {
         self.export_run = Some(ExportRun { rx, cancel });
     }
 
+    /// Clears the loaded video/MIDI and resets sync/calibration/transform to defaults — recreates
+    /// the compositor from scratch (same construction `AppState::new` uses) rather than trying to
+    /// incrementally clear `video_quad`'s uploaded texture and `midi_overlay`'s loaded track,
+    /// since neither exposes an "unload" of its own.
+    fn new_project(&mut self) {
+        self.pipeline = None;
+        self.video_path = None;
+        self.midi_path = None;
+
+        self.canvas_size = DEFAULT_CANVAS_SIZE;
+        let (texture, view) = create_preview_texture(&self.gpu.device, self.canvas_size);
+        self.egui_renderer.free_texture(&self.preview_texture_id);
+        self.preview_texture_id = self.egui_renderer.register_native_texture(
+            &self.gpu.device,
+            &view,
+            wgpu::FilterMode::Linear,
+        );
+        self.preview_texture = texture;
+        self.preview_view = view;
+        self.compositor = Compositor::new(
+            &gpu_handles(&self.gpu),
+            (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
+            &KeyboardCalibration::default(),
+            &project::NoteStyle::default(),
+        );
+        self.applied_calibration = KeyboardCalibration::default();
+        self.applied_note_style = project::NoteStyle::default();
+        self.last_decoded_position = None;
+        self.audio = AudioPlayback::new();
+        self.audio_playing = false;
+
+        self.ui_state.playing = false;
+        self.ui_state.position_seconds = 0.0;
+        self.ui_state.duration_seconds = 0.0;
+        self.ui_state.seek_request = None;
+        self.ui_state.midi_name = None;
+        self.ui_state.midi_note_times = Vec::new();
+        self.ui_state.sync_offset_seconds = 0.0;
+        self.ui_state.calibration = KeyboardCalibration::default();
+        self.ui_state.transform = project::VideoTransform::default();
+        self.ui_state.barrier_style = project::BarrierStyle::default();
+        self.ui_state.note_style = project::NoteStyle::default();
+        self.ui_state.project_path_text = String::new();
+        self.ui_state.export_path_text = String::new();
+        self.ui_state.canvas_size = self.canvas_size;
+        self.ui_state.preview_texture_id = self.preview_texture_id;
+        self.ui_state.status_message = Some("New project".to_string());
+    }
+
     /// Loads a project from the path in the project text field, replacing the current video,
     /// MIDI, sync offset, and calibration with whatever it contains.
     fn load_project(&mut self) {
@@ -371,6 +457,8 @@ impl AppState {
                 self.ui_state.sync_offset_seconds = project.sync_offset_seconds;
                 self.ui_state.calibration = project.calibration;
                 self.ui_state.transform = project.transform;
+                self.ui_state.barrier_style = project.barrier_style;
+                self.ui_state.note_style = project.note_style;
                 if let Some(video_path) = project.video_path.clone() {
                     self.load_video(&video_path);
                 }
@@ -432,6 +520,16 @@ impl AppState {
         let midi_time = self.ui_state.position_seconds - self.ui_state.sync_offset_seconds;
         self.compositor.update_midi(midi_time as f32);
 
+        // Audio is driven by (never drives) the transport position — see `audio_playback`'s doc
+        // comment. Position is mirrored unconditionally (cheap, an atomic store), but play/pause
+        // is only pushed to the `cpal` stream when it actually changes.
+        self.audio
+            .set_position_seconds(self.ui_state.position_seconds);
+        if self.ui_state.playing != self.audio_playing {
+            self.audio.set_playing(self.ui_state.playing);
+            self.audio_playing = self.ui_state.playing;
+        }
+
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let full_output = {
             let ui_state = &mut self.ui_state;
@@ -440,13 +538,17 @@ impl AppState {
             })
         };
 
-        if self.ui_state.calibration != self.applied_calibration {
+        if self.ui_state.calibration != self.applied_calibration
+            || self.ui_state.note_style != self.applied_note_style
+        {
             self.compositor.resize(
                 &gpu_handles(&self.gpu),
                 (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
                 &self.ui_state.calibration,
+                &self.ui_state.note_style,
             );
             self.applied_calibration = self.ui_state.calibration;
+            self.applied_note_style = self.ui_state.note_style;
         }
 
         // Cheap (one small uniform write), so applied unconditionally every redraw rather than
@@ -483,6 +585,30 @@ impl AppState {
                 .pick_file()
             {
                 self.load_midi(&path);
+            }
+        }
+        if self.ui_state.new_project_requested {
+            self.ui_state.new_project_requested = false;
+            self.new_project();
+        }
+        if self.ui_state.open_project_requested {
+            self.ui_state.open_project_requested = false;
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Project", &["ron"])
+                .pick_file()
+            {
+                self.ui_state.project_path_text = path.display().to_string();
+                self.load_project();
+            }
+        }
+        if self.ui_state.save_project_as_requested {
+            self.ui_state.save_project_as_requested = false;
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Project", &["ron"])
+                .save_file()
+            {
+                self.ui_state.project_path_text = path.display().to_string();
+                self.save_project();
             }
         }
         if self.ui_state.export_requested {
@@ -728,6 +854,13 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 state.redraw();
+                if state.ui_state.exit_requested {
+                    event_loop.exit();
+                }
+                return;
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                state.modifiers = modifiers.state();
                 return;
             }
             _ => {}
@@ -741,15 +874,70 @@ impl ApplicationHandler for App {
             event: key_event, ..
         } = &event
         {
-            if key_event.state == ElementState::Pressed
-                && key_event.physical_key == PhysicalKey::Code(KeyCode::Space)
-            {
-                state.ui_state.playing = !state.ui_state.playing;
-                state.last_instant = Instant::now();
-                state.window.request_redraw();
+            if key_event.state == ElementState::Pressed {
+                handle_shortcut(state, key_event.physical_key, state.modifiers);
             }
         }
     }
+}
+
+/// Familiar keyboard navigation (6d): Space play/pause (pre-existing), Left/Right seek ±5s
+/// (Shift+Left/Right ±1s), Home/End jump to start/end, Ctrl+S save project, Ctrl+O open project,
+/// Esc cancel an in-progress export. The project/save actions route through the same
+/// `UiState` request flags the File menu (`ui::draw_menu_bar`) and Project tab buttons use —
+/// one code path regardless of which of the three triggered it, consumed next redraw.
+fn handle_shortcut(
+    state: &mut AppState,
+    key: PhysicalKey,
+    modifiers: winit::keyboard::ModifiersState,
+) {
+    let PhysicalKey::Code(code) = key else {
+        return;
+    };
+    let ctrl = modifiers.control_key();
+    let shift = modifiers.shift_key();
+
+    match code {
+        KeyCode::Space => {
+            state.ui_state.playing = !state.ui_state.playing;
+            state.last_instant = Instant::now();
+        }
+        KeyCode::ArrowLeft => {
+            let step = if shift { 1.0 } else { 5.0 };
+            let base = state
+                .ui_state
+                .seek_request
+                .unwrap_or(state.ui_state.position_seconds);
+            state.ui_state.seek_request = Some((base - step).max(0.0));
+        }
+        KeyCode::ArrowRight => {
+            let step = if shift { 1.0 } else { 5.0 };
+            let base = state
+                .ui_state
+                .seek_request
+                .unwrap_or(state.ui_state.position_seconds);
+            state.ui_state.seek_request = Some((base + step).min(state.ui_state.duration_seconds));
+        }
+        KeyCode::Home => {
+            state.ui_state.seek_request = Some(0.0);
+        }
+        KeyCode::End => {
+            state.ui_state.seek_request = Some(state.ui_state.duration_seconds);
+        }
+        KeyCode::KeyS if ctrl => {
+            state.ui_state.save_requested = true;
+        }
+        KeyCode::KeyO if ctrl => {
+            state.ui_state.open_project_requested = true;
+        }
+        KeyCode::Escape => {
+            if state.export_run.is_some() {
+                state.ui_state.export_cancel_requested = true;
+            }
+        }
+        _ => return,
+    }
+    state.window.request_redraw();
 }
 
 fn main() {

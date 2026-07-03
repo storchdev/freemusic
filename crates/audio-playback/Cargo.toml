@@ -1,0 +1,9 @@
+[package]
+name = "audio-playback"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cpal = "0.18"
+ffmpeg-next = "8.1.0"

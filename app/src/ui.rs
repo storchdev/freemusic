@@ -16,6 +16,8 @@ pub struct UiState {
     pub sync_offset_seconds: f64,
     pub calibration: project::KeyboardCalibration,
     pub transform: project::VideoTransform,
+    pub barrier_style: project::BarrierStyle,
+    pub note_style: project::NoteStyle,
     /// Path typed into the Save/Load text field; defaulted from the video path on first load.
     pub project_path_text: String,
     /// Set by the Save/Load buttons; the app loop consumes and clears these each redraw.
@@ -26,6 +28,14 @@ pub struct UiState {
     /// user chose (a no-op if they cancel).
     pub open_video_requested: bool,
     pub open_midi_requested: bool,
+    /// Set by the File menu's "New Project"/"Open Project…"/"Save Project As…"/"Exit" items (and
+    /// mirrored keyboard shortcuts — see `main.rs`'s `KeyboardInput` handling); the app loop
+    /// consumes and clears these each redraw, same one-request-flag-per-action pattern as
+    /// `save_requested`/`open_video_requested` etc. above.
+    pub new_project_requested: bool,
+    pub open_project_requested: bool,
+    pub save_project_as_requested: bool,
+    pub exit_requested: bool,
     pub status_message: Option<String>,
     /// Path typed into the Export text field; defaulted from the video path on first load.
     pub export_path_text: String,
@@ -57,6 +67,7 @@ pub enum Tab {
 }
 
 pub fn draw(ui: &mut egui::Ui, state: &mut UiState) {
+    draw_menu_bar(ui, state);
     draw_side_panel(ui, state);
     draw_timeline_panel(ui, state);
 
@@ -69,6 +80,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut UiState) {
         );
         draw_calibration_handles(ui, image_rect, &mut state.calibration);
         draw_crop_handles(ui, image_rect, &mut state.transform);
+        draw_barrier_handle(ui, image_rect, &mut state.calibration, &state.barrier_style);
     });
 
     if state.dropping {
@@ -99,6 +111,48 @@ fn fit_rect(container: egui::Rect, aspect: f32) -> egui::Rect {
         egui::vec2(container_h * aspect, container_h)
     };
     egui::Rect::from_center_size(container.center(), size)
+}
+
+/// Top menu bar (`File`): open video/MIDI, project new/open/save/save-as, exit. Wires into the
+/// same `AppState` actions the Project tab's buttons and keyboard shortcuts (`main.rs`'s
+/// `KeyboardInput` handling — Ctrl+S/Ctrl+O) already use, via the same request-flag-consumed-
+/// next-redraw pattern as the rest of `UiState` — one code path regardless of which of the three
+/// (menu, button, shortcut) triggered it.
+fn draw_menu_bar(ui: &mut egui::Ui, state: &mut UiState) {
+    egui::Panel::top("menu_bar").show(ui, |ui| {
+        ui.menu_button("File", |ui| {
+            if ui.button("Open Video…").clicked() {
+                state.open_video_requested = true;
+                ui.close();
+            }
+            if ui.button("Open MIDI…").clicked() {
+                state.open_midi_requested = true;
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("New Project").clicked() {
+                state.new_project_requested = true;
+                ui.close();
+            }
+            if ui.button("Open Project…").clicked() {
+                state.open_project_requested = true;
+                ui.close();
+            }
+            if ui.button("Save Project\tCtrl+S").clicked() {
+                state.save_requested = true;
+                ui.close();
+            }
+            if ui.button("Save Project As…").clicked() {
+                state.save_project_as_requested = true;
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Exit").clicked() {
+                state.exit_requested = true;
+                ui.close();
+            }
+        });
+    });
 }
 
 /// Hand-rolled tab strip + content for the persistent side panel — replaces the four floating
@@ -179,6 +233,50 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
     ));
     if ui.button("Reset calibration").clicked() {
         state.calibration = project::KeyboardCalibration::default();
+    }
+
+    ui.separator();
+    ui.heading("Barrier");
+    ui.label("Drag the guide on the preview, or use the slider below.");
+    ui.horizontal(|ui| {
+        ui.label("Position:");
+        ui.add(egui::Slider::new(
+            &mut state.calibration.barrier_fraction,
+            BARRIER_MIN_FRACTION..=BARRIER_MAX_FRACTION,
+        ));
+    });
+    ui.horizontal(|ui| {
+        ui.label("Color:");
+        ui.color_edit_button_srgb(&mut state.barrier_style.color);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Thickness:");
+        ui.add(egui::Slider::new(
+            &mut state.barrier_style.thickness,
+            1.0..=12.0,
+        ));
+    });
+    if ui.button("Reset barrier").clicked() {
+        state.calibration.barrier_fraction =
+            project::KeyboardCalibration::default().barrier_fraction;
+        state.barrier_style = project::BarrierStyle::default();
+    }
+
+    ui.separator();
+    ui.heading("Note style");
+    ui.horizontal(|ui| {
+        ui.label("Color:");
+        ui.color_edit_button_srgb(&mut state.note_style.color);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Roundedness:");
+        ui.add(egui::Slider::new(
+            &mut state.note_style.roundedness,
+            0.0..=1.0,
+        ));
+    });
+    if ui.button("Reset note style").clicked() {
+        state.note_style = project::NoteStyle::default();
     }
 }
 
@@ -623,6 +721,61 @@ fn draw_crop_handles(ui: &egui::Ui, screen: egui::Rect, transform: &mut project:
         egui::Rect::from_min_max(egui::pos2(left_x, top_y), egui::pos2(right_x, bottom_y));
     ui.painter()
         .rect_stroke(crop_rect, 0.0, stroke, egui::StrokeKind::Outside);
+}
+
+/// Valid range for `KeyboardCalibration::barrier_fraction` — keeps the drag handle (and the
+/// render-side viewport trick, see `render::midi_overlay::MidiOverlay::render`) away from a
+/// degenerate (near-zero-height or far-off-canvas) viewport.
+const BARRIER_MIN_FRACTION: f32 = 0.05;
+const BARRIER_MAX_FRACTION: f32 = 0.98;
+
+/// Draws a draggable horizontal guide over the preview image marking where falling notes stop
+/// (`calibration.barrier_fraction`), styled per `barrier_style`. Same `Sense::drag()` +
+/// accumulated `drag_delta()` pattern as `draw_calibration_handles`, rotated 90°. This is a plain
+/// `egui` overlay, not a wgpu render pass — the actual barrier *behavior* (repositioning the
+/// vendored shader's hardcoded hit line, clipping notes that reach it) lives in
+/// `render::midi_overlay::MidiOverlay::render`, driven by the same `calibration.barrier_fraction`
+/// this handle edits.
+fn draw_barrier_handle(
+    ui: &egui::Ui,
+    screen: egui::Rect,
+    calibration: &mut project::KeyboardCalibration,
+    barrier_style: &project::BarrierStyle,
+) {
+    let y = screen.top() + screen.height() * calibration.barrier_fraction;
+    let handle_rect = egui::Rect::from_min_max(
+        egui::pos2(screen.left(), y - 6.0),
+        egui::pos2(screen.right(), y + 6.0),
+    );
+    let response = ui.interact(
+        handle_rect,
+        egui::Id::new("barrier_handle"),
+        egui::Sense::drag(),
+    );
+    if response.dragged() {
+        let delta = response.drag_delta().y / screen.height();
+        calibration.barrier_fraction = (calibration.barrier_fraction + delta)
+            .clamp(BARRIER_MIN_FRACTION, BARRIER_MAX_FRACTION);
+    }
+
+    let color = egui::Color32::from_rgb(
+        barrier_style.color[0],
+        barrier_style.color[1],
+        barrier_style.color[2],
+    );
+    let half_thickness = barrier_style.thickness / 2.0;
+    let bar = egui::Rect::from_min_max(
+        egui::pos2(screen.left(), y - half_thickness),
+        egui::pos2(screen.right(), y + half_thickness),
+    );
+    ui.painter().rect_filled(bar, 0.0, color);
+    ui.painter().text(
+        egui::pos2(screen.left() + 4.0, y - half_thickness - 2.0),
+        egui::Align2::LEFT_BOTTOM,
+        "barrier",
+        egui::FontId::proportional(12.0),
+        color,
+    );
 }
 
 fn format_timecode(seconds: f64) -> String {

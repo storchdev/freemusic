@@ -20,10 +20,10 @@ The project is being built milestone-by-milestone per that plan. Milestones 1 (s
 plain video playback), 2 (MIDI + note highway overlay), 3 (manual sync + keyboard calibration +
 persistence), 4 (brightness/scale/crop/rotate/tilt/translate video transform), and 5 (MP4 export)
 are implemented so far. Milestone 6 (UI polish/restructure — full draft at
-`~/.claude/plans/m6.md`) is in progress: the offscreen-texture preview + tabbed side panel +
-custom timeline (6c) and native Open Video/MIDI file dialogs (part of 6b) are done — see below.
-Barrier/note-highway styling (6a), the rest of the File menu + keyboard shortcuts (6b/6d), and
-synced audio playback (6e) are not yet implemented.
+`~/.claude/plans/m6.md`) is now complete: 6c (offscreen-texture preview, tabbed side panel,
+custom timeline), 6a (barrier + note-highway styling), 6b (native Open/Save dialogs and the File
+menu bar), 6d (keyboard shortcuts), and 6e (synced audio playback via a new
+`crates/audio-playback`) are all implemented — see below.
 
 ## Commands
 
@@ -102,13 +102,14 @@ freemusic/
   app/                   # binary: winit + egui-wgpu shell
     src/main.rs           # event loop, AppState (owns everything), redraw/composite/present, export thread wiring
     src/gpu.rs             # wgpu Instance/Adapter/Device/Surface setup (interactive window only)
-    src/ui.rs                # transport bar, calibration/crop drag handles, sync/project/transform/export windows
+    src/ui.rs                # menu bar, tabbed side panel, timeline, calibration/crop/barrier drag handles
   crates/
-    project/              # RON project model: paths, sync offset, keyboard calibration, video transform
+    project/              # RON project model: paths, sync offset, calibration (incl. barrier), transform, styles
     video-pipeline/       # ffmpeg-next decode + seek, no GPU/UI dependency
     render/                # UI-agnostic compositor (video quad + MIDI waterfall), used headless by export too
     mp4-encoder/            # forked ffmpeg-encoder: parameterized fps, explicit codec selection, optional audio
     export/                  # headless-GPU offline render loop, audio mux, progress/cancel channel
+    audio-playback/          # cpal output stream for the loaded video's own audio, driven by transport position
   scripts/               # cargo check, run/screenshot/click/drag the app, gen synthetic test clips
 ```
 
@@ -498,6 +499,148 @@ it, rather than bumping `wgpu` independently.
   shortcut out from behind `!exact` (it's unconditionally safe — it only returns early when the
   held frame already satisfies the target) was needed alongside this so ordinary playback ticks
   didn't lose that optimization just by switching to `exact = true`.
+
+### Barrier + note-highway styling (milestone 6a)
+
+- `project::KeyboardCalibration` gained a third fraction, `barrier_fraction` (0.0 = top of frame,
+  1.0 = bottom; default `0.8`), plus two new structs: `BarrierStyle { color, thickness }` and
+  `NoteStyle { color, roundedness }`. All three round-trip through `Project` save/load exactly
+  like the existing fields.
+- **The plan's original "virtual viewport height" trick (see `m6.md`) does not work, and was not
+  used** — worth reading if revisiting this code, since the plan explicitly recommends it.
+  Neothesia's vendored shader computes `keyboard_y = view_uniform.size.y * 0.8` and then maps
+  that through the ortho projection matrix built from that *same* `size` value
+  (`TransformUniform::update(width, height, scale)` sets both fields from the same call). Those
+  two uses of `size.y` cancel out exactly: the resulting NDC position is always `-0.6` (80% down
+  whatever the render pass's viewport maps NDC onto) no matter what "virtual" height is fed into
+  `TransformUniform`. Verified algebraically before implementing, not just by trial and error.
+  **What actually moves the hit line**: `wgpu::RenderPass::set_viewport` is a separate, real
+  mapping from NDC to physical pixels, independent of anything `TransformUniform` feeds the
+  shader. `render::midi_overlay::MidiOverlay::render` calls `set_viewport(0, 0, canvas_w,
+  virtual_height, 0, 1)` (solving `0.8 * virtual_height = canvas_height * barrier_fraction` for
+  `virtual_height`) immediately before delegating to `WaterfallRenderer::render` — this rescales
+  where the shader's fixed -0.6 NDC point lands in real canvas pixels, with no shader fork.
+  `TransformUniform` itself is left alone, always built from the real canvas size, since (per the
+  above) its own width/height has no effect on the hit line's position anyway.
+- **Clipping notes at the barrier** is a `render_pass.set_scissor_rect(0, 0, canvas_w,
+  canvas_h * barrier_fraction)` call right alongside the viewport one — a real, ordinary wgpu
+  feature, still no shader change. Both calls are scoped to only the waterfall's draw call
+  (`video_quad` renders first, at the render pass's default full-canvas viewport, before either is
+  set).
+- **The barrier itself is a plain `egui` overlay**, not a wgpu pass: `ui::draw_barrier_handle`
+  draws a `rect_filled` bar at the calibrated fraction (styled per `BarrierStyle`) and doubles as
+  the drag handle (same `Sense::drag()` + accumulated `drag_delta()` pattern as the calibration/
+  crop handles, rotated 90°). It's UI-only — the exported MP4 never shows it, only the actual note
+  clipping (which export's `Compositor::render` shares with the interactive preview).
+- **Note color**: `MidiOverlay` no longer builds `Config::default()` and leaves it alone —
+  `set_note_style` calls `Config::set_color_schema` with a single `ColorSchemaV1` derived from
+  `NoteStyle::color` (dark/sharp-key variant = base channels darkened by `0.6`), called at the
+  top of both `load` and `resize` so a style change picks up on the next rebuild. Since
+  `WaterfallRenderer::resize`/`new` both read the color schema fresh from whatever `Config` they're
+  given, no upstream change was needed.
+- **Note roundedness**: `apply_note_adjustments` (renamed from milestone 3's `apply_left_offset`,
+  now doing both jobs in one pass instead of two separate instance loops + two `prepare()` calls)
+  multiplies each built `NoteInstance.radius` by `NoteStyle::roundedness` (0.0 = square corners,
+  1.0 = Neothesia's own default `key.width() * 0.2`) alongside the existing left-offset shift,
+  then re-uploads once.
+- `AppState::applied_note_style` mirrors the existing `applied_calibration` dirty-check pattern
+  (color/roundedness are baked into instances at build time, so a change needs a full
+  `compositor.resize`, not just a per-frame uniform write) — checked in the same `if` alongside
+  calibration in `redraw`. `barrier_fraction` needs no separate tracking since it already lives on
+  `KeyboardCalibration`, so a barrier drag is caught by the existing calibration comparison.
+- **6a's item 3 ("style of the transition into the barrier") was dropped from scope entirely**,
+  per user decision during planning — not even the scoped-down "barrier reacts on arrival"
+  version. Only barrier position/color/thickness and note color/roundedness (items 1, 2, 4) were
+  built.
+- Manually verified with a synthetic test video/MIDI (`scripts/gen-test-video.sh` + a throwaway
+  ascending-scale SMF): dragging the barrier slider from 0.8 down to 0.05 visibly moves the hit
+  line, notes visibly clip exactly at it at both positions (confirmed via screenshot at a
+  scrubbed-forward timeline position where a note is mid-fall), and setting roundedness to 0
+  visibly squares off the note corners.
+
+### File menu bar and remaining native dialogs (milestone 6b)
+
+- `ui::draw_menu_bar` (`egui::Panel::top("menu_bar")` + a single `ui.menu_button("File", ..)`)
+  adds New Project, Open Project…, Save Project (Ctrl+S), Save Project As…, and Exit alongside the
+  Open Video…/Open MIDI… buttons 6c already added to the Project tab — all of it routes through
+  the same `UiState` request-flag-consumed-next-redraw pattern the Project tab's buttons already
+  used (`new_project_requested`/`open_project_requested`/`save_project_as_requested`/
+  `exit_requested`), so the menu, the tab buttons, and 6d's keyboard shortcuts are three ways to
+  trigger the exact same `AppState` methods, never three separate code paths.
+- **New Project** (`AppState::new_project`) clears the loaded video/MIDI and resets sync/
+  calibration/transform/barrier/note style to defaults. It recreates the compositor from scratch
+  (same construction `AppState::new` uses) rather than trying to incrementally clear
+  `video_quad`'s uploaded texture and `midi_overlay`'s loaded track, since neither exposes an
+  "unload" of its own.
+- **Open Project…**/**Save Project As…** are `rfd::FileDialog` pick/save calls that just set
+  `ui_state.project_path_text` and then call the existing `load_project`/`save_project` — no new
+  persistence logic, only a second way to populate the path that the typed text field already
+  drove.
+- **Exit** needed `event_loop.exit()`, which `AppState::redraw` has no access to (it's called from
+  `App::window_event`, which does) — so `WindowEvent::RedrawRequested`'s handler calls
+  `state.redraw()` and then checks `state.ui_state.exit_requested` before returning, rather than
+  `redraw` triggering the exit itself.
+
+### Familiar keyboard navigation (milestone 6d)
+
+- `AppState` gained a `modifiers: winit::keyboard::ModifiersState` field, updated via
+  `WindowEvent::ModifiersChanged` — `WindowEvent::KeyboardInput` itself carries no modifier state
+  in winit 0.30, so this is the only way to tell Ctrl+S from a bare S.
+- `main.rs::handle_shortcut` (called from the existing `KeyboardInput` match arm, after the
+  pre-existing `response.consumed` guard so a focused text field's own key handling still wins)
+  adds: Left/Right seek ±5s, Shift+Left/Right ±1s (relative to `seek_request.unwrap_or(position)`,
+  not the raw position, so two quick presses before a redraw consumes the first compound rather
+  than clobber each other), Home/End jump to start/end, Ctrl+S save project, Ctrl+O open project,
+  Esc cancel an in-progress export. Space (play/pause) moved into the same function, unchanged in
+  behavior. Every action other than Space sets the same `UiState` request flag the menu bar/tab
+  buttons use (see 6b above) rather than calling `AppState` methods directly — one code path.
+- J/K/L (the "nice-to-have, skip unless there's time" item from the plan) was skipped.
+
+### Synced audio playback (milestone 6e)
+
+- New crate `crates/audio-playback`, built on `cpal = "0.18"` (matches Neothesia's own workspace
+  pin). Decodes a video's audio track fully upfront (`decode_all`, duplicated from — not shared
+  with — `crates/export/src/audio.rs`'s near-identical function, since that crate's `audio`
+  module is private and this crate has no other reason to depend on `export`) into stereo `f32`
+  at whatever sample rate the *output device* reports via `default_output_config()` (not a fixed
+  rate — mirrors export's own "ask the encoder what rate it actually chose" approach).
+- **Sync design**: `AudioPlayback` stores only a transport position (`position_bits: Arc<AtomicU64>`,
+  an `f64::to_bits` seconds value) plus the `cpal::Stream`. The output callback
+  (`fill_buffer`) re-reads that atomic fresh on *every* invocation and maps it straight to a
+  sample index — it never advances an internal counter between callbacks. `AppState::redraw`
+  calls `audio.set_position_seconds(ui_state.position_seconds)` unconditionally every redraw (the
+  same position value already driving video decode and `midi_time`), so audio can't accumulate
+  drift over a long playback the way an independently-clocked stream could; a scrub is handled by
+  nothing more than the position jumping, no special-cased "seek" method needed.
+- **cpal sample-format handling**: mirrors Neothesia's own `SynthBackend::run` pattern exactly
+  (`neothesia/src/output_manager/synth_backend.rs`) — a generic `build_typed_stream<T: SizedSample
+  + FromSample<f32>>` dispatched from a `match config.sample_format() { F32 => ::<f32>, I16 =>
+  ::<i16>, U16 => ::<u16>, .. }`, and `fill_buffer` duplicates L/R into however many channels the
+  device actually reports (`channels[ch % 2]`), not assuming exactly stereo.
+- **Real bug found and fixed during manual verification**: `AudioPlayback::load` originally called
+  `stream.play()` immediately after building the stream, so audio started playing right on video
+  load regardless of `ui_state.playing` (always `false` immediately after any load). Caught by
+  inspecting `pactl list sink-inputs` right after launching with an audio-bearing test file and
+  seeing `Corked: no` before ever touching Play. Per `cpal::traits::StreamTrait::play`'s own doc
+  comment ("Streams returned by `build_*_stream` are always stopped, so `play` must be called
+  before the data callback will fire"), the fix is simply to *not* call `.play()` in `load()` at
+  all — `AppState::redraw`'s existing `audio_playing` dirty-check (mirroring
+  `applied_calibration`'s pattern) already calls `set_playing(true)` the first time the user
+  actually presses Play, which is the only place `.play()` needs to be called.
+- **Not manually verified by ear** — this dev machine's audio capture path (`parec`, including
+  against the plain default source with no app involved) captures zero bytes in this environment,
+  so even indirect verification (recording the output and checking for the test tone) isn't
+  possible here. Verified instead by code review against `cpal`'s documented stream-lifecycle
+  contract and by confirming (via `pactl`/process-id cross-checking) that the pre-fix version
+  really was producing an uncorked sink-input at load before any Play click. **Whoever next has
+  working speakers/mic loopback on this machine should confirm real audio actually plays in sync**
+  (load a video with an audio track, hit Play, confirm the audio and the video/notes all move
+  together; pause/scrub and confirm it stays aligned) — flagging this explicitly rather than
+  silently assuming the code-level verification was sufficient.
+- No-audio-track videos: `AudioPlayback::load` checks `has_audio_stream` first and returns
+  `Ok(())` without building any stream at all if there isn't one — `is_active()` stays `false`,
+  `set_position_seconds`/`set_playing` remain safe no-ops (they just check `self.stream.is_some()`
+  first).
 
 ## Verifying changes to `app` or `video-pipeline`
 

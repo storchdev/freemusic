@@ -91,6 +91,7 @@ fn run_inner(
         &handles,
         (width as f32, height as f32),
         &project.calibration,
+        &project.note_style,
     );
     if let Some(midi_path) = project.midi_path.as_ref() {
         compositor
@@ -98,6 +99,7 @@ fn run_inner(
                 &handles,
                 (width as f32, height as f32),
                 &project.calibration,
+                &project.note_style,
                 midi_path,
             )
             .map_err(|err| format!("failed to load MIDI: {err}"))?;

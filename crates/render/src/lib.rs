@@ -7,7 +7,7 @@
 mod midi_overlay;
 mod video_quad;
 
-use project::{KeyboardCalibration, VideoTransform};
+use project::{KeyboardCalibration, NoteStyle, VideoTransform};
 
 pub use midi_overlay::GpuHandles;
 
@@ -17,10 +17,15 @@ pub struct Compositor {
 }
 
 impl Compositor {
-    pub fn new(gpu: &GpuHandles, viewport: (f32, f32), calibration: &KeyboardCalibration) -> Self {
+    pub fn new(
+        gpu: &GpuHandles,
+        viewport: (f32, f32),
+        calibration: &KeyboardCalibration,
+        note_style: &NoteStyle,
+    ) -> Self {
         let video_quad = video_quad::VideoQuad::new(gpu.device, gpu.texture_format);
         let mut midi_overlay = midi_overlay::MidiOverlay::new(gpu);
-        midi_overlay.resize(gpu, viewport, calibration);
+        midi_overlay.resize(gpu, viewport, calibration, note_style);
         Self {
             video_quad,
             midi_overlay,
@@ -42,21 +47,25 @@ impl Compositor {
         gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
+        note_style: &NoteStyle,
         path: &std::path::Path,
     ) -> Result<(), String> {
-        self.midi_overlay.load(gpu, viewport, calibration, path)
+        self.midi_overlay
+            .load(gpu, viewport, calibration, note_style, path)
     }
 
-    /// Recomputes note-lane layout for a new viewport size or calibration. Not needed for the
-    /// video quad itself — its viewport-dependent state is the cheap per-frame uniform written by
-    /// `update_viewport` instead.
+    /// Recomputes note-lane layout for a new viewport size, calibration, or note style. Not
+    /// needed for the video quad itself — its viewport-dependent state is the cheap per-frame
+    /// uniform written by `update_viewport` instead.
     pub fn resize(
         &mut self,
         gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
+        note_style: &NoteStyle,
     ) {
-        self.midi_overlay.resize(gpu, viewport, calibration);
+        self.midi_overlay
+            .resize(gpu, viewport, calibration, note_style);
     }
 
     pub fn upload_frame(
