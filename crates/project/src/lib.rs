@@ -13,6 +13,7 @@ pub struct Project {
     /// the master clock, this only shifts where notes render relative to it.
     pub sync_offset_seconds: f64,
     pub calibration: KeyboardCalibration,
+    pub transform: VideoTransform,
 }
 
 /// Horizontal bounds of the real keyboard visible in the footage, as fractions of window
@@ -29,6 +30,46 @@ impl Default for KeyboardCalibration {
         Self {
             left_fraction: 0.0,
             right_fraction: 1.0,
+        }
+    }
+}
+
+/// Video transform applied before compositing: brightness scalar, a crop rectangle (fractions
+/// of the source frame, 0.0/1.0 = uncropped), a translate (pan) offset, and rotation/tilt
+/// (small-angle camera-correction terms, not a general corner-pin). `rotation_degrees` and
+/// `translate_x`/`translate_y` are affine terms; `tilt_x`/`tilt_y` are the projective (keystone)
+/// terms — all folded into a single 3x3 homography matrix on the render side (see
+/// `app::video_quad`), so a future true corner-pin tilt is a data change there, not a shader
+/// rewrite.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct VideoTransform {
+    pub brightness: f32,
+    pub scale: f32,
+    pub rotation_degrees: f32,
+    pub translate_x: f32,
+    pub translate_y: f32,
+    pub tilt_x: f32,
+    pub tilt_y: f32,
+    pub crop_left: f32,
+    pub crop_right: f32,
+    pub crop_top: f32,
+    pub crop_bottom: f32,
+}
+
+impl Default for VideoTransform {
+    fn default() -> Self {
+        Self {
+            brightness: 1.0,
+            scale: 1.0,
+            rotation_degrees: 0.0,
+            translate_x: 0.0,
+            translate_y: 0.0,
+            tilt_x: 0.0,
+            tilt_y: 0.0,
+            crop_left: 0.0,
+            crop_right: 1.0,
+            crop_top: 0.0,
+            crop_bottom: 1.0,
         }
     }
 }

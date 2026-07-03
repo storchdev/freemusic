@@ -5,7 +5,11 @@
       "Bash(source \"$HOME/.cargo/env\" && rustc *)",
       "Bash(source \"$HOME/.cargo/env\")",
       "Bash(cargo *)",
-      "Bash(rustc *)"
+      "Bash(rustc *)",
+      "Bash(scripts/*.sh*)",
+      "Bash(./scripts/*.sh*)",
+      "Bash(bash scripts/*.sh*)",
+      "Bash(/home/hs/freemusic/scripts/*.sh*)"
     ]
   }
 }

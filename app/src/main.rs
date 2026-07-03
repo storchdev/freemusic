@@ -94,6 +94,7 @@ impl AppState {
                 midi_name: None,
                 sync_offset_seconds: 0.0,
                 calibration: KeyboardCalibration::default(),
+                transform: project::VideoTransform::default(),
                 project_path_text: String::new(),
                 save_requested: false,
                 load_requested: false,
@@ -144,8 +145,11 @@ impl AppState {
                 &frame.bgra,
             );
             let size = self.window.inner_size();
-            self.video_quad
-                .update_viewport(&self.gpu.queue, (size.width, size.height));
+            self.video_quad.update_viewport(
+                &self.gpu.queue,
+                (size.width, size.height),
+                &self.ui_state.transform,
+            );
         }
 
         self.pipeline = Some(pipeline);
@@ -180,6 +184,7 @@ impl AppState {
             midi_path: self.midi_path.clone(),
             sync_offset_seconds: self.ui_state.sync_offset_seconds,
             calibration: self.ui_state.calibration,
+            transform: self.ui_state.transform,
         };
         let path = PathBuf::from(&self.ui_state.project_path_text);
         self.ui_state.status_message = Some(match project.save(&path) {
@@ -196,6 +201,7 @@ impl AppState {
             Ok(project) => {
                 self.ui_state.sync_offset_seconds = project.sync_offset_seconds;
                 self.ui_state.calibration = project.calibration;
+                self.ui_state.transform = project.transform;
                 if let Some(video_path) = project.video_path.clone() {
                     self.load_video(&video_path);
                 }
@@ -233,9 +239,6 @@ impl AppState {
                     frame.height,
                     &frame.bgra,
                 );
-                let size = self.window.inner_size();
-                self.video_quad
-                    .update_viewport(&self.gpu.queue, (size.width, size.height));
             }
         }
         let midi_time = self.ui_state.position_seconds - self.ui_state.sync_offset_seconds;
@@ -258,6 +261,17 @@ impl AppState {
             );
             self.applied_calibration = self.ui_state.calibration;
         }
+
+        // Cheap (one small uniform write), so applied unconditionally every redraw rather than
+        // dirty-checked — unlike `midi_overlay.resize`'s full note-instance rebuild above, this
+        // needs no guard, and running it after the egui pass means a slider drag this frame is
+        // reflected in this same frame's render rather than lagging by one redraw.
+        let size = self.window.inner_size();
+        self.video_quad.update_viewport(
+            &self.gpu.queue,
+            (size.width, size.height),
+            &self.ui_state.transform,
+        );
 
         if self.ui_state.save_requested {
             self.ui_state.save_requested = false;
@@ -427,9 +441,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(size) => {
                 state.gpu.resize(size.width, size.height);
-                state
-                    .video_quad
-                    .update_viewport(&state.gpu.queue, (size.width, size.height));
+                state.video_quad.update_viewport(
+                    &state.gpu.queue,
+                    (size.width, size.height),
+                    &state.ui_state.transform,
+                );
                 state.midi_overlay.resize(
                     &state.gpu,
                     (size.width as f32, size.height as f32),

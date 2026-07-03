@@ -1,8 +1,10 @@
 struct Uniforms {
-    // Half-extents of the video quad in normalized device coordinates, i.e. the
-    // quad spans [-scale, scale] on each axis. Used to letterbox/pillarbox the
-    // video to fit the window while preserving its aspect ratio.
-    scale: vec2<f32>,
+    // 3x3 homography (letterbox scale + aspect-corrected rotation + tilt/keystone) mapping the
+    // unit quad to clip-space (x, y, w); see `video_quad::build_transform` for how it's built.
+    transform: mat3x3<f32>,
+    crop_uv_min: vec2<f32>,
+    crop_uv_max: vec2<f32>,
+    brightness: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -33,13 +35,19 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         vec2<f32>(1.0, 0.0),
     );
 
+    // (x, y, w) = transform * (local.x, local.y, 1); the GPU's own perspective divide by w
+    // turns the `tilt` terms baked into `transform` into a real keystone effect, and also
+    // perspective-corrects the uv interpolation below for free.
+    let transformed = uniforms.transform * vec3<f32>(positions[vertex_index], 1.0);
+
     var out: VertexOutput;
-    out.clip_position = vec4<f32>(positions[vertex_index] * uniforms.scale, 0.0, 1.0);
-    out.uv = uvs[vertex_index];
+    out.clip_position = vec4<f32>(transformed.x, transformed.y, 0.0, transformed.z);
+    out.uv = uniforms.crop_uv_min + uvs[vertex_index] * (uniforms.crop_uv_max - uniforms.crop_uv_min);
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(video_texture, video_sampler, in.uv);
+    let color = textureSample(video_texture, video_sampler, in.uv);
+    return vec4<f32>(color.rgb * uniforms.brightness, color.a);
 }
