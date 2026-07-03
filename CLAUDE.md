@@ -18,8 +18,8 @@ data flow, phased milestones, and tracked risks — lives in
 
 The project is being built milestone-by-milestone per that plan. Milestones 1 (scaffolding +
 plain video playback), 2 (MIDI + note highway overlay), 3 (manual sync + keyboard calibration +
-persistence), and 4 (brightness/scale/crop/rotate/tilt/translate video transform) are implemented
-so far.
+persistence), 4 (brightness/scale/crop/rotate/tilt/translate video transform), and 5 (MP4 export)
+are implemented so far.
 
 ## Commands
 
@@ -96,42 +96,40 @@ Not vendored, must be present on the machine:
 freemusic/
   Cargo.toml            # workspace root; pins wgpu ecosystem versions must stay in lockstep, see below
   app/                   # binary: winit + egui-wgpu shell
-    src/main.rs           # event loop, AppState (owns everything), redraw/composite/present
-    src/gpu.rs             # wgpu Instance/Adapter/Device/Surface setup
-    src/video_quad.rs       # aspect-correct textured-quad pass + brightness/scale/crop/rotate/tilt/translate
-    src/midi_overlay.rs      # loads a MIDI file, wraps Neothesia's WaterfallRenderer (see below)
-    src/ui.rs                 # transport bar, calibration/crop drag handles, sync/project/transform windows
-    src/shader.wgsl             # vertex/fragment shader for the video quad
+    src/main.rs           # event loop, AppState (owns everything), redraw/composite/present, export thread wiring
+    src/gpu.rs             # wgpu Instance/Adapter/Device/Surface setup (interactive window only)
+    src/ui.rs                # transport bar, calibration/crop drag handles, sync/project/transform/export windows
   crates/
     project/              # RON project model: paths, sync offset, keyboard calibration, video transform
     video-pipeline/       # ffmpeg-next decode + seek, no GPU/UI dependency
+    render/                # UI-agnostic compositor (video quad + MIDI waterfall), used headless by export too
+    mp4-encoder/            # forked ffmpeg-encoder: parameterized fps, explicit codec selection, optional audio
+    export/                  # headless-GPU offline render loop, audio mux, progress/cancel channel
   scripts/               # cargo check, run/screenshot/click/drag the app, gen synthetic test clips
 ```
 
-Crates from the plan's full architecture (`render`, `mp4-encoder`, `export`) don't exist yet —
-they land in later milestones. Don't scaffold them speculatively; add each when its milestone
-starts.
-
 ### Neothesia reuse (`midi-file`, `neothesia-core`)
 
-`app/Cargo.toml` depends on `midi-file` and `neothesia-core` as git deps pinned to an exact
-commit SHA of `PolyMeilex/Neothesia` (`e61639b12cc8e466b90406c564da5f9f54d8d1a3`, fetched
+`crates/render/Cargo.toml` depends on `midi-file` and `neothesia-core` as git deps pinned to an
+exact commit SHA of `PolyMeilex/Neothesia` (`e61639b12cc8e466b90406c564da5f9f54d8d1a3`, fetched
 2026-06-30) — never `master`, per the plan's "no semver safety net" risk. `neothesia-core`
 re-exports `wgpu_jumpstart::{Gpu, TransformUniform, Uniform, Color}` and the whole
 `piano_layout` crate at its root, so those don't need separate git-dep entries; add direct
 `wgpu-jumpstart`/`piano-layout` deps (same rev) only when a future crate needs them without
-going through `neothesia-core` (e.g. milestone 5's `export` crate wanting a headless
-`wgpu_jumpstart::Gpu` directly). Both resolve to `wgpu 29.0.4`, matching our own pin — verified
+going through `neothesia-core`. Both resolve to `wgpu 29.0.4`, matching our own pin — verified
 by `cargo build` producing a single `wgpu` entry in `Cargo.lock`, no duplicate-version errors.
 
-`app/src/midi_overlay.rs` wraps `neothesia_core::render::WaterfallRenderer`:
+`crates/render/src/midi_overlay.rs` wraps `neothesia_core::render::WaterfallRenderer` (this used
+to live in `app/src/`, moved out in milestone 5 — see the MP4 export section below for why):
 - `WaterfallRenderer::new`/`resize` take a `&neothesia_core::Gpu` (`wgpu_jumpstart::Gpu`), a
-  different type from our own `app::gpu::Gpu`. Rather than restructuring the app around
-  `wgpu_jumpstart::Gpu`, `midi_overlay::wrap_gpu` builds one on the fly from our existing
-  `wgpu::Instance`/`Adapter`/`Device`/`Queue` handles (all cheap `Arc`-backed clones) — its
-  fields are all `pub` with no constructor invariants to preserve. This is why `app::gpu::Gpu`
-  now also stores `instance`/`adapter` (unused by the video quad path) alongside
-  `device`/`queue`/`surface`.
+  different type from either of our own GPU structs (the interactive window's `app::gpu::Gpu`,
+  or export's headless `export::gpu::HeadlessGpu`). Rather than tying `render::midi_overlay` to
+  one of those, `midi_overlay::wrap_gpu` builds a `neothesia_core::Gpu` on the fly from a
+  `render::GpuHandles<'_>` — a small struct of borrowed `wgpu::Instance`/`Adapter`/`Device`/
+  `Queue` refs plus a `TextureFormat`, which both `app::gpu_handles(&gpu)` (interactive) and
+  `export::run_inner` (headless) construct from whichever concrete GPU struct they own.
+  `neothesia_core::Gpu`'s fields are all `pub` with no constructor invariants to preserve, so
+  cloning the cheap `Arc`-backed handles into it works regardless of which side built them.
 - Note lanes use the standard 88-key range (`piano_layout::KeyboardRange::standard_88_keys()`)
   always, but are now aligned to the keyboard visible in the footage via `KeyboardCalibration`
   (milestone 3, see below) rather than always spanning the full window width.
@@ -195,8 +193,8 @@ by `cargo build` producing a single `wgpu` entry in `Cargo.lock`, no duplicate-v
 - `project::VideoTransform` holds `brightness`, `scale` (zoom), `rotation_degrees`,
   `translate_x`/`translate_y` (pan), `tilt_x`/`tilt_y` (keystone), and a crop rect
   (`crop_left`/`crop_right`/`crop_top`/`crop_bottom`, fractions of the source frame like
-  `KeyboardCalibration`). All of it lives in `app/src/video_quad.rs`, applied in a single WGSL
-  pass — no new crate, no new render pass.
+  `KeyboardCalibration`). All of it lives in `crates/render/src/video_quad.rs` (moved out of
+  `app/src/` in milestone 5, unchanged otherwise — see below), applied in a single WGSL pass.
 - **Everything except brightness and crop is folded into one 3x3 homography matrix**
   (`video_quad::build_transform`), uploaded as a `mat3x3<f32>` uniform and applied to the quad's
   local `(x, y, 1)` coordinates as `(x', y', w') = transform * (x, y, 1)`; the vertex shader
@@ -290,22 +288,28 @@ it, rather than bumping `wgpu` independently.
 - `Gpu` (`app/src/gpu.rs`) owns the wgpu `Instance`/`Device`/`Queue`/`Surface` for the *interactive*
   window. Instance creation goes through
   `wgpu::InstanceDescriptor::new_without_display_handle_from_env()` specifically so `WGPU_BACKEND`
-  and friends are respected — needed for the WSL2 Vulkan-driver situation above.
-- `VideoQuad` (`app/src/video_quad.rs`) is a self-contained aspect-correct textured-quad pass:
-  uploads the latest `DecodedFrame`'s BGRA bytes to a `wgpu::Texture` (recreated only when the
-  frame size changes), and computes a letterbox/pillarbox scale uniform from
-  `(video_size, window_size)` each frame. It renders via 6 hardcoded vertices in the shader (no
-  vertex buffer) — see `shader.wgsl`.
+  and friends are respected — needed for the WSL2 Vulkan-driver situation above. `export::gpu::
+  HeadlessGpu` is the analogous struct for the export render loop, minus the `Surface`/`config`
+  (see the MP4 export section below).
+- `render::video_quad::VideoQuad` (`crates/render/src/video_quad.rs`) is a self-contained
+  aspect-correct textured-quad pass: uploads the latest `DecodedFrame`'s BGRA bytes to a
+  `wgpu::Texture` (recreated only when the frame size changes), and computes a letterbox/
+  pillarbox scale uniform from `(video_size, window_size)` each frame. It renders via 6
+  hardcoded vertices in the shader (no vertex buffer) — see `shader.wgsl`. Wrapped, along with
+  `midi_overlay`, by `render::Compositor` — see the MP4 export section for why this is a
+  separate crate rather than living directly in `app`.
 - `AppState::redraw` in `main.rs` is the per-frame orchestrator: advance/clamp the transport
-  position → `video_pipeline.seek_and_decode` → `video_quad.upload_frame` + `update_viewport` →
-  `midi_overlay.update(position - sync_offset)` → run egui (`ui::draw`) → apply any calibration
-  change / Save-Load button press queued by that egui pass (see the `project` crate section
-  above) → **two** render passes on the swapchain view → present. Playback continuation is
-  driven by `window.request_redraw()` called at the end of `redraw` whenever `ui_state.playing`
-  is true; the event loop otherwise sits in `ControlFlow::Wait`.
+  position → `video_pipeline.seek_and_decode` → `compositor.upload_frame` + `update_viewport` →
+  `compositor.update_midi(position - sync_offset)` → run egui (`ui::draw`) → apply any
+  calibration change / Save-Load/Export button press queued by that egui pass (see the
+  `project` crate section above and the MP4 export section below) → **two** render passes on
+  the swapchain view → present. Playback continuation is driven by `window.request_redraw()`
+  called at the end of `redraw` whenever `ui_state.playing` **or an export is running** is true
+  (see below); the event loop otherwise sits in `ControlFlow::Wait`.
 - **Two render passes, not one** (changed in milestone 2): a `scene_pass` (`LoadOp::Clear`)
-  draws `video_quad` then `midi_overlay` with a normally-scoped (non-`'static`) `RenderPass`,
-  followed by an `egui_pass` (`LoadOp::Load`, so it composites on top without clearing) using
+  draws `compositor` (video quad then MIDI waterfall) with a normally-scoped (non-`'static`)
+  `RenderPass`, followed by an `egui_pass` (`LoadOp::Load`, so it composites on top without
+  clearing) using
   `RenderPass::forget_lifetime()` for egui-wgpu's `'static` requirement. Milestone 1 used a
   single pass for video quad + egui, but `WaterfallRenderer::render<'rpass>(&'rpass mut self,
   pass: &mut RenderPass<'rpass>)` ties its `&mut self` borrow to the pass's lifetime
@@ -317,6 +321,87 @@ it, rather than bumping `wgpu` independently.
   (`egui::Image`, decoupling preview resolution from window size) would sidestep this
   differently — still worth doing eventually for the resolution decoupling, but not required to
   unblock milestone 2's compositing.
+
+### MP4 export (milestone 5)
+
+- **`crates/render` was extracted from `app/src/{video_quad,midi_overlay}.rs`** specifically so
+  export could reuse the exact same compositing pipeline (video quad + `WaterfallRenderer`)
+  against a second, headless GPU context — a binary crate (`app`) can't be a library dependency
+  of another crate, and the plan's original architecture already reserved `render` for this. The
+  move was mechanical (no behavior change): `render::Compositor` wraps `video_quad::VideoQuad`
+  and `midi_overlay::MidiOverlay` with `new`/`load_midi`/`resize`/`upload_frame`/
+  `update_viewport`/`update_midi`/`render` methods mirroring what `AppState` used to call on the
+  two fields directly. The one real generalization: `midi_overlay::wrap_gpu` used to take
+  `&app::gpu::Gpu`; it now takes a `render::GpuHandles<'_>` (borrowed `instance`/`adapter`/
+  `device`/`queue`/`texture_format`) so it works identically for `app::gpu::Gpu` (has a
+  `Surface`) and `export::gpu::HeadlessGpu` (doesn't).
+- **`crates/mp4-encoder` is a fork of Neothesia's `ffmpeg-encoder`** (copied from the pinned
+  checkout at `~/.cargo/git/checkouts/neothesia-*/*/ffmpeg-encoder`, not a git dependency —
+  upstream needed real changes, matching the plan's flagged risk that this crate "cannot be used
+  as-is"). Real deltas from upstream, everything else (the unsafe `ff.rs` FFI wrapper,
+  panic-on-FFI-error idiom) copied verbatim:
+  - `FRAME_RATE: i32 = 60` (hardcoded) → an `fps: u32` parameter on `mp4_encoder::new(..)`, and
+    `gop_size` scales with it (`fps` → one keyframe/sec) instead of a `12` tuned for 60fps
+    specifically.
+  - Explicit codec selection: `ff::Codec::find_by_name(c"libx264")` / `c"aac"` (falling back to
+    `output_format.video_codec()`/`audio_codec()` — i.e. `avcodec_find_encoder(id)` — if absent)
+    instead of trusting whichever encoder is registered first for the container's default codec
+    ID. `Codec::find_by_name`/`Codec::id` in `ff.rs` are the one small addition needed to make
+    this possible; everything else in `ff.rs` is an unmodified copy.
+  - **Audio is optional** (`with_audio: bool` on `mp4_encoder::new`) — upstream always created an
+    audio stream/codec. `scripts/gen-test-video.sh`'s synthetic clips have no audio track at all
+    (and real silent piano recordings are plausible too), so encoding silence would be both
+    wasted work and a wrong default; skip the stream entirely instead.
+  - `EncoderInfo` gained `sample_rate: i32` (the codec's actual chosen rate, read back after
+    construction) — `crates/export`'s audio resampler targets this rather than assuming 44100,
+    since the encoder (not the caller) is what actually decides the final rate.
+  - `ffmpeg-sys-next` is a plain crates.io dependency (version `"8"`, aliased to the `ffmpeg`
+    name in `Cargo.toml` since the copied source refers to it that way — matches Neothesia's own
+    workspace-level rename), not a git dependency — it already resolves to the same `8.1.0`
+    `ffmpeg-next` (video-pipeline's decoder) pulls in, so the "two different ffmpeg-sys-next
+    versions linked" risk the plan flagged doesn't actually bite here; verified via a single
+    `ffmpeg-sys-next` entry in `Cargo.lock`.
+- **`crates/export`** is the headless render loop, meant to be driven from a background thread
+  (`std::thread::spawn`) — `export::run(project: Project, settings: ExportSettings, progress:
+  mpsc::Sender<Progress>, cancel: Arc<AtomicBool>)` blocks for the whole export. `Project` is
+  taken by value (not `&Project`) specifically so the spawned closure can `move` an owned
+  snapshot without fighting the thread's `'static` bound.
+  - **Canvas size is the source video's own decoded width/height** (rounded down to even, since
+    yuv420p requires it), not the interactive window size — decouples export resolution from
+    whatever the window happened to be, and means export works correctly even if no window
+    dimension ever matched the video's aspect ratio.
+  - **Row-padding bug, found and fixed rather than copied from upstream**: `wgpu` requires
+    `bytes_per_row` in a `copy_texture_to_buffer` call to be a multiple of `
+    COPY_BYTES_PER_ROW_ALIGNMENT` (256). `neothesia-cli/src/main.rs`'s own example code (the
+    pattern this export loop is otherwise modeled on) copies with unpadded `width * 4`, which
+    only happens to validate for widths that are multiples of 64 — not true in general (e.g. a
+    854-wide source would fail wgpu's validation). Fixed by padding the readback buffer's stride
+    to 256 and stripping the padding back off per row before handing tightly-packed BGRA to the
+    encoder (mirrors, in reverse, the same per-row trim `video-pipeline::to_decoded_frame`
+    already does for the stride the *decoder* hands back).
+  - **Audio is decoded in a second, independent `ffmpeg_next::format::input` open**
+    (`crates/export/src/audio.rs`), not through `video-pipeline`'s `VideoPipeline` — that type's
+    `Input` is mid-seek-state-driven for `exact=true` video decode and isn't structured to
+    interleave audio packet extraction, and re-opening the file is cheap next to the cost of the
+    render loop itself. `audio::has_audio_stream` is a cheap pre-check (used to decide
+    `with_audio` for `mp4_encoder::new` before the encoder — and therefore its chosen
+    `sample_rate` — exists yet); the real decode+resample (`audio::decode_all`, using
+    `ffmpeg_next::software::resampling::Context`, part of `ffmpeg-next`'s default feature set —
+    no extra Cargo features needed) happens once, upfront, targeting that `sample_rate`, then the
+    export loop drains `EncoderInfo.frame_size`-sized chunks into `Frame::Audio` calls per output
+    frame (same accumulate-then-drain shape as `neothesia-cli`'s own synth-audio loop). A video
+    with no audio stream skips all of this and constructs the encoder with `with_audio: false`
+    rather than encoding silence.
+- **UI**: a floating "Export" window (`ui::draw_export_window`, same pattern as the other
+  floating windows) holds the output path text field (defaulted to `<video_stem>_export.mp4`,
+  never the source path itself), an fps `DragValue`, and swaps an "Export" button for a
+  progress bar + "Cancel" button once `ui_state.export_progress` is `Some`. `AppState::
+  start_export` snapshots a `Project` (via `snapshot_project`, shared with `save_project`) and
+  spawns the background thread; `redraw` drains `ExportRun::rx` each frame with `try_recv` in a
+  loop (non-blocking) and clears `export_run` once a `Done`/`Cancelled`/`Error` message arrives.
+  The end-of-`redraw` `window.request_redraw()` condition gained `|| self.export_run.is_some()`
+  so the progress bar keeps advancing even while playback is paused — otherwise the event loop's
+  `ControlFlow::Wait` would leave it frozen until some unrelated input woke it up.
 
 ## Verifying changes to `app` or `video-pipeline`
 
@@ -432,3 +517,25 @@ pixel-diffing screenshots isn't the right check. The pattern that worked, in ord
 5. A real `.mid` file already on the machine is fine to point the CLI arg at for this kind of
    test — the exact notes/timing don't matter for verifying calibration/offset/persistence
    plumbing, unlike milestone 2's overlay-rendering checks where note content mattered.
+
+### Verifying MP4 export (milestone 5 pattern)
+
+Export is neither a pure rendering change (screenshot-comparable) nor a simple UI-state
+round-trip (readable off an on-screen label) — the thing that actually needs checking is a
+video *file*, so the verification loop is different from milestones 2-4's:
+
+1. Drive the app exactly as in the drag-interaction pattern above (`run-app.sh` backgrounded,
+   `click.sh`/`drag.sh` against window-relative coordinates) to type an output path into the
+   "Export" window's text field and click "Export"; screenshot to confirm the progress bar
+   appears and advances across a couple of redraws (`export_run.is_some()` keeps the app
+   redrawing on its own — no need to nudge playback).
+2. Test both the no-audio and with-audio paths explicitly — they're genuinely different code
+   paths (`with_audio` gates whether `mp4-encoder` creates an audio stream at all), and
+   `scripts/gen-test-video.sh`'s own clips are video-only, so they alone won't exercise audio
+   muxing. Generate a second clip with a tone (`ffmpeg -f lavfi -i testsrc=... -f lavfi -i
+   "sine=frequency=440" -c:v libx264 -c:a aac -shortest ...`) to cover that path.
+3. **Verify the output file directly, not just that the app didn't crash**: `ffprobe` for
+   codec/duration/fps/dimensions, then extract a single mid-timeline frame
+   (`ffmpeg -i out.mp4 -vf "select=eq(n\,N)" -vframes 1 frame.png`) and read the PNG — this is
+   the only way to confirm the composited footage *and* the falling-notes overlay both actually
+   made it into the encoded file, versus e.g. silently exporting a blank or video-only frame.

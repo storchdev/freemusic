@@ -18,6 +18,16 @@ pub struct UiState {
     pub save_requested: bool,
     pub load_requested: bool,
     pub status_message: Option<String>,
+    /// Path typed into the Export text field; defaulted from the video path on first load.
+    pub export_path_text: String,
+    pub export_fps: u32,
+    /// Set by the Export/Cancel buttons; the app loop consumes and clears these each redraw.
+    pub export_requested: bool,
+    pub export_cancel_requested: bool,
+    /// `(frames done, total frames)` while an export is running, driven by the app loop
+    /// draining `export::Progress` off the background thread's channel; `None` otherwise.
+    pub export_progress: Option<(u64, u64)>,
+    pub export_message: Option<String>,
 }
 
 pub fn draw(ui: &mut egui::Ui, state: &mut UiState) {
@@ -26,6 +36,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut UiState) {
     draw_crop_handles(ui, screen, &mut state.transform);
     draw_sync_and_project_window(ui, state);
     draw_transform_window(ui, &mut state.transform);
+    draw_export_window(ui, state);
     if state.dropping {
         draw_drop_overlay(ui, screen);
     }
@@ -381,6 +392,47 @@ fn draw_sync_and_project_window(ui: &egui::Ui, state: &mut UiState) {
                 }
             });
             if let Some(message) = &state.status_message {
+                ui.label(message);
+            }
+        });
+}
+
+/// Floating window driving MP4 export: output path, fps, and an Export button that becomes a
+/// progress bar + Cancel once `export_progress` is `Some` (set by the app loop while a
+/// background export thread is running — see `main.rs`'s `AppState::start_export`).
+fn draw_export_window(ui: &egui::Ui, state: &mut UiState) {
+    egui::Window::new("Export")
+        .default_pos(egui::pos2(660.0, 20.0))
+        .resizable(false)
+        .show(ui.ctx(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Output file:");
+                ui.text_edit_singleline(&mut state.export_path_text);
+            });
+            ui.horizontal(|ui| {
+                ui.label("FPS:");
+                ui.add(egui::DragValue::new(&mut state.export_fps).range(1..=120));
+            });
+
+            if let Some((done, total)) = state.export_progress {
+                let fraction = if total > 0 {
+                    done as f32 / total as f32
+                } else {
+                    0.0
+                };
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .show_percentage()
+                        .text(format!("{done} / {total} frames")),
+                );
+                if ui.button("Cancel").clicked() {
+                    state.export_cancel_requested = true;
+                }
+            } else if ui.button("Export").clicked() {
+                state.export_requested = true;
+            }
+
+            if let Some(message) = &state.export_message {
                 ui.label(message);
             }
         });

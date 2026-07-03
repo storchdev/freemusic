@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["app", "crates/project", "crates/video-pipeline"]
+members = [
+  "app",
+  "crates/export",
+  "crates/mp4-encoder",
+  "crates/project",
+  "crates/render",
+  "crates/video-pipeline",
+]
 
 [workspace.package]
 edition = "2021"

@@ -103,10 +103,10 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
- "midi-file",
- "neothesia-core",
+ "export",
  "pollster",
  "project",
+ "render",
  "video-pipeline",
  "wgpu",
  "winit",
@@ -756,6 +756,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "export"
+version = "0.1.0"
+dependencies = [
+ "ffmpeg-next",
+ "mp4-encoder",
+ "pollster",
+ "project",
+ "render",
+ "video-pipeline",
+ "wgpu",
 ]
 
 [[package]]
@@ -1528,6 +1541,14 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "mp4-encoder"
+version = "0.0.0"
+dependencies = [
+ "ffmpeg-sys-next",
+ "libc",
 ]
 
 [[package]]
@@ -2380,6 +2401,17 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "render"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "midi-file",
+ "neothesia-core",
+ "project",
+ "wgpu",
+]
 
 [[package]]
 name = "renderdoc-sys"

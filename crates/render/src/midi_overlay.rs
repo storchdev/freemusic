@@ -26,8 +26,19 @@ struct Loaded {
     renderer: WaterfallRenderer,
 }
 
+/// Raw wgpu handles needed to build a `neothesia_core::Gpu` view (see `wrap_gpu`), taken instead
+/// of a single app-specific `Gpu` struct so this works identically for the interactive window's
+/// GPU and export's headless one.
+pub struct GpuHandles<'a> {
+    pub instance: &'a wgpu::Instance,
+    pub adapter: &'a wgpu::Adapter,
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub texture_format: wgpu::TextureFormat,
+}
+
 impl MidiOverlay {
-    pub fn new(gpu: &crate::gpu::Gpu) -> Self {
+    pub fn new(gpu: &GpuHandles) -> Self {
         let ngpu = wrap_gpu(gpu);
         Self {
             config: Config::default(),
@@ -47,7 +58,7 @@ impl MidiOverlay {
     /// Parses `path` as a MIDI file and (re)builds the waterfall pipeline for it.
     pub fn load(
         &mut self,
-        gpu: &crate::gpu::Gpu,
+        gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
         path: &Path,
@@ -70,7 +81,7 @@ impl MidiOverlay {
     /// Recomputes the projection and note-lane layout for a new viewport size or calibration.
     pub fn resize(
         &mut self,
-        gpu: &crate::gpu::Gpu,
+        gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
     ) {
@@ -132,13 +143,13 @@ fn apply_left_offset(renderer: &mut WaterfallRenderer, gpu: &neothesia_core::Gpu
     renderer.pipeline().prepare(&gpu.device, &gpu.queue);
 }
 
-/// Builds a `neothesia_core::Gpu` view over our own `wgpu` device/queue/adapter/instance.
+/// Builds a `neothesia_core::Gpu` view over the caller's own `wgpu` device/queue/adapter/instance.
 /// `wgpu_jumpstart::Gpu` (re-exported as `neothesia_core::Gpu`) is a plain struct of public
-/// fields with no invariants tying it to how it was constructed, so this just clones our
-/// already-created handles into it rather than going through its own (surface-owning) `new`.
-/// The `encoder` field is unused by `WaterfallRenderer` — it only exists to satisfy the
-/// struct's shape, so a throwaway one is fine here.
-fn wrap_gpu(gpu: &crate::gpu::Gpu) -> neothesia_core::Gpu {
+/// fields with no invariants tying it to how it was constructed, so this just clones the given
+/// handles into it rather than going through its own (surface-owning) `new`. The `encoder` field
+/// is unused by `WaterfallRenderer` — it only exists to satisfy the struct's shape, so a
+/// throwaway one is fine here.
+fn wrap_gpu(gpu: &GpuHandles) -> neothesia_core::Gpu {
     neothesia_core::Gpu {
         instance: gpu.instance.clone(),
         adapter: gpu.adapter.clone(),
@@ -149,6 +160,6 @@ fn wrap_gpu(gpu: &crate::gpu::Gpu) -> neothesia_core::Gpu {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("neothesia_core_gpu_wrapper_unused_encoder"),
             }),
-        texture_format: gpu.config.format,
+        texture_format: gpu.texture_format,
     }
 }
