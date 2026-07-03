@@ -49,7 +49,22 @@ impl VideoPipeline {
             input.duration() as f64 / f64::from(ffmpeg::rescale::TIME_BASE)
         };
 
-        let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
+        let mut context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
+        // Frame-level multithreading: `avcodec_open2` (called inside `.video()` below) reads
+        // `thread_count`/`thread_type` at open time, and leaving them unset defaults to
+        // single-threaded decode. That's fine for `scripts/gen-test-video.sh`'s small synthetic
+        // clips but not for real footage — a 1920x1080 H.264 clip measured ~4.7ms/frame average
+        // (p95 7ms, spikes over 20ms) decoding on one thread, enough to blow well past a single
+        // redraw's budget and stutter during playback. `Type::Frame` (not `Type::Slice`) because
+        // consumer camera encoders (the case this app targets) typically write one slice per
+        // frame, so slice-threading has nothing to parallelize; frame-threading decodes multiple
+        // frames concurrently instead, at the cost of a few frames of decode latency — irrelevant
+        // for a scrub/playback pipeline that's never decoding "live". `count: 0` lets libavcodec
+        // pick the thread count itself (capped by the stream's own reference-frame count/level).
+        context.set_threading(ffmpeg::threading::Config {
+            kind: ffmpeg::threading::Type::Frame,
+            count: 0,
+        });
         let decoder = context.decoder().video()?;
 
         let width = decoder.width();

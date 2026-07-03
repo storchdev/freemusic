@@ -303,6 +303,25 @@ it, rather than bumping `wgpu` independently.
   base there silently produces near-zero seek targets in most cases (a small stream-timebase
   count reinterpreted as microseconds is much smaller than intended) — the failure mode looks like
   "seeking always jumps back near the start" and is easy to misdiagnose as a decoder or GOP issue.
+- **Fixed: decoder never opted into multithreading, so real (non-synthetic) footage stuttered**.
+  `VideoPipeline::open` used to call `context.decoder().video()?` straight after
+  `Context::from_parameters`, never touching `thread_count`/`thread_type` — `avcodec_open2`
+  (invoked inside `.video()`) reads those at open time and defaults to single-threaded decode
+  when they're left unset. Invisible with `scripts/gen-test-video.sh`'s small 640x360 synthetic
+  clips (sub-millisecond decode either way) but real camera footage is a different story: a
+  1920x1080 H.264 clip measured (via `crates/video-pipeline/examples/decode_bench.rs`, a
+  headless bench that calls `seek_and_decode` in a tight loop with no window/GPU involved —
+  `cargo run --release --example decode_bench -p video-pipeline -- <video>`) averaged 4.7ms/frame
+  single-threaded, p95 7.1ms, with spikes over 20ms — enough to blow through a single redraw's
+  budget and visibly stutter. Fixed by `context.set_threading(threading::Config { kind:
+  threading::Type::Frame, count: 0 })` before opening: `Type::Frame` (not `Type::Slice`) because
+  consumer camera encoders typically write one slice per frame, so slice-threading has nothing to
+  parallelize, while frame-threading decodes multiple frames concurrently at the cost of a few
+  frames of decode latency — irrelevant here since nothing in this pipeline decodes "live" against
+  a real-time deadline. `count: 0` lets libavcodec pick its own thread count. Re-measured on the
+  same clip: avg 1.5ms, p95 2-3.4ms, no more scattered spikes through steady-state playback — the
+  only elevated readings left are the first one or two calls (thread-pool spin-up / frame-pipeline
+  fill latency), a one-time cost paid once at load, not a recurring stutter.
 
 ### Rendering (app)
 
