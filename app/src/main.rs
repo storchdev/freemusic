@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use gpu::Gpu;
 use midi_overlay::MidiOverlay;
+use project::{KeyboardCalibration, Project};
 use ui::UiState;
 use video_pipeline::VideoPipeline;
 use video_quad::VideoQuad;
@@ -27,7 +28,13 @@ struct AppState {
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
     pipeline: Option<VideoPipeline>,
+    video_path: Option<PathBuf>,
+    midi_path: Option<PathBuf>,
     midi_overlay: MidiOverlay,
+    /// Calibration last used to build the waterfall layout; compared against `ui_state.calibration`
+    /// each redraw so a drag only triggers the (fairly heavy, full-rebuild) `midi_overlay.resize`
+    /// when it actually changed, not every frame.
+    applied_calibration: KeyboardCalibration,
     ui_state: UiState,
     last_instant: Instant,
 }
@@ -74,7 +81,10 @@ impl AppState {
             egui_state,
             egui_renderer,
             pipeline: None,
+            video_path: None,
+            midi_path: None,
             midi_overlay,
+            applied_calibration: KeyboardCalibration::default(),
             ui_state: UiState {
                 playing: false,
                 position_seconds: 0.0,
@@ -82,14 +92,22 @@ impl AppState {
                 seek_request: None,
                 dropping: false,
                 midi_name: None,
+                sync_offset_seconds: 0.0,
+                calibration: KeyboardCalibration::default(),
+                project_path_text: String::new(),
+                save_requested: false,
+                load_requested: false,
+                status_message: None,
             },
             last_instant: Instant::now(),
         };
 
         let size = state.window.inner_size();
-        state
-            .midi_overlay
-            .resize(&state.gpu, (size.width as f32, size.height as f32));
+        state.midi_overlay.resize(
+            &state.gpu,
+            (size.width as f32, size.height as f32),
+            &state.ui_state.calibration,
+        );
 
         if let Some(path) = video_path {
             state.load_video(path);
@@ -131,19 +149,63 @@ impl AppState {
         }
 
         self.pipeline = Some(pipeline);
+        self.video_path = Some(path.to_path_buf());
+        if self.ui_state.project_path_text.is_empty() {
+            self.ui_state.project_path_text = default_project_path(path).display().to_string();
+        }
     }
 
     /// Parses `path` as a MIDI file and (re)builds the waterfall overlay for it.
     fn load_midi(&mut self, path: &Path) {
         let size = self.window.inner_size();
-        match self
-            .midi_overlay
-            .load(&self.gpu, (size.width as f32, size.height as f32), path)
-        {
+        match self.midi_overlay.load(
+            &self.gpu,
+            (size.width as f32, size.height as f32),
+            &self.ui_state.calibration,
+            path,
+        ) {
             Ok(()) => {
+                self.midi_path = Some(path.to_path_buf());
                 self.ui_state.midi_name = self.midi_overlay.loaded_name().map(str::to_owned);
             }
             Err(err) => eprintln!("failed to open midi file {path:?}: {err}"),
+        }
+    }
+
+    /// Serializes the current video/MIDI paths, sync offset, and calibration to the path in
+    /// the project text field.
+    fn save_project(&mut self) {
+        let project = Project {
+            video_path: self.video_path.clone(),
+            midi_path: self.midi_path.clone(),
+            sync_offset_seconds: self.ui_state.sync_offset_seconds,
+            calibration: self.ui_state.calibration,
+        };
+        let path = PathBuf::from(&self.ui_state.project_path_text);
+        self.ui_state.status_message = Some(match project.save(&path) {
+            Ok(()) => format!("Saved to {}", path.display()),
+            Err(err) => err,
+        });
+    }
+
+    /// Loads a project from the path in the project text field, replacing the current video,
+    /// MIDI, sync offset, and calibration with whatever it contains.
+    fn load_project(&mut self) {
+        let path = PathBuf::from(&self.ui_state.project_path_text);
+        match Project::load(&path) {
+            Ok(project) => {
+                self.ui_state.sync_offset_seconds = project.sync_offset_seconds;
+                self.ui_state.calibration = project.calibration;
+                if let Some(video_path) = project.video_path.clone() {
+                    self.load_video(&video_path);
+                }
+                if let Some(midi_path) = project.midi_path.clone() {
+                    self.load_midi(&midi_path);
+                }
+                self.ui_state.project_path_text = path.display().to_string();
+                self.ui_state.status_message = Some(format!("Loaded {}", path.display()));
+            }
+            Err(err) => self.ui_state.status_message = Some(err),
         }
     }
 
@@ -176,14 +238,35 @@ impl AppState {
                     .update_viewport(&self.gpu.queue, (size.width, size.height));
             }
         }
-        self.midi_overlay
-            .update(self.ui_state.position_seconds as f32);
+        let midi_time = self.ui_state.position_seconds - self.ui_state.sync_offset_seconds;
+        self.midi_overlay.update(midi_time as f32);
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
-        let ui_state = &mut self.ui_state;
-        let full_output = self.egui_ctx.run_ui(raw_input, |ui| {
-            ui::draw(ui, ui_state);
-        });
+        let full_output = {
+            let ui_state = &mut self.ui_state;
+            self.egui_ctx.run_ui(raw_input, |ui| {
+                ui::draw(ui, ui_state);
+            })
+        };
+
+        if self.ui_state.calibration != self.applied_calibration {
+            let size = self.window.inner_size();
+            self.midi_overlay.resize(
+                &self.gpu,
+                (size.width as f32, size.height as f32),
+                &self.ui_state.calibration,
+            );
+            self.applied_calibration = self.ui_state.calibration;
+        }
+
+        if self.ui_state.save_requested {
+            self.ui_state.save_requested = false;
+            self.save_project();
+        }
+        if self.ui_state.load_requested {
+            self.ui_state.load_requested = false;
+            self.load_project();
+        }
 
         let paint_jobs = self
             .egui_ctx
@@ -296,6 +379,15 @@ impl AppState {
     }
 }
 
+/// Default project save path for a freshly loaded video: alongside it, same stem, `.fmproj.ron`
+/// extension. Only used to prefill the project text field, never overwrites a path the user
+/// already typed in.
+fn default_project_path(video_path: &Path) -> PathBuf {
+    let mut path = video_path.to_path_buf();
+    path.set_extension("fmproj.ron");
+    path
+}
+
 struct App {
     video_path: Option<PathBuf>,
     midi_path: Option<PathBuf>,
@@ -338,9 +430,11 @@ impl ApplicationHandler for App {
                 state
                     .video_quad
                     .update_viewport(&state.gpu.queue, (size.width, size.height));
-                state
-                    .midi_overlay
-                    .resize(&state.gpu, (size.width as f32, size.height as f32));
+                state.midi_overlay.resize(
+                    &state.gpu,
+                    (size.width as f32, size.height as f32),
+                    &state.ui_state.calibration,
+                );
                 return;
             }
             WindowEvent::HoveredFile(_) => {

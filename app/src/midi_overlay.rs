@@ -1,10 +1,10 @@
 //! Loads a MIDI file and renders its falling-notes "note highway" above the video quad,
 //! reusing Neothesia's own `WaterfallRenderer` (see CLAUDE.md for the pinned commit).
 //!
-//! Milestone 2 scope: naive placeholder calibration only — note lanes always span the full
-//! window width with the standard 88-key range, not yet aligned to the keyboard visible in
-//! the footage (that's milestone 3's calibration overlay), and `update`'s `time` argument is
-//! the raw transport position with no sync offset applied (milestone 3 too).
+//! Note lanes are aligned to the real keyboard visible in the footage via `KeyboardCalibration`
+//! (left/right fractions of window width, set by the user dragging guide handles — see
+//! `ui::draw_calibration_handles`). `update`'s `time` argument is expected to already have the
+//! manual sync offset applied by the caller (`midi_time = transport_time - sync_offset_seconds`).
 
 use std::path::Path;
 
@@ -13,6 +13,7 @@ use neothesia_core::config::Config;
 use neothesia_core::piano_layout::{KeyboardLayout, KeyboardRange, Sizing};
 use neothesia_core::render::WaterfallRenderer;
 use neothesia_core::{TransformUniform, Uniform};
+use project::KeyboardCalibration;
 
 pub struct MidiOverlay {
     config: Config,
@@ -48,24 +49,31 @@ impl MidiOverlay {
         &mut self,
         gpu: &crate::gpu::Gpu,
         viewport: (f32, f32),
+        calibration: &KeyboardCalibration,
         path: &Path,
     ) -> Result<(), String> {
         let ngpu = wrap_gpu(gpu);
         let midi = MidiFile::new(path)?;
-        let renderer = WaterfallRenderer::new(
+        let mut renderer = WaterfallRenderer::new(
             &ngpu,
             &midi.tracks,
             &[],
             &self.config,
             &self.transform,
-            keyboard_layout(viewport),
+            keyboard_layout(viewport, calibration),
         );
+        apply_left_offset(&mut renderer, &ngpu, viewport.0 * calibration.left_fraction);
         self.loaded = Some(Loaded { midi, renderer });
         Ok(())
     }
 
-    /// Recomputes the projection and note-lane layout for a new viewport size.
-    pub fn resize(&mut self, gpu: &crate::gpu::Gpu, viewport: (f32, f32)) {
+    /// Recomputes the projection and note-lane layout for a new viewport size or calibration.
+    pub fn resize(
+        &mut self,
+        gpu: &crate::gpu::Gpu,
+        viewport: (f32, f32),
+        calibration: &KeyboardCalibration,
+    ) {
         let ngpu = wrap_gpu(gpu);
         self.transform.data.update(viewport.0, viewport.1, 1.0);
         self.transform.update(&ngpu.queue);
@@ -73,11 +81,17 @@ impl MidiOverlay {
         if let Some(loaded) = self.loaded.as_mut() {
             loaded
                 .renderer
-                .resize(&self.config, keyboard_layout(viewport));
+                .resize(&self.config, keyboard_layout(viewport, calibration));
+            apply_left_offset(
+                &mut loaded.renderer,
+                &ngpu,
+                viewport.0 * calibration.left_fraction,
+            );
         }
     }
 
-    /// Advances the waterfall to `time_seconds`, the raw (unsynced) transport position.
+    /// Advances the waterfall to `time_seconds`, expected to already have the sync offset
+    /// subtracted by the caller.
     pub fn update(&mut self, time_seconds: f32) {
         if let Some(loaded) = self.loaded.as_mut() {
             loaded.renderer.update(time_seconds);
@@ -91,11 +105,31 @@ impl MidiOverlay {
     }
 }
 
-fn keyboard_layout((width, height): (f32, f32)) -> KeyboardLayout {
+/// Builds a keyboard layout sized to fit between the calibrated left/right bounds rather than
+/// the full window width. `KeyboardLayout::from_range` always starts its keys at x=0, so the
+/// left bound itself is applied afterward by `apply_left_offset` shifting note positions.
+fn keyboard_layout(
+    (width, height): (f32, f32),
+    calibration: &KeyboardCalibration,
+) -> KeyboardLayout {
     let range = KeyboardRange::standard_88_keys();
-    let neutral_width = width / range.white_count() as f32;
+    let keyboard_width =
+        (width * (calibration.right_fraction - calibration.left_fraction)).max(1.0);
+    let neutral_width = keyboard_width / range.white_count() as f32;
     let neutral_height = height * 0.2;
     KeyboardLayout::from_range(Sizing::new(neutral_width, neutral_height), range)
+}
+
+/// Shifts every already-built note instance right by `left_x` pixels and re-uploads the
+/// instance buffer. `piano_layout::KeyboardLayout` has no concept of a horizontal offset (its
+/// keys always start at x=0), so this is how the calibrated left bound is actually applied —
+/// `WaterfallPipeline::instances`/`prepare` are both plain public methods on the renderer's
+/// pipeline, so this doesn't need any upstream fork.
+fn apply_left_offset(renderer: &mut WaterfallRenderer, gpu: &neothesia_core::Gpu, left_x: f32) {
+    for instance in renderer.pipeline().instances() {
+        instance.position[0] += left_x;
+    }
+    renderer.pipeline().prepare(&gpu.device, &gpu.queue);
 }
 
 /// Builds a `neothesia_core::Gpu` view over our own `wgpu` device/queue/adapter/instance.

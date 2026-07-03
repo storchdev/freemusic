@@ -17,7 +17,8 @@ data flow, phased milestones, and tracked risks — lives in
 `~/.claude/plans/i-want-to-plan-vast-shore.md`; read it before making architectural changes.
 
 The project is being built milestone-by-milestone per that plan. Milestones 1 (scaffolding +
-plain video playback) and 2 (MIDI + note highway overlay) are implemented so far.
+plain video playback), 2 (MIDI + note highway overlay), and 3 (manual sync + keyboard
+calibration + persistence) are implemented so far.
 
 ## Commands
 
@@ -66,15 +67,16 @@ freemusic/
     src/gpu.rs             # wgpu Instance/Adapter/Device/Surface setup
     src/video_quad.rs       # aspect-correct textured-quad render pass for the decoded video frame
     src/midi_overlay.rs      # loads a MIDI file, wraps Neothesia's WaterfallRenderer (see below)
-    src/ui.rs                 # egui transport bar (play/pause, timecode, scrub slider, drop overlay)
+    src/ui.rs                 # transport bar, calibration drag handles, sync/project floating window
     src/shader.wgsl             # vertex/fragment shader for the video quad
   crates/
+    project/              # RON project model: paths, sync offset, keyboard calibration
     video-pipeline/       # ffmpeg-next decode + seek, no GPU/UI dependency
 ```
 
-Crates from the plan's full architecture (`project`, `render`, `mp4-encoder`, `export`) don't
-exist yet — they land in later milestones. Don't scaffold them speculatively; add each when its
-milestone starts.
+Crates from the plan's full architecture (`render`, `mp4-encoder`, `export`) don't exist yet —
+they land in later milestones. Don't scaffold them speculatively; add each when its milestone
+starts.
 
 ### Neothesia reuse (`midi-file`, `neothesia-core`)
 
@@ -96,14 +98,62 @@ by `cargo build` producing a single `wgpu` entry in `Cargo.lock`, no duplicate-v
   fields are all `pub` with no constructor invariants to preserve. This is why `app::gpu::Gpu`
   now also stores `instance`/`adapter` (unused by the video quad path) alongside
   `device`/`queue`/`surface`.
-- Milestone 2 calibration is intentionally naive: note lanes always span the full window width
-  with the standard 88-key range (`piano_layout::KeyboardRange::standard_88_keys()`), not yet
-  aligned to the keyboard visible in the footage — that's milestone 3. `MidiOverlay::update`'s
-  `time_seconds` is the raw transport position with no sync offset applied yet either.
+- Note lanes use the standard 88-key range (`piano_layout::KeyboardRange::standard_88_keys()`)
+  always, but are now aligned to the keyboard visible in the footage via `KeyboardCalibration`
+  (milestone 3, see below) rather than always spanning the full window width.
+  `MidiOverlay::update`'s `time_seconds` argument is expected to already have the sync offset
+  subtracted by the caller (`main.rs` computes `midi_time = position_seconds -
+  sync_offset_seconds` once per redraw) — `midi_overlay.rs` itself has no notion of sync offset.
 - `neothesia_core::config::Config::default()` is used as-is rather than `Config::new()`, which
   would read `~/.config/neothesia/settings.ron` if the user happens to have real Neothesia
   installed — harmless (read-only, falls back to defaults) but an unnecessary external coupling
   we don't need since we don't call `.save()`.
+- **Keyboard calibration has no support in `piano_layout` itself** — `KeyboardLayout::from_range`
+  always lays keys out starting at local x=0, with no offset parameter. Rather than forking
+  `piano-layout`, `midi_overlay::keyboard_layout` sizes the layout to fit the *calibrated width*
+  (`(right_fraction - left_fraction) * window_width`, not the full window width), and a separate
+  helper `apply_left_offset` shifts every already-built `NoteInstance.position[0]` right by the
+  calibrated left edge in pixels, then re-uploads via `WaterfallPipeline::prepare` — both
+  `WaterfallRenderer::pipeline()` and `WaterfallPipeline::instances()`/`prepare()` are plain public
+  methods, so this needed no upstream changes. Called after both `WaterfallRenderer::new` (in
+  `load`) and `::resize` (in `resize`), since either rebuilds instances from scratch at local
+  x=0.
+
+### Manual sync, calibration, and project persistence (`project` crate)
+
+- `crates/project` is a small serde/RON model (`Project { video_path, midi_path,
+  sync_offset_seconds, calibration }` plus `KeyboardCalibration { left_fraction, right_fraction }`)
+  with `Project::save`/`Project::load` (`Result<_, String>`, matching the error-handling style
+  already used at `midi_overlay::load`'s boundary). `KeyboardCalibration` stores *fractions* of
+  window width (0.0–1.0), not pixels, so a calibration survives a window resize or reloading a
+  differently-sized video.
+- **Sync semantics**: `midi_time = position_seconds - sync_offset_seconds`, computed once per
+  redraw in `AppState::redraw` before calling `midi_overlay.update`. Video (plus its audio, once
+  export exists) is always the master clock; dragging the offset (an `egui::DragValue` in the
+  floating "Sync & Project" window) only moves where notes render relative to it, never touches
+  playback position — matches the plan's sync design.
+- **Calibration UI is drag handles directly on the video preview**, not sliders — two vertical
+  lines (`ui::draw_calibration_handles`) the user drags left/right to mark the real keyboard's
+  edges in the footage. Implemented with `ui.interact(rect, id, Sense::drag())` per handle and
+  `Response::drag_delta()` accumulated into the fraction (not `interact_pointer_pos()`, which is
+  less robust once the pointer leaves the handle's hit-rect mid-drag). Handles stop 60px above
+  the bottom of the window so they don't fight the transport bar for drag input.
+- **The sync offset / project controls live in a floating `egui::Window`**, not a
+  `egui::Panel::left`/`::right`. A side panel would work fine functionally, but panels
+  permanently reserve screen space every frame — and since the video quad still renders directly
+  to the full swapchain (no offscreen-texture indirection yet, see below), a side panel would
+  just paint its background over a strip of the video with no way to shrink the video to match.
+  A floating, user-dragged-out-of-the-way `Window` avoids that without requiring the
+  offscreen-texture refactor early.
+- `AppState` tracks `applied_calibration` (last `KeyboardCalibration` actually used to build the
+  waterfall layout) and compares it against `ui_state.calibration` once per redraw, only calling
+  `midi_overlay.resize` (a full note-instance rebuild) when they differ — avoids rebuilding every
+  single frame during an active drag.
+- Project save/load is driven by a text field (typed project file path) plus Save/Load buttons,
+  not a native file-picker dialog — deliberately, to avoid an `rfd`-style dependency for what the
+  plan doesn't otherwise require yet. `default_project_path` in `main.rs` prefills the field from
+  the loaded video's path (`song.mp4` → `song.fmproj.ron`) the first time a video loads, but never
+  overwrites a path the user already typed in.
 
 ### `wgpu`/`egui-wgpu` version pinning
 
@@ -154,10 +204,11 @@ it, rather than bumping `wgpu` independently.
   vertex buffer) — see `shader.wgsl`.
 - `AppState::redraw` in `main.rs` is the per-frame orchestrator: advance/clamp the transport
   position → `video_pipeline.seek_and_decode` → `video_quad.upload_frame` + `update_viewport` →
-  `midi_overlay.update` → run egui (`ui::draw`) → **two** render passes on the swapchain view →
-  present. Playback continuation is driven by `window.request_redraw()` called at the end of
-  `redraw` whenever `ui_state.playing` is true; the event loop otherwise sits in
-  `ControlFlow::Wait`.
+  `midi_overlay.update(position - sync_offset)` → run egui (`ui::draw`) → apply any calibration
+  change / Save-Load button press queued by that egui pass (see the `project` crate section
+  above) → **two** render passes on the swapchain view → present. Playback continuation is
+  driven by `window.request_redraw()` called at the end of `redraw` whenever `ui_state.playing`
+  is true; the event loop otherwise sits in `ControlFlow::Wait`.
 - **Two render passes, not one** (changed in milestone 2): a `scene_pass` (`LoadOp::Clear`)
   draws `video_quad` then `midi_overlay` with a normally-scoped (non-`'static`) `RenderPass`,
   followed by an `egui_pass` (`LoadOp::Load`, so it composites on top without clearing) using
@@ -201,14 +252,54 @@ git history for milestone 2's throwaway generator if a reference is useful.
 
 ### Screenshotting the app under WSL2
 
-WSLg's Weston compositor does **not** support the `wlr-screencopy` protocol, so `grim` fails
-with "compositor doesn't support the screen capture protocol", and the app's winit window (real
-Wayland, not XWayland) isn't visible to X11 tools like `xdotool`/`import` either — only
-WSLg-internal windows (e.g. "Weston WM") show up there. What does work: WSLg surfaces each app
-window as a *native Windows window*, so PowerShell interop from WSL can find and capture it —
+WSLg's Weston compositor does **not** support the `wlr-screencopy` protocol, so `grim` fails with
+"compositor doesn't support the screen capture protocol" against the default `WAYLAND_DISPLAY`.
+
+**Simplest working method**: force the X11 backend by launching with `WAYLAND_DISPLAY` unset
+(`env -u WAYLAND_DISPLAY DISPLAY=:0 cargo run --bin app -- ...`; see the `libxkbcommon-x11`
+dependency note above for why this fallback exists at all). Once running on X11/XWayland, the
+window shows up for standard tools: `DISPLAY=:0 xdotool search --name freemusic` finds the window
+id, `DISPLAY=:0 import -window <id> out.png` captures it, and `xdotool mousemove --window <id> x y
+click 1` / `mousedown`/`mousemove`/`mouseup` sequences (for drags) drive it. Don't bother with the
+default Wayland-backend run for screenshotting — that window isn't visible to any X11 tool.
+
+Fallback if X11-backend forcing ever stops working: WSLg surfaces each app window as a *native
+Windows window* too, so PowerShell interop from WSL can find and capture it —
 `Get-Process | Where-Object MainWindowTitle -like "freemusic*"` finds the window (title is
 `"freemusic (<distro>)"`), then `user32.dll`'s `SetForegroundWindow`/`GetWindowRect` +
 `System.Drawing.Graphics.CopyFromScreen` over that rect captures it to a PNG. Invoke via
-`powershell.exe -NoProfile -ExecutionPolicy Bypass -File <script>.ps1 <out-path>`, converting
-WSL paths to Windows paths with `wslpath -w` first. `System.Windows.Forms.SendKeys` from the
-same script can drive keyboard input (e.g. Space to toggle play) after focusing the window.
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File <script>.ps1 <out-path>`, converting WSL
+paths to Windows paths with `wslpath -w` first. `System.Windows.Forms.SendKeys` from the same
+script can drive keyboard input (e.g. Space to toggle play) after focusing the window.
+
+### Verifying drag interactions and persistence (milestone 3 pattern)
+
+Milestone 3's actual content — calibration handles, sync-offset drag value, save/load — is
+interaction rather than rendering, so pixel-diffing screenshots isn't the right check. The
+pattern that worked, in order:
+
+1. Launch the app backgrounded (`run_in_background`/`&` + a log file), not foreground — you need
+   the shell free afterward to fire `xdotool` commands at the still-running process. Confirm
+   it's alive and the window exists (`xdotool search --name freemusic`) before proceeding, since a
+   crash-on-launch otherwise just looks like "no window found" and is easy to misattribute to the
+   screenshot tooling instead.
+2. Drive one widget at a time, screenshotting after each: `xdotool mousemove --window <id> x y
+   click 1` for a button; for a drag (calibration handles, the sync offset `DragValue`),
+   `mousemove` to the start point, `mousedown 1`, `mousemove` to the end point, `mouseup 1`, each
+   as separate `xdotool` invocations with a short `sleep` between — a single combined
+   mousedown/move/mouseup in one invocation doesn't reliably register as a drag.
+3. **Read back the result from the UI's own on-screen state, not pixel positions.** The "Sync &
+   Project" window prints the live calibration fraction (`"Keyboard: 0%–71% of width"`) and the
+   sync offset value directly — screenshot and eyeball those numbers rather than trying to
+   measure a handle's pixel position or infer a note lane's on-screen offset. This is why that
+   readout label was worth adding to the UI in the first place: it turns "did the drag work" from
+   a pixel-measurement problem into a text-reading one.
+4. For save/load specifically: click Save, `cat` the resulting `.ron` file directly (fastest way
+   to confirm the written values, no screenshot needed), then deliberately change the in-app state
+   (Reset calibration button, drag the offset elsewhere) and click Load, confirming the readout
+   reverts. Changing *fewer* than all fields before reloading (e.g. only resetting calibration,
+   leaving the offset alone) is still a valid check as long as at least one field demonstrably
+   round-trips — it doesn't have to be a from-scratch process restart.
+5. A real `.mid` file already on the machine is fine to point the CLI arg at for this kind of
+   test — the exact notes/timing don't matter for verifying calibration/offset/persistence
+   plumbing, unlike milestone 2's overlay-rendering checks where note content mattered.

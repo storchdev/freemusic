@@ -12,6 +12,7 @@ egui-winit = "0.35.0"
 midi-file = { git = "https://github.com/PolyMeilex/Neothesia", rev = "e61639b12cc8e466b90406c564da5f9f54d8d1a3" }
 neothesia-core = { git = "https://github.com/PolyMeilex/Neothesia", rev = "e61639b12cc8e466b90406c564da5f9f54d8d1a3" }
 pollster = "0.4.0"
+project = { version = "0.1.0", path = "../crates/project" }
 video-pipeline = { version = "0.1.0", path = "../crates/video-pipeline" }
 wgpu = "29.0"
 winit = "0.30.13"
