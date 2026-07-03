@@ -2,10 +2,26 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Keep this file up to date.** When you add a crate, change the workspace layout, pin a new
-external dependency (especially git deps), or complete a milestone from the plan, update the
-relevant section below in the same session. This file is the fastest way for the next agent to
-get oriented — don't let it drift from what the code actually does.
+**Keep this file up to date after every task**, not just milestone completions or dependency
+changes — any change worth explaining to the next agent (a bug found and fixed, a design
+decision, a gotcha) gets a note here in the same session it happens, in whatever section it fits
+best (or a new one). This file is the fastest way for the next agent to get oriented — don't let
+it drift from what the code actually does.
+
+**Commit as the repo owner, no AI attribution.** Do not append a `Co-Authored-By: Claude ...`
+trailer (or any other AI-attribution line) to commit messages — commits should read like
+ordinary commits from the repo owner. This only affects the commit message body; the actual git
+author/committer identity already comes from local git config and needs no special handling.
+
+**Prefer a human for interactive UI verification over an automated screenshot loop.** For
+anything that needs eyeballing in the running app (drag handles, sliders, dialogs, visual
+correctness), ask the user to drive it and report back rather than iterating with
+`scripts/click.sh`/`scripts/drag.sh`/`scripts/screenshot.sh` yourself — see "Screenshotting/
+driving the app under native Hyprland" below for why this is especially true on this machine
+(tiling-WM coordinates are unreliable and slow to re-derive per click). Still fine to build,
+launch (`scripts/run-app.sh`), and kill (`scripts/kill-app.sh`) the app yourself, and to use the
+scripts for a quick one-off sanity screenshot when no human is available to check — just don't
+default to a full click/drag/screenshot verification loop when a human can look instead.
 
 ## What this is
 
