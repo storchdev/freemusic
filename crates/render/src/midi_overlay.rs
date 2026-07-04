@@ -21,6 +21,14 @@ use project::{KeyboardCalibration, NoteStyle};
 /// see that method's doc comment.
 const HARDCODED_HIT_LINE_FRACTION: f32 = 0.8;
 
+/// Height to feed `TransformUniform` (and, separately, `set_viewport`) so the vendored shader's
+/// fixed 80%-down hit line lands at `barrier_fraction` of the *real* canvas — see `render`'s doc
+/// comment for the viewport half of this trick. `barrier_fraction` is clamped the same way in
+/// both places it's used (here and in `render`) so they never see different values.
+fn virtual_canvas_height(canvas_h: f32, barrier_fraction: f32) -> f32 {
+    canvas_h * barrier_fraction.clamp(0.05, 1.0) / HARDCODED_HIT_LINE_FRACTION
+}
+
 pub struct MidiOverlay {
     config: Config,
     transform: Uniform<TransformUniform>,
@@ -90,6 +98,9 @@ impl MidiOverlay {
     ) -> Result<(), String> {
         let ngpu = wrap_gpu(gpu);
         self.set_note_style(note_style);
+        let virtual_height = virtual_canvas_height(viewport.1, calibration.barrier_fraction);
+        self.transform.data.update(viewport.0, virtual_height, 1.0);
+        self.transform.update(&ngpu.queue);
         let midi = MidiFile::new(path)?;
         let mut renderer = WaterfallRenderer::new(
             &ngpu,
@@ -133,7 +144,8 @@ impl MidiOverlay {
     ) {
         let ngpu = wrap_gpu(gpu);
         self.set_note_style(note_style);
-        self.transform.data.update(viewport.0, viewport.1, 1.0);
+        let virtual_height = virtual_canvas_height(viewport.1, calibration.barrier_fraction);
+        self.transform.data.update(viewport.0, virtual_height, 1.0);
         self.transform.update(&ngpu.queue);
 
         if let Some(loaded) = self.loaded.as_mut() {
@@ -186,10 +198,24 @@ impl MidiOverlay {
     /// What *does* move it: `wgpu::RenderPass::set_viewport` is a separate, real mapping from
     /// NDC to physical pixels, independent of anything the shader computes internally. Shrinking
     /// or growing the viewport rect used for just this draw call rescales where that fixed -0.6
-    /// NDC point lands in real canvas pixels. Solving `0.8 * virtual_height = canvas_height *
-    /// barrier_fraction` for `virtual_height` gives the viewport height to request. A
-    /// `set_scissor_rect` right above the barrier then hides notes once they'd otherwise slide
-    /// past it (the shader itself never clips anything).
+    /// NDC point lands in real canvas pixels. `virtual_canvas_height` (`0.8 * virtual_height =
+    /// canvas_height * barrier_fraction`, solved for `virtual_height`) gives the viewport height
+    /// to request. A `set_scissor_rect` right above the barrier then hides notes once they'd
+    /// otherwise slide past it (the shader itself never clips anything).
+    ///
+    /// **Must stay the same `virtual_height` fed to `TransformUniform` in `load`/`resize`,
+    /// not the real canvas height.** The fragment shader's rounded-corner distance field
+    /// (`dist()` in the vendored `shader.wgsl`) compares `@builtin(position)` — real,
+    /// post-viewport framebuffer pixels — against `note_pos`/`size`, which are plain varyings
+    /// computed in the vertex shader from whatever size `TransformUniform` was built with, and
+    /// never themselves pass through this viewport remap. If that size were the real canvas
+    /// height while the viewport used `virtual_height`, the two coordinate systems would only
+    /// agree at y=0 and diverge linearly with distance from it — notes would fade to fully
+    /// transparent (`dist()` blowing up to way more than `radius`) increasingly as they fall
+    /// toward the hit line, i.e. exactly the "notes cut off before reaching the barrier" bug
+    /// this fixed, worse the further `barrier_fraction` sits from the default 0.8. Keeping both
+    /// uses of `virtual_height` identical makes `builtin(position)` and `note_pos`/`size` live in
+    /// the same coordinate system again, regardless of `barrier_fraction`.
     pub fn render<'rpass>(&'rpass mut self, render_pass: &mut wgpu::RenderPass<'rpass>) {
         let Some(loaded) = self.loaded.as_mut() else {
             return;
@@ -197,7 +223,7 @@ impl MidiOverlay {
         let (canvas_w, canvas_h) = self.canvas_size;
         if canvas_w > 0.0 && canvas_h > 0.0 {
             let barrier_fraction = self.barrier_fraction.clamp(0.05, 1.0);
-            let virtual_height = canvas_h * barrier_fraction / HARDCODED_HIT_LINE_FRACTION;
+            let virtual_height = virtual_canvas_height(canvas_h, barrier_fraction);
             render_pass.set_viewport(0.0, 0.0, canvas_w, virtual_height, 0.0, 1.0);
 
             let scissor_height = (canvas_h * barrier_fraction).round().clamp(1.0, canvas_h) as u32;
