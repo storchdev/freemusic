@@ -276,6 +276,8 @@ impl AppState {
                 dropping: false,
                 midi_name: None,
                 midi_note_times: Vec::new(),
+                waveform_peaks: Vec::new(),
+                waveform_bucket_seconds: 0.0,
                 active_tab: ui::Tab::default(),
                 preview_texture_id,
                 canvas_size,
@@ -396,6 +398,8 @@ impl AppState {
             eprintln!("failed to load audio track for {path:?}: {err}");
         }
         self.audio_playing = false;
+        self.ui_state.waveform_peaks = self.audio.waveform_peaks().to_vec();
+        self.ui_state.waveform_bucket_seconds = self.audio.waveform_bucket_seconds();
 
         self.pipeline = Some(pipeline);
         self.video_path = Some(path.to_path_buf());
@@ -516,6 +520,8 @@ impl AppState {
         self.ui_state.seek_request = None;
         self.ui_state.midi_name = None;
         self.ui_state.midi_note_times = Vec::new();
+        self.ui_state.waveform_peaks = Vec::new();
+        self.ui_state.waveform_bucket_seconds = 0.0;
         self.ui_state.sync_offset_seconds = 0.0;
         self.ui_state.calibration = KeyboardCalibration::default();
         self.ui_state.transform = project::VideoTransform::default();

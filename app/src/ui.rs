@@ -11,6 +11,12 @@ pub struct UiState {
     /// Sorted note onset times in seconds, mirrored from `Compositor::note_start_times` each
     /// time a MIDI file loads — used by the bottom timeline's note-density strip.
     pub midi_note_times: Vec<f32>,
+    /// Peak-amplitude waveform, mirrored from `AudioPlayback::waveform_peaks` each time a video
+    /// loads — used by the bottom timeline to draw the audio waveform. Empty if the loaded video
+    /// has no audio track.
+    pub waveform_peaks: Vec<f32>,
+    /// Width in seconds of each `waveform_peaks` entry, mirrored alongside it.
+    pub waveform_bucket_seconds: f64,
     /// `midi_time = position_seconds - sync_offset_seconds`; video is always the master clock,
     /// dragging this only moves where notes render relative to it.
     pub sync_offset_seconds: f64,
@@ -537,6 +543,14 @@ fn draw_timeline_scrubber(ui: &mut egui::Ui, state: &mut UiState) {
     let painter = ui.painter();
     painter.rect_filled(rect, 3.0, egui::Color32::from_gray(35));
 
+    draw_waveform(
+        painter,
+        rect,
+        &state.waveform_peaks,
+        state.waveform_bucket_seconds,
+        view_start,
+        view_end,
+    );
     draw_note_density(painter, rect, &state.midi_note_times, view_start, view_end);
     draw_time_ruler(painter, rect, view_start, view_end);
 
@@ -572,6 +586,56 @@ fn timeline_view_duration(duration: f64, zoom: f64) -> f64 {
 
 fn clamp_timeline_view_start(start: f64, duration: f64, view_duration: f64) -> f64 {
     start.clamp(0.0, (duration - view_duration).max(0.0))
+}
+
+/// Draws the audio waveform as a vertically-centered bar strip, drawn first so the note-density
+/// strip and time ruler layer on top of it. `peaks`/`bucket_seconds` are the whole track's
+/// downsampled amplitude summary (`AudioPlayback::waveform_peaks`, mirrored into `UiState` at
+/// video-load time) — re-bucketing that (already small) array into the visible column count is
+/// cheap at any zoom level, unlike re-scanning raw samples every redraw would be.
+fn draw_waveform(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    peaks: &[f32],
+    bucket_seconds: f64,
+    view_start: f64,
+    view_end: f64,
+) {
+    if peaks.is_empty() || bucket_seconds <= 0.0 {
+        return;
+    }
+    let view_duration = (view_end - view_start).max(0.001);
+    const BUCKETS: usize = 240;
+    let bucket_width = rect.width() / BUCKETS as f32;
+    let mid_y = rect.center().y;
+    let half_height = rect.height() * 0.5 - 2.0;
+
+    for i in 0..BUCKETS {
+        let column_start = view_start + (i as f64 / BUCKETS as f64) * view_duration;
+        let column_end = view_start + ((i + 1) as f64 / BUCKETS as f64) * view_duration;
+        let start_index =
+            ((column_start / bucket_seconds).floor().max(0.0) as usize).min(peaks.len());
+        let end_index = ((column_end / bucket_seconds).ceil().max(0.0) as usize)
+            .clamp(start_index + 1, peaks.len().max(start_index + 1))
+            .min(peaks.len());
+        if start_index >= end_index {
+            continue;
+        }
+        let amplitude = peaks[start_index..end_index]
+            .iter()
+            .copied()
+            .fold(0.0f32, f32::max);
+        if amplitude <= 0.0 {
+            continue;
+        }
+        let half_bar = amplitude.min(1.0) * half_height;
+        let x = rect.left() + i as f32 * bucket_width;
+        let bar = egui::Rect::from_min_max(
+            egui::pos2(x, mid_y - half_bar),
+            egui::pos2(x + bucket_width.max(1.0), mid_y + half_bar),
+        );
+        painter.rect_filled(bar, 0.0, egui::Color32::from_rgb(60, 80, 90));
+    }
 }
 
 /// Buckets note onset times into columns spanning the timeline's width and draws each as a

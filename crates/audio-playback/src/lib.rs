@@ -19,6 +19,11 @@ use ffmpeg_next::util::frame::audio::Audio as AudioFrame;
 
 const RESYNC_THRESHOLD_SECONDS: f64 = 0.050;
 
+/// Bucket width for the downsampled waveform summary handed to the UI's timeline — fine enough
+/// that scrubbing/zooming still shows real detail, coarse enough that a several-minute track
+/// produces a peaks array in the tens of thousands of entries rather than millions.
+const WAVEFORM_BUCKET_SECONDS: f64 = 0.01;
+
 pub struct AudioPlayback {
     stream: Option<cpal::Stream>,
     /// Transport position in seconds (as `f64::to_bits`), updated once per redraw by
@@ -29,6 +34,10 @@ pub struct AudioPlayback {
     /// Incremented for explicit seeks/scrubs so even a tiny user-driven jump resyncs the audio
     /// cursor instead of being treated like harmless clock drift.
     resync_generation: Arc<AtomicU64>,
+    /// Peak amplitude (0.0-1.0) per `WAVEFORM_BUCKET_SECONDS`-wide bucket across the whole
+    /// track, computed once at load time — the UI's timeline draws this directly rather than
+    /// re-scanning raw samples every redraw.
+    waveform_peaks: Vec<f32>,
 }
 
 impl Default for AudioPlayback {
@@ -43,7 +52,19 @@ impl AudioPlayback {
             stream: None,
             position_bits: Arc::new(AtomicU64::new(0)),
             resync_generation: Arc::new(AtomicU64::new(0)),
+            waveform_peaks: Vec::new(),
         }
+    }
+
+    /// Peak amplitude (0.0-1.0) per `waveform_bucket_seconds()`-wide bucket across the whole
+    /// track, empty if nothing with an audio stream has been loaded.
+    pub fn waveform_peaks(&self) -> &[f32] {
+        &self.waveform_peaks
+    }
+
+    /// Width in seconds of each `waveform_peaks()` entry.
+    pub fn waveform_bucket_seconds(&self) -> f64 {
+        WAVEFORM_BUCKET_SECONDS
     }
 
     /// True once a track with a real audio stream has been successfully `load`ed.
@@ -74,6 +95,7 @@ impl AudioPlayback {
         self.position_bits
             .store(0.0_f64.to_bits(), Ordering::Relaxed);
         self.resync_generation.store(0, Ordering::Relaxed);
+        self.waveform_peaks = Vec::new();
 
         if !Self::has_audio_stream(path) {
             return Ok(());
@@ -88,6 +110,8 @@ impl AudioPlayback {
             .map_err(|err| format!("failed to get default audio output config: {err}"))?;
 
         let decoded = decode_all(path, config.sample_rate() as i32)?;
+        self.waveform_peaks =
+            compute_waveform_peaks(&decoded.left, &decoded.right, decoded.sample_rate);
         let channels = config.channels() as usize;
         let stream_config: cpal::StreamConfig = config.into();
         let position_bits = self.position_bits.clone();
@@ -267,6 +291,27 @@ fn decode_all(path: &Path, target_sample_rate: i32) -> Result<DecodedAudio, Stri
         right,
         sample_rate: target_sample_rate as u32,
     })
+}
+
+/// Downsamples the decoded stereo track into one peak-amplitude value per
+/// `WAVEFORM_BUCKET_SECONDS`, taking the louder of the two channels per sample — cheap to draw
+/// from at any timeline zoom level since the UI only ever re-buckets this already-small array,
+/// never the raw sample data.
+fn compute_waveform_peaks(left: &[f32], right: &[f32], sample_rate: u32) -> Vec<f32> {
+    let bucket_samples = ((sample_rate as f64 * WAVEFORM_BUCKET_SECONDS) as usize).max(1);
+    let len = left.len().min(right.len());
+    let mut peaks = Vec::with_capacity(len / bucket_samples + 1);
+    let mut start = 0;
+    while start < len {
+        let end = (start + bucket_samples).min(len);
+        let peak = left[start..end]
+            .iter()
+            .zip(&right[start..end])
+            .fold(0.0f32, |acc, (&l, &r)| acc.max(l.abs()).max(r.abs()));
+        peaks.push(peak);
+        start = end;
+    }
+    peaks
 }
 
 fn build_typed_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
