@@ -533,10 +533,32 @@ fn draw_timeline_scrubber(ui: &mut egui::Ui, state: &mut UiState) {
         }
     }
 
+    // Keep the playhead visible: if it's outside the current view (an arrow-key seek, Home/End,
+    // or ordinary playback advancing past a zoomed-in view), shift the view just enough to bring
+    // it back in, landing right at the edge it crossed rather than re-centering — a small nudge
+    // stays a small nudge instead of jumping the view around.
+    let view_duration = (view_end - view_start).max(0.001);
+    if state.position_seconds < view_start {
+        state.timeline_view_start_seconds =
+            clamp_timeline_view_start(state.position_seconds, duration, view_duration);
+        (view_start, view_end) = timeline_view_range(state);
+    } else if state.position_seconds > view_end {
+        state.timeline_view_start_seconds = clamp_timeline_view_start(
+            state.position_seconds - view_duration,
+            duration,
+            view_duration,
+        );
+        (view_start, view_end) = timeline_view_range(state);
+    }
+
     if response.clicked() || response.dragged() {
         if let Some(pos) = response.interact_pointer_pos() {
             let fraction = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
             state.seek_request = Some(view_start + fraction as f64 * (view_end - view_start));
+
+            if response.dragged() {
+                edge_auto_scroll(ui, state, rect, pos, view_start, view_end, duration);
+            }
         }
     }
 
@@ -566,6 +588,49 @@ fn draw_timeline_scrubber(ui: &mut egui::Ui, state: &mut UiState) {
             egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 90, 90)),
         );
     }
+}
+
+const EDGE_SCROLL_ZONE_PX: f32 = 28.0;
+const EDGE_SCROLL_MAX_FRACTION_PER_SEC: f64 = 1.5;
+
+/// While dragging the playhead, scrolls the visible timeline range when the pointer nears
+/// either edge of the widget, so a single drag can reach times currently off-screen instead of
+/// getting stuck clamped to the edge. Scroll speed ramps up the closer the pointer gets to the
+/// very edge (0 right at the dead zone boundary, max at the widget's physical edge), and keeps
+/// animating even if the pointer stops moving — `request_repaint` is needed for that since
+/// nothing else would otherwise wake up a frame while the pointer is held still.
+fn edge_auto_scroll(
+    ui: &egui::Ui,
+    state: &mut UiState,
+    rect: egui::Rect,
+    pointer: egui::Pos2,
+    view_start: f64,
+    view_end: f64,
+    duration: f64,
+) {
+    let view_duration = (view_end - view_start).max(0.001);
+    let left_overshoot =
+        ((rect.left() + EDGE_SCROLL_ZONE_PX - pointer.x) / EDGE_SCROLL_ZONE_PX).clamp(0.0, 1.0);
+    let right_overshoot =
+        ((pointer.x - (rect.right() - EDGE_SCROLL_ZONE_PX)) / EDGE_SCROLL_ZONE_PX).clamp(0.0, 1.0);
+    let overshoot = left_overshoot.max(right_overshoot);
+    if overshoot <= 0.0 {
+        return;
+    }
+
+    let dt = ui.input(|input| input.stable_dt).min(0.1) as f64;
+    let scroll = view_duration * EDGE_SCROLL_MAX_FRACTION_PER_SEC * overshoot as f64 * dt;
+    let delta = if left_overshoot > right_overshoot {
+        -scroll
+    } else {
+        scroll
+    };
+    state.timeline_view_start_seconds = clamp_timeline_view_start(
+        state.timeline_view_start_seconds + delta,
+        duration,
+        view_duration,
+    );
+    ui.ctx().request_repaint();
 }
 
 fn timeline_view_range(state: &mut UiState) -> (f64, f64) {
