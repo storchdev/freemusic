@@ -17,13 +17,18 @@ use ffmpeg_next::format::sample::{Sample, Type};
 use ffmpeg_next::software::resampling::context::Context as ResamplingContext;
 use ffmpeg_next::util::frame::audio::Audio as AudioFrame;
 
+const RESYNC_THRESHOLD_SECONDS: f64 = 0.050;
+
 pub struct AudioPlayback {
     stream: Option<cpal::Stream>,
     /// Transport position in seconds (as `f64::to_bits`), updated once per redraw by
-    /// `set_position_seconds`. The output callback re-reads this fresh on every invocation
-    /// rather than advancing its own internal sample counter between calls — the position can
-    /// only ever come from the (video-driven) transport, so audio can't accumulate drift.
+    /// `set_position_seconds`. The output callback uses it as a resync anchor while advancing
+    /// its own sample cursor between callbacks; app redraws run at video cadence, which is too
+    /// sparse to be used as a per-buffer audio seek target.
     position_bits: Arc<AtomicU64>,
+    /// Incremented for explicit seeks/scrubs so even a tiny user-driven jump resyncs the audio
+    /// cursor instead of being treated like harmless clock drift.
+    resync_generation: Arc<AtomicU64>,
 }
 
 impl Default for AudioPlayback {
@@ -37,6 +42,7 @@ impl AudioPlayback {
         Self {
             stream: None,
             position_bits: Arc::new(AtomicU64::new(0)),
+            resync_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -67,6 +73,7 @@ impl AudioPlayback {
         self.stream = None;
         self.position_bits
             .store(0.0_f64.to_bits(), Ordering::Relaxed);
+        self.resync_generation.store(0, Ordering::Relaxed);
 
         if !Self::has_audio_stream(path) {
             return Ok(());
@@ -84,17 +91,33 @@ impl AudioPlayback {
         let channels = config.channels() as usize;
         let stream_config: cpal::StreamConfig = config.into();
         let position_bits = self.position_bits.clone();
+        let resync_generation = self.resync_generation.clone();
 
         let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => {
-                build_typed_stream::<f32>(&device, stream_config, channels, position_bits, decoded)
-            }
-            cpal::SampleFormat::I16 => {
-                build_typed_stream::<i16>(&device, stream_config, channels, position_bits, decoded)
-            }
-            cpal::SampleFormat::U16 => {
-                build_typed_stream::<u16>(&device, stream_config, channels, position_bits, decoded)
-            }
+            cpal::SampleFormat::F32 => build_typed_stream::<f32>(
+                &device,
+                stream_config,
+                channels,
+                position_bits,
+                resync_generation,
+                decoded,
+            ),
+            cpal::SampleFormat::I16 => build_typed_stream::<i16>(
+                &device,
+                stream_config,
+                channels,
+                position_bits,
+                resync_generation,
+                decoded,
+            ),
+            cpal::SampleFormat::U16 => build_typed_stream::<u16>(
+                &device,
+                stream_config,
+                channels,
+                position_bits,
+                resync_generation,
+                decoded,
+            ),
             other => return Err(format!("unsupported audio output sample format: {other}")),
         }
         .map_err(|err| format!("failed to build audio output stream: {err}"))?;
@@ -108,12 +131,19 @@ impl AudioPlayback {
         Ok(())
     }
 
-    /// Mirrors the transport position into the audio callback — called once per redraw, the
-    /// same cadence video decode and the MIDI overlay are already driven at. `seconds` is
-    /// expected to already be clamped by the caller (matches `ui_state.position_seconds`).
+    /// Mirrors the transport position into the audio callback. This is called at redraw cadence,
+    /// so the callback treats it as an anchor for scrubs/resyncs rather than restarting every
+    /// output buffer from this exact position.
     pub fn set_position_seconds(&self, seconds: f64) {
         self.position_bits
             .store(seconds.max(0.0).to_bits(), Ordering::Relaxed);
+    }
+
+    /// Moves the audio cursor to an explicit transport seek target. Use this for user-driven
+    /// scrubs/seeks, not ordinary playback ticks.
+    pub fn seek_to_position_seconds(&self, seconds: f64) {
+        self.set_position_seconds(seconds);
+        self.resync_generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Pauses/resumes the underlying stream (a no-op if nothing is loaded, or if the device is
@@ -244,6 +274,7 @@ fn build_typed_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     stream_config: cpal::StreamConfig,
     channels: usize,
     position_bits: Arc<AtomicU64>,
+    resync_generation: Arc<AtomicU64>,
     decoded: DecodedAudio,
 ) -> Result<cpal::Stream, cpal::Error> {
     let err_fn = |err| eprintln!("audio output stream error: {err}");
@@ -252,32 +283,83 @@ fn build_typed_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
         right,
         sample_rate,
     } = decoded;
+    let mut cursor = PlaybackCursor::new(sample_rate);
 
     device.build_output_stream(
         stream_config,
         move |output: &mut [T], _: &cpal::OutputCallbackInfo| {
-            fill_buffer(output, channels, &position_bits, sample_rate, &left, &right);
+            fill_buffer(
+                output,
+                channels,
+                &position_bits,
+                &resync_generation,
+                &mut cursor,
+                &left,
+                &right,
+            );
         },
         err_fn,
         None,
     )
 }
 
+struct PlaybackCursor {
+    sample_rate: u32,
+    next_index: usize,
+    resync_threshold_samples: usize,
+    last_resync_generation: u64,
+    initialized: bool,
+}
+
+impl PlaybackCursor {
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            sample_rate,
+            next_index: 0,
+            resync_threshold_samples: (RESYNC_THRESHOLD_SECONDS * sample_rate as f64) as usize,
+            last_resync_generation: 0,
+            initialized: false,
+        }
+    }
+
+    fn anchor_index(&self, position_bits: &AtomicU64) -> usize {
+        let position_seconds = f64::from_bits(position_bits.load(Ordering::Relaxed));
+        (position_seconds.max(0.0) * self.sample_rate as f64) as usize
+    }
+
+    fn start_index(&mut self, position_bits: &AtomicU64, resync_generation: &AtomicU64) -> usize {
+        let anchor_index = self.anchor_index(position_bits);
+        let generation = resync_generation.load(Ordering::Relaxed);
+        let explicit_resync = generation != self.last_resync_generation;
+        let should_resync = !self.initialized
+            || explicit_resync
+            || self.next_index.abs_diff(anchor_index) > self.resync_threshold_samples;
+
+        if should_resync {
+            self.next_index = anchor_index;
+            self.last_resync_generation = generation;
+            self.initialized = true;
+        }
+
+        self.next_index
+    }
+}
+
 /// Fills one output callback's worth of samples starting at whatever sample index
-/// `position_bits` currently maps to, silence past the end of the decoded track (or before its
-/// start). Interleaves to however many channels the device actually wants, duplicating L/R into
+/// the playback cursor currently maps to, using `position_bits` only to detect scrubs and larger
+/// drift. Interleaves to however many channels the device actually wants, duplicating L/R into
 /// any channels beyond the first two (mirrors Neothesia's own `SynthBackend::run`, which faces
 /// the identical "device may not be exactly stereo" problem).
 fn fill_buffer<T: cpal::Sample + cpal::FromSample<f32>>(
     output: &mut [T],
     channels: usize,
     position_bits: &AtomicU64,
-    sample_rate: u32,
+    resync_generation: &AtomicU64,
+    cursor: &mut PlaybackCursor,
     left: &[f32],
     right: &[f32],
 ) {
-    let position_seconds = f64::from_bits(position_bits.load(Ordering::Relaxed));
-    let start_index = (position_seconds * sample_rate as f64) as usize;
+    let start_index = cursor.start_index(position_bits, resync_generation);
 
     for (i, frame) in output.chunks_mut(channels).enumerate() {
         let index = start_index + i;
@@ -290,5 +372,110 @@ fn fill_buffer<T: cpal::Sample + cpal::FromSample<f32>>(
         for (channel, sample) in frame.iter_mut().enumerate() {
             *sample = samples[channel % 2];
         }
+    }
+    cursor.next_index = start_index + output.len() / channels;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fill_buffer_advances_between_redraw_position_updates() {
+        let position_bits = AtomicU64::new(0.0_f64.to_bits());
+        let resync_generation = AtomicU64::new(0);
+        let mut cursor = PlaybackCursor::new(100);
+        let left: Vec<f32> = (0..20).map(|value| value as f32).collect();
+        let right: Vec<f32> = (100..120).map(|value| value as f32).collect();
+        let mut output = vec![0.0_f32; 8];
+
+        fill_buffer(
+            &mut output,
+            2,
+            &position_bits,
+            &resync_generation,
+            &mut cursor,
+            &left,
+            &right,
+        );
+        assert_eq!(output, [0.0, 100.0, 1.0, 101.0, 2.0, 102.0, 3.0, 103.0]);
+
+        fill_buffer(
+            &mut output,
+            2,
+            &position_bits,
+            &resync_generation,
+            &mut cursor,
+            &left,
+            &right,
+        );
+        assert_eq!(output, [4.0, 104.0, 5.0, 105.0, 6.0, 106.0, 7.0, 107.0]);
+    }
+
+    #[test]
+    fn fill_buffer_resyncs_after_large_position_jump() {
+        let position_bits = AtomicU64::new(0.0_f64.to_bits());
+        let resync_generation = AtomicU64::new(0);
+        let mut cursor = PlaybackCursor::new(100);
+        let left: Vec<f32> = (0..40).map(|value| value as f32).collect();
+        let right: Vec<f32> = (100..140).map(|value| value as f32).collect();
+        let mut output = vec![0.0_f32; 4];
+
+        fill_buffer(
+            &mut output,
+            2,
+            &position_bits,
+            &resync_generation,
+            &mut cursor,
+            &left,
+            &right,
+        );
+
+        position_bits.store(0.20_f64.to_bits(), Ordering::Relaxed);
+        fill_buffer(
+            &mut output,
+            2,
+            &position_bits,
+            &resync_generation,
+            &mut cursor,
+            &left,
+            &right,
+        );
+
+        assert_eq!(output, [20.0, 120.0, 21.0, 121.0]);
+    }
+
+    #[test]
+    fn fill_buffer_resyncs_after_explicit_tiny_seek() {
+        let position_bits = AtomicU64::new(0.0_f64.to_bits());
+        let resync_generation = AtomicU64::new(0);
+        let mut cursor = PlaybackCursor::new(100);
+        let left: Vec<f32> = (0..40).map(|value| value as f32).collect();
+        let right: Vec<f32> = (100..140).map(|value| value as f32).collect();
+        let mut output = vec![0.0_f32; 4];
+
+        fill_buffer(
+            &mut output,
+            2,
+            &position_bits,
+            &resync_generation,
+            &mut cursor,
+            &left,
+            &right,
+        );
+
+        position_bits.store(0.03_f64.to_bits(), Ordering::Relaxed);
+        resync_generation.fetch_add(1, Ordering::Relaxed);
+        fill_buffer(
+            &mut output,
+            2,
+            &position_bits,
+            &resync_generation,
+            &mut cursor,
+            &left,
+            &right,
+        );
+
+        assert_eq!(output, [3.0, 103.0, 4.0, 104.0]);
     }
 }

@@ -736,14 +736,19 @@ it, rather than bumping `wgpu` independently.
   module is private and this crate has no other reason to depend on `export`) into stereo `f32`
   at whatever sample rate the *output device* reports via `default_output_config()` (not a fixed
   rate — mirrors export's own "ask the encoder what rate it actually chose" approach).
-- **Sync design**: `AudioPlayback` stores only a transport position (`position_bits: Arc<AtomicU64>`,
-  an `f64::to_bits` seconds value) plus the `cpal::Stream`. The output callback
-  (`fill_buffer`) re-reads that atomic fresh on *every* invocation and maps it straight to a
-  sample index — it never advances an internal counter between callbacks. `AppState::redraw`
+- **Sync design**: `AudioPlayback` stores the app transport position (`position_bits:
+  Arc<AtomicU64>`, an `f64::to_bits` seconds value) plus the `cpal::Stream`. `AppState::redraw`
   calls `audio.set_position_seconds(ui_state.position_seconds)` unconditionally every redraw (the
-  same position value already driving video decode and `midi_time`), so audio can't accumulate
-  drift over a long playback the way an independently-clocked stream could; a scrub is handled by
-  nothing more than the position jumping, no special-cased "seek" method needed.
+  same position value already driving video decode and `midi_time`), but the output callback
+  cannot map that atomic straight to the start of *every* output buffer: redraws are throttled to
+  video cadence (e.g. ~30fps) while CPAL callbacks are smaller/more frequent, so doing so replays
+  the same short audio chunk several times until the next video redraw and sounds harsh/jarring.
+  The callback now keeps a `PlaybackCursor` that advances by samples between callbacks and uses
+  the atomic only as a resync anchor: the first callback after play/resume starts from the current
+  transport position, and later callbacks snap to the transport only after a scrub or >50ms drift.
+  Scrubs also increment `resync_generation`, so even a tiny one-frame seek (smaller than the
+  drift threshold) snaps the cursor. This keeps normal playback continuous without letting a real
+  seek stay on the old audio cursor.
 - **cpal sample-format handling**: mirrors Neothesia's own `SynthBackend::run` pattern exactly
   (`neothesia/src/output_manager/synth_backend.rs`) — a generic `build_typed_stream<T: SizedSample
   + FromSample<f32>>` dispatched from a `match config.sample_format() { F32 => ::<f32>, I16 =>

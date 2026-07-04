@@ -617,10 +617,15 @@ impl AppState {
         }
 
         // Audio is driven by (never drives) the transport position — see `audio_playback`'s doc
-        // comment. Position is mirrored unconditionally (cheap, an atomic store), but play/pause
-        // is only pushed to the `cpal` stream when it actually changes.
-        self.audio
-            .set_position_seconds(self.ui_state.position_seconds);
+        // comment. Ordinary playback ticks only update the stream's resync anchor, but explicit
+        // scrubs force the callback cursor onto the new transport position even for tiny seeks.
+        if is_scrub {
+            self.audio
+                .seek_to_position_seconds(self.ui_state.position_seconds);
+        } else {
+            self.audio
+                .set_position_seconds(self.ui_state.position_seconds);
+        }
         if self.ui_state.playing != self.audio_playing {
             self.audio.set_playing(self.ui_state.playing);
             self.audio_playing = self.ui_state.playing;
