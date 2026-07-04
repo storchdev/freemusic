@@ -31,6 +31,32 @@ const PREVIEW_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Un
 /// registration exist from the very first redraw.
 const DEFAULT_CANVAS_SIZE: (u32, u32) = (1280, 720);
 
+/// Caps how far `position_seconds` can advance in a single redraw during ordinary playback.
+/// `dt` is real wall-clock time since the previous redraw — normally one video frame's worth
+/// (~16-33ms), but a slow redraw (GPU/compositor stall, e.g. measured cursor-move-correlated
+/// contention on this dev machine; could equally be system load or anything else) inflates it.
+/// Advancing position by the *full*, uncapped `dt` hands `VideoPipeline::seek_and_decode_ref`'s
+/// `exact = true` catch-up loop a bigger gap to close than it just closed — and if per-frame
+/// decode cost is comparable to or slower than real-time under that same contention, catch-up
+/// itself takes longer than the gap, inflating the *next* redraw's `dt` even more. That's a
+/// self-reinforcing spiral that only breaks once the gap exceeds `MAX_FORWARD_STEP_SECONDS` and
+/// a real reseek resets it — multiple seconds of visible stutter in the meantime. (An earlier
+/// attempt fixed this inside `decode_ref` itself by capping its own wall-clock budget and giving
+/// up early on unreached targets — reverted, since that corrupts `decode_ref`'s "returned frame
+/// always caught up to what was last requested" invariant and reintroduces the *other*,
+/// previously-fixed bug: a stale cached frame whose gap from a still-advancing target creeps
+/// past `MAX_FORWARD_STEP_SECONDS` re-triggers a reseek to essentially the same old keyframe,
+/// over and over — visible as the video jumping backward and looping.) Capping the position
+/// advance here instead keeps every catch-up small by construction, so it reliably completes
+/// well within one redraw regardless of how long the *previous* redraw took. The cost: under
+/// sustained contention, video (and, since both derive from the same `position_seconds`, audio
+/// and the MIDI overlay) falls slightly behind real wall-clock time rather than skipping content
+/// to stay caught up — a deliberate trade, since skipping content is what read as "rewinding".
+/// The real cap applied in `redraw` is one source-video frame's own duration (tighter than any
+/// fixed constant could be for every possible frame rate); this constant is only the fallback
+/// used before a video is loaded and `frame_duration_seconds()` isn't known yet.
+const MAX_PLAYBACK_DT_SECONDS: f64 = 0.1;
+
 /// Bundles the raw handles `render::Compositor` needs from our interactive-window `Gpu`.
 ///
 /// `texture_format` is always `PREVIEW_TEXTURE_FORMAT`, not the swapchain's own format — the
@@ -150,6 +176,17 @@ struct PerfStats {
     uploads: u32,
     cache_hits: u32,
     decode: Duration,
+    // Purely-CPU sub-stages of `decode` (from `VideoPipeline::last_timings`), broken out so the
+    // log can show *which* CPU stage balloons under mouse-move load rather than one lumped number.
+    // None of these issue a GPU call, so `decode` (and thus these) ballooning while `acquire`/
+    // `render_submit` stay low points at CPU/IO contention, not GPU/compositor contention. An
+    // earlier round already showed the old `h264` bucket (= demux+send+receive) balloons ~100×
+    // while scale/copy stay flat; these split that bucket to pinpoint I/O vs the decode workers.
+    demux: Duration,
+    send: Duration,
+    receive: Duration,
+    scale: Duration,
+    copy: Duration,
     upload: Duration,
     midi: Duration,
     egui: Duration,
@@ -168,6 +205,11 @@ impl PerfStats {
             uploads: 0,
             cache_hits: 0,
             decode: Duration::ZERO,
+            demux: Duration::ZERO,
+            send: Duration::ZERO,
+            receive: Duration::ZERO,
+            scale: Duration::ZERO,
+            copy: Duration::ZERO,
             upload: Duration::ZERO,
             midi: Duration::ZERO,
             egui: Duration::ZERO,
@@ -194,11 +236,16 @@ impl PerfStats {
 
         let frames = self.frames as f64;
         eprintln!(
-            "[perf] fps={:.1} uploads/s={} cache_hits/s={} avg_us decode={:.0} upload={:.0} midi={:.0} egui={:.0} acquire={:.0} render_submit={:.0} total={:.0} max_total={:.0} max_dt_ms={:.1}",
+            "[perf] fps={:.1} uploads/s={} cache_hits/s={} avg_us decode={:.0} (demux={:.0} send={:.0} receive={:.0} scale={:.0} copy={:.0}) upload={:.0} midi={:.0} egui={:.0} acquire={:.0} render_submit={:.0} total={:.0} max_total={:.0} max_dt_ms={:.1}",
             frames / elapsed.as_secs_f64(),
             self.uploads,
             self.cache_hits,
             self.decode.as_secs_f64() * 1_000_000.0 / frames,
+            self.demux.as_secs_f64() * 1_000_000.0 / frames,
+            self.send.as_secs_f64() * 1_000_000.0 / frames,
+            self.receive.as_secs_f64() * 1_000_000.0 / frames,
+            self.scale.as_secs_f64() * 1_000_000.0 / frames,
+            self.copy.as_secs_f64() * 1_000_000.0 / frames,
             self.upload.as_secs_f64() * 1_000_000.0 / frames,
             self.midi.as_secs_f64() * 1_000_000.0 / frames,
             self.egui.as_secs_f64() * 1_000_000.0 / frames,
@@ -582,8 +629,18 @@ impl AppState {
         if let Some(target) = self.ui_state.seek_request.take() {
             self.ui_state.position_seconds = target.clamp(0.0, self.ui_state.duration_seconds);
         } else if self.ui_state.playing {
-            self.ui_state.position_seconds =
-                (self.ui_state.position_seconds + dt).min(self.ui_state.duration_seconds);
+            // Capped to one source-video frame's worth (not a fixed constant): tighter than that
+            // just means falling further behind real wall-clock time under sustained contention
+            // for no benefit, while looser widens the worst-case catch-up (and therefore the
+            // worst-case redraw time) `MAX_PLAYBACK_DT_SECONDS` exists to bound — see its own doc
+            // comment.
+            let max_dt = self
+                .pipeline
+                .as_ref()
+                .map(VideoPipeline::frame_duration_seconds)
+                .unwrap_or(MAX_PLAYBACK_DT_SECONDS);
+            self.ui_state.position_seconds = (self.ui_state.position_seconds + dt.min(max_dt))
+                .min(self.ui_state.duration_seconds);
             if self.ui_state.position_seconds >= self.ui_state.duration_seconds {
                 self.ui_state.playing = false;
             }
@@ -627,6 +684,18 @@ impl AppState {
                     self.last_decoded_position = Some(self.ui_state.position_seconds);
                 } else if let Some(perf) = self.perf.as_mut() {
                     perf.decode += start.elapsed();
+                }
+                // Read the purely-CPU sub-stage split now that `decoded_result` (which borrowed
+                // `pipeline`) has been dropped. Cache-hit calls leave these at zero, matching that
+                // they do no h264/scale/copy work — so summed over the interval they attribute the
+                // aggregate `decode` number to its stages.
+                let timings = pipeline.last_timings();
+                if let Some(perf) = self.perf.as_mut() {
+                    perf.demux += timings.demux;
+                    perf.send += timings.send;
+                    perf.receive += timings.receive;
+                    perf.scale += timings.scale;
+                    perf.copy += timings.copy;
                 }
             }
         }
@@ -1091,19 +1160,28 @@ impl ApplicationHandler for App {
 
         // Playback's own cadence (only relevant while playing) and egui's own animation
         // deadline (relevant regardless of playback state — a menu can be open, or the side
-        // panel mid-collapse, while paused) are two independent reasons to wake up early;
-        // whichever comes first wins.
-        let playback_deadline = if state.ui_state.playing {
+        // panel mid-collapse, while paused) are two independent reasons to wake up early.
+        //
+        // While PAUSED, whichever comes first wins (smooth menu/panel animations).
+        //
+        // While PLAYING, the video cadence governs and egui's deadline is NOT allowed to
+        // schedule a redraw *sooner* than the next frame. This matters because passive mouse
+        // movement makes egui request a repaint on every hover update, and that request flows
+        // through `next_ui_redraw_at` — bypassing the `passive_playback_cursor_move` guard in
+        // `window_event`, which only suppresses the *direct* redraw nudge. Left unclamped it
+        // drove the redraw rate to 40-54fps on a 30fps clip: extra full redraws that decode no
+        // new frame but pile main-thread work + event-loop wakeup churn onto an already
+        // oversubscribed core count, descheduling the frame-threaded H.264 decode workers so
+        // `send_packet` blocks waiting for a free worker slot (measured ~150x blowup during
+        // mouse-move — see the investigation section in CLAUDE.md). Any real egui animation
+        // still advances during playback, just at the video's frame cadence, which is
+        // imperceptible. A `next_ui_redraw_at` *later* than the frame deadline is irrelevant —
+        // the playback redraw fires first and services egui's repaint request anyway.
+        let deadline = if state.ui_state.playing {
             state.next_playback_redraw_at
         } else {
             state.next_playback_redraw_at = None;
-            None
-        };
-        let deadline = match (playback_deadline, state.next_ui_redraw_at) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
+            state.next_ui_redraw_at
         };
 
         match deadline {

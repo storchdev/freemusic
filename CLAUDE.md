@@ -361,6 +361,52 @@ it, rather than bumping `wgpu` independently.
   documented history of occlusion-driven multi-hundred-ms `Surface::get_current_texture` stalls
   that look identical from the decode side.
 
+### RESOLVED: "playback goes very laggy whenever the mouse moves anywhere over the window"
+
+Root cause: a **hybrid-core scheduling artifact** on the dev machine (Intel Core Ultra 7 258V,
+Lunar Lake — 8 cores, no SMT: CPUs 0–3 are fast P-cores w/ shared L3, CPUs 4–7 are slow LP-E cores
+w/ no L3, per `lscpu -e`). The H.264 decoder was opened with `threading::Config { count: 0 }`, which
+lets libavcodec spawn ~one frame-decode worker per logical CPU (8+). Under the ~1000Hz `CursorMoved`
+event/system churn from moving the mouse, the scheduler kept the app's main thread on a P-core but
+descheduled the decode *workers* onto (or off) the slow LP-E island. That surfaced as
+`avcodec_send_packet` blocking while it waited for a not-yet-free worker slot — measured ~150×
+(≈200us → 20–30ms/frame), i.e. multi-second playback lag for as long as the mouse moved.
+
+**Primary fix (`crates/video-pipeline/src/lib.rs`): cap the decode worker count**
+(`default_decode_threads()` = `min(available_parallelism, 4)`, overridable by
+`FREEMUSIC_DECODE_THREADS`). Verified by an on-machine sweep with the mouse moving: `count: 0` →
+`send` 20–30ms; `=1` → ~5–8ms (works, thin headroom, too slow for real footage); `=2` → ~3–5ms;
+**`=4` → ~150us, flat as steady-state — lag gone**, because 4 workers stay resident on the 4 P-cores
+and never spill to the LP-E cores or oversubscribe, with no loss of steady-state throughput. `=0`
+restores the old pick-everything behaviour (reproduces the bug on such a CPU).
+
+**Secondary fix (`about_to_wait` in `app/src/main.rs`): during playback the video cadence governs;
+`next_ui_redraw_at` may no longer schedule a redraw *sooner* than the next frame.** Passive mouse
+movement makes egui request a hover repaint every update, which flows through `next_ui_redraw_at`
+and *bypasses* the `passive_playback_cursor_move` guard in `window_event` (that guard only suppresses
+the *direct* `request_redraw` nudge, not the egui-animation deadline path). Left unclamped it drove
+the redraw rate to 40–54fps on a 30fps clip — wasted full redraws that decode no new frame. This
+alone did NOT fix the lag (a thread-capped run is smooth even at the inflated fps), but it's correct
+and removes real waste, so it stays. While paused, `next_ui_redraw_at` governs fully (smooth
+menu/panel animations); while playing, egui animations advance at the frame cadence (imperceptible).
+
+**Also kept: the `MAX_PLAYBACK_DT_SECONDS` / one-frame `dt` cap** in `redraw` (from an earlier
+session) — bounds the *runaway spiral* where a slow redraw inflates the next redraw's catch-up. It's
+a correct cheap guard (see its doc comment for why capping position-advance beats capping
+`decode_ref`'s own budget); it was never the fix for this bug but is worth keeping.
+
+How it was diagnosed (method worth reusing for future playback-perf bugs): the pre-existing
+`[perf]` log (`PerfStats::maybe_print`) already showed `decode` ballooning while the GPU-touching
+timers `acquire`/`render_submit` stayed low — killing the earlier "GPU/compositor contention"
+theory. A temporary per-stage split of `decode` (`VideoPipeline::last_timings()` → `DecodeTimings`,
+timers around demux / `send_packet` / `receive_frame` / swscale / readback-copy) then showed the
+main-thread userspace stages (swscale, copy) stayed flat while only `send_packet` blew up — the
+asymmetry that pinpointed worker-thread starvation over global CPU load, and pointed straight at the
+thread-count fix. That split is diagnostic scaffolding; keep it only if useful, it can be trimmed
+back to the aggregate `decode` timer. Ruled out along the way: Xwayland (reproduces under native
+Wayland too) and Hyprland's cursor path (`cursor:no_hardware_cursors`/`use_cpu_buffer` toggles had
+no effect).
+
 ### Rendering (app)
 
 - `Gpu` (`app/src/gpu.rs`) owns the wgpu `Instance`/`Device`/`Queue`/`Surface` for the *interactive*
