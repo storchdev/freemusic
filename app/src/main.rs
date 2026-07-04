@@ -31,31 +31,17 @@ const PREVIEW_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Un
 /// registration exist from the very first redraw.
 const DEFAULT_CANVAS_SIZE: (u32, u32) = (1280, 720);
 
-/// Caps how far `position_seconds` can advance in a single redraw during ordinary playback.
-/// `dt` is real wall-clock time since the previous redraw — normally one video frame's worth
-/// (~16-33ms), but a slow redraw (GPU/compositor stall, e.g. measured cursor-move-correlated
-/// contention on this dev machine; could equally be system load or anything else) inflates it.
-/// Advancing position by the *full*, uncapped `dt` hands `VideoPipeline::seek_and_decode_ref`'s
-/// `exact = true` catch-up loop a bigger gap to close than it just closed — and if per-frame
-/// decode cost is comparable to or slower than real-time under that same contention, catch-up
-/// itself takes longer than the gap, inflating the *next* redraw's `dt` even more. That's a
-/// self-reinforcing spiral that only breaks once the gap exceeds `MAX_FORWARD_STEP_SECONDS` and
-/// a real reseek resets it — multiple seconds of visible stutter in the meantime. (An earlier
-/// attempt fixed this inside `decode_ref` itself by capping its own wall-clock budget and giving
-/// up early on unreached targets — reverted, since that corrupts `decode_ref`'s "returned frame
-/// always caught up to what was last requested" invariant and reintroduces the *other*,
-/// previously-fixed bug: a stale cached frame whose gap from a still-advancing target creeps
-/// past `MAX_FORWARD_STEP_SECONDS` re-triggers a reseek to essentially the same old keyframe,
-/// over and over — visible as the video jumping backward and looping.) Capping the position
-/// advance here instead keeps every catch-up small by construction, so it reliably completes
-/// well within one redraw regardless of how long the *previous* redraw took. The cost: under
-/// sustained contention, video (and, since both derive from the same `position_seconds`, audio
-/// and the MIDI overlay) falls slightly behind real wall-clock time rather than skipping content
-/// to stay caught up — a deliberate trade, since skipping content is what read as "rewinding".
+/// Caps how far `position_seconds` can advance in a single redraw during ordinary playback before
+/// audio has been started for that playback run.
+/// `dt` is real wall-clock time since the previous redraw. Before audio starts, cap it to one
+/// source-video frame so a stale first redraw cannot ask exact decode to close a large gap. Once
+/// audio is running, let the transport follow elapsed wall time so a later render stall does not
+/// make us repeatedly anchor the audio callback backward to an old video position.
 /// The real cap applied in `redraw` is one source-video frame's own duration (tighter than any
 /// fixed constant could be for every possible frame rate); this constant is only the fallback
 /// used before a video is loaded and `frame_duration_seconds()` isn't known yet.
 const MAX_PLAYBACK_DT_SECONDS: f64 = 0.1;
+const MAX_AUDIO_SYNC_PLAYBACK_DT_SECONDS: f64 = 1.0;
 
 /// Bundles the raw handles `render::Compositor` needs from our interactive-window `Gpu`.
 ///
@@ -154,6 +140,10 @@ struct AppState {
     /// `cpal` stream when it actually changes, not every frame (same dirty-check idea as
     /// `applied_calibration`).
     audio_playing: bool,
+    /// Set when playback is resumed from the UI. Audio stays paused until the first playback
+    /// tick has advanced/decode-synced video, so a slow first decode cannot make audio run ahead
+    /// and then snap backward.
+    audio_resume_pending: bool,
     next_playback_redraw_at: Option<Instant>,
     /// Deadline for egui's own animations (side-panel collapse/expand slide, menu open/hover,
     /// button flash, etc.) — set from `full_output`'s per-viewport `repaint_delay` each redraw.
@@ -163,6 +153,8 @@ struct AppState {
     next_ui_redraw_at: Option<Instant>,
     pointer_buttons_down: u8,
     perf: Option<PerfStats>,
+    interaction_log_enabled: bool,
+    interaction_log_until: Option<Instant>,
 }
 
 struct ExportRun {
@@ -326,6 +318,7 @@ impl AppState {
                 position_seconds: 0.0,
                 duration_seconds: 0.0,
                 seek_request: None,
+                seek_request_exact: false,
                 dropping: false,
                 midi_name: None,
                 midi_note_times: Vec::new(),
@@ -367,10 +360,13 @@ impl AppState {
             modifiers: winit::keyboard::ModifiersState::empty(),
             audio: AudioPlayback::new(),
             audio_playing: false,
+            audio_resume_pending: false,
             next_playback_redraw_at: None,
             next_ui_redraw_at: None,
             pointer_buttons_down: 0,
             perf: std::env::var_os("FREEMUSIC_PROFILE").map(|_| PerfStats::new()),
+            interaction_log_enabled: std::env::var_os("FREEMUSIC_INTERACTION_LOG").is_some(),
+            interaction_log_until: None,
         };
 
         if let Some(path) = video_path {
@@ -431,6 +427,8 @@ impl AppState {
         self.ui_state.duration_seconds = pipeline.duration_seconds();
         self.ui_state.position_seconds = 0.0;
         self.ui_state.playing = false;
+        self.ui_state.seek_request = None;
+        self.ui_state.seek_request_exact = false;
         self.next_playback_redraw_at = None;
 
         if let Ok(frame) = pipeline.seek_and_decode(0.0, false) {
@@ -454,6 +452,7 @@ impl AppState {
             eprintln!("failed to load audio track for {path:?}: {err}");
         }
         self.audio_playing = false;
+        self.audio_resume_pending = false;
         self.ui_state.waveform_peaks = self.audio.waveform_peaks().to_vec();
         self.ui_state.waveform_bucket_seconds = self.audio.waveform_bucket_seconds();
 
@@ -568,12 +567,14 @@ impl AppState {
         self.last_decoded_position = None;
         self.audio = AudioPlayback::new();
         self.audio_playing = false;
+        self.audio_resume_pending = false;
         self.next_playback_redraw_at = None;
 
         self.ui_state.playing = false;
         self.ui_state.position_seconds = 0.0;
         self.ui_state.duration_seconds = 0.0;
         self.ui_state.seek_request = None;
+        self.ui_state.seek_request_exact = false;
         self.ui_state.midi_name = None;
         self.ui_state.midi_note_times = Vec::new();
         self.ui_state.waveform_peaks = Vec::new();
@@ -614,6 +615,37 @@ impl AppState {
         }
     }
 
+    fn trace_interaction_for(&mut self, label: &str) {
+        if !self.interaction_log_enabled {
+            return;
+        }
+        if label != "play" {
+            if label == "pause" {
+                self.interaction_log_until = None;
+            }
+            return;
+        }
+        let now = Instant::now();
+        self.interaction_log_until = Some(now + Duration::from_secs(3));
+        eprintln!(
+            "[interaction:{label}] start pos={:.3} playing={} audio_playing={} audio_pending={} last_decoded={:?} next_playback_due_ms={:?}",
+            self.ui_state.position_seconds,
+            self.ui_state.playing,
+            self.audio_playing,
+            self.audio_resume_pending,
+            self.last_decoded_position,
+            self.next_playback_redraw_at
+                .map(|deadline| deadline.saturating_duration_since(now).as_secs_f64() * 1000.0),
+        );
+    }
+
+    fn interaction_trace_active(&self) -> bool {
+        self.interaction_log_enabled
+            && self
+                .interaction_log_until
+                .is_some_and(|deadline| Instant::now() <= deadline)
+    }
+
     fn redraw(&mut self) {
         let frame_start = Instant::now();
         let now = Instant::now();
@@ -621,29 +653,165 @@ impl AppState {
         let dt = dt_duration.as_secs_f64();
         self.last_instant = now;
 
+        if self.interaction_trace_active() {
+            eprintln!(
+                "[interaction:frame-start] dt_ms={:.2} pos={:.3} playing={} audio_playing={} audio_pending={} seek_request={:?} seek_exact={} last_decoded={:?}",
+                dt_duration.as_secs_f64() * 1000.0,
+                self.ui_state.position_seconds,
+                self.ui_state.playing,
+                self.audio_playing,
+                self.audio_resume_pending,
+                self.ui_state.seek_request,
+                self.ui_state.seek_request_exact,
+                self.last_decoded_position,
+            );
+        }
+
+        let mut explicit_seek = false;
+        let advanced_playback = self.advance_transport_and_decode(dt, &mut explicit_seek);
+        if advanced_playback && self.audio_resume_pending {
+            self.audio_resume_pending = false;
+            explicit_seek = true;
+        }
+
+        let start = Instant::now();
+        self.update_midi_position();
+        if let Some(perf) = self.perf.as_mut() {
+            perf.midi += start.elapsed();
+        }
+
+        let start = Instant::now();
+        let raw_input = self.egui_state.take_egui_input(&self.window);
+        let playing_before_ui = self.ui_state.playing;
+        let full_output = {
+            let ui_state = &mut self.ui_state;
+            self.egui_ctx.run_ui(raw_input, |ui| {
+                ui::draw(ui, ui_state);
+            })
+        };
+        let playing_changed_by_ui = self.ui_state.playing != playing_before_ui;
+        if playing_changed_by_ui {
+            self.last_instant = Instant::now();
+            if self.ui_state.playing {
+                self.audio_resume_pending = true;
+                if self.audio_playing {
+                    self.audio.set_playing(false);
+                    self.audio_playing = false;
+                }
+            } else {
+                self.audio_resume_pending = false;
+            }
+            self.trace_interaction_for(if self.ui_state.playing {
+                "play"
+            } else {
+                "pause"
+            });
+        }
+        if let Some(perf) = self.perf.as_mut() {
+            perf.egui += start.elapsed();
+        }
+
+        if self.ui_state.seek_request.is_some() {
+            if self.ui_state.playing && self.audio_playing {
+                self.audio.set_playing(false);
+                self.audio_playing = false;
+            }
+            if let Some(target) = self.ui_state.seek_request {
+                self.audio.seek_to_position_seconds(target);
+            }
+
+            self.advance_transport_and_decode(0.0, &mut explicit_seek);
+            if self.ui_state.playing {
+                self.audio_resume_pending = false;
+            }
+            self.last_instant = Instant::now();
+
+            let start = Instant::now();
+            self.update_midi_position();
+            if let Some(perf) = self.perf.as_mut() {
+                perf.midi += start.elapsed();
+            }
+        }
+
+        self.apply_post_ui_updates();
+
+        // Audio is driven by (never drives) the transport position — see `audio_playback`'s doc
+        // comment. Run this after egui and queued UI actions. Pause applies immediately; resume
+        // waits until a playback tick has advanced/decode-synced video so audio cannot run ahead
+        // during a slow first decode and then snap backward. Ordinary playback ticks only update
+        // the stream's resync anchor, but explicit seeks and play/pause transitions force the
+        // callback cursor onto the current transport position even for tiny moves.
+        if explicit_seek || playing_changed_by_ui {
+            self.audio
+                .seek_to_position_seconds(self.ui_state.position_seconds);
+        } else {
+            self.audio
+                .set_position_seconds(self.ui_state.position_seconds);
+        }
+        let target_audio_playing = self.ui_state.playing && !self.audio_resume_pending;
+        if self.interaction_trace_active() {
+            eprintln!(
+                "[interaction:audio] explicit_seek={} playing_changed={} target_audio_playing={} audio_playing_before={} pos={:.3}",
+                explicit_seek,
+                playing_changed_by_ui,
+                target_audio_playing,
+                self.audio_playing,
+                self.ui_state.position_seconds,
+            );
+        }
+        if target_audio_playing != self.audio_playing {
+            self.audio.set_playing(target_audio_playing);
+            self.audio_playing = target_audio_playing;
+        }
+
+        self.render_frame(full_output, frame_start, dt_duration, playing_changed_by_ui);
+    }
+
+    fn advance_transport_and_decode(&mut self, dt: f64, explicit_seek: &mut bool) -> bool {
+        let mut advanced_playback = false;
+        let start_position = self.ui_state.position_seconds;
         // Whether this redraw's position change (if any) came from an explicit scrub (the
         // timeline being dragged/clicked, or in future a keyboard seek) rather than ordinary
         // playback advancing by `dt`. Scrubs can seek approximately; playback uses exact decode,
         // but redraws are scheduled at the video frame interval instead of chained immediately.
-        let is_scrub = self.ui_state.seek_request.is_some();
+        let is_seek = self.ui_state.seek_request.is_some();
+        let seek_exact = self.ui_state.seek_request_exact;
         if let Some(target) = self.ui_state.seek_request.take() {
+            self.ui_state.seek_request_exact = false;
             self.ui_state.position_seconds = target.clamp(0.0, self.ui_state.duration_seconds);
+            *explicit_seek = true;
         } else if self.ui_state.playing {
-            // Capped to one source-video frame's worth (not a fixed constant): tighter than that
-            // just means falling further behind real wall-clock time under sustained contention
-            // for no benefit, while looser widens the worst-case catch-up (and therefore the
-            // worst-case redraw time) `MAX_PLAYBACK_DT_SECONDS` exists to bound — see its own doc
-            // comment.
-            let max_dt = self
-                .pipeline
-                .as_ref()
-                .map(VideoPipeline::frame_duration_seconds)
-                .unwrap_or(MAX_PLAYBACK_DT_SECONDS);
+            advanced_playback = true;
+            // Before audio is running, cap the first resumed tick to one source-video frame so
+            // play-button handling cannot immediately ask the decoder to close a large stale
+            // wall-clock gap. Once audio is active, use elapsed wall time so a later render stall
+            // does not make us keep anchoring the audio callback back to an old video position.
+            let max_dt = if self.audio_playing {
+                MAX_AUDIO_SYNC_PLAYBACK_DT_SECONDS
+            } else {
+                self.pipeline
+                    .as_ref()
+                    .map(VideoPipeline::frame_duration_seconds)
+                    .unwrap_or(MAX_PLAYBACK_DT_SECONDS)
+            };
             self.ui_state.position_seconds = (self.ui_state.position_seconds + dt.min(max_dt))
                 .min(self.ui_state.duration_seconds);
             if self.ui_state.position_seconds >= self.ui_state.duration_seconds {
                 self.ui_state.playing = false;
             }
+        }
+
+        if self.interaction_trace_active() {
+            eprintln!(
+                "[interaction:transport] dt_ms={:.2} advanced_playback={} is_seek={} seek_exact={} pos {:.3}->{:.3} playing={}",
+                dt * 1000.0,
+                advanced_playback,
+                is_seek,
+                seek_exact,
+                start_position,
+                self.ui_state.position_seconds,
+                self.ui_state.playing,
+            );
         }
 
         // Skip decode entirely if the transport position hasn't actually moved since the last
@@ -653,17 +821,21 @@ impl AppState {
         // "not caught up yet" branch and decode one more frame forward each time, which looks
         // like the paused video stuttering/looping instead of holding still.
         if self.last_decoded_position != Some(self.ui_state.position_seconds) {
+            let trace_active = self.interaction_trace_active();
             if let Some(pipeline) = self.pipeline.as_mut() {
                 let start = Instant::now();
-                let decoded_result = if is_scrub {
-                    pipeline.seek_and_decode_ref(self.ui_state.position_seconds, false)
+                let decoded_result = if is_seek {
+                    pipeline.seek_and_decode_ref(self.ui_state.position_seconds, seek_exact)
                 } else {
                     pipeline.seek_and_decode_ref(self.ui_state.position_seconds, true)
                 };
+                let decode_elapsed = start.elapsed();
                 if let Ok(decoded) = decoded_result {
                     if let Some(perf) = self.perf.as_mut() {
-                        perf.decode += start.elapsed();
+                        perf.decode += decode_elapsed;
                     }
+                    let decoded_changed = decoded.changed;
+                    let frame_pts = decoded.frame.pts_seconds;
                     if decoded.changed {
                         let frame = decoded.frame;
                         let start = Instant::now();
@@ -681,9 +853,27 @@ impl AppState {
                     } else if let Some(perf) = self.perf.as_mut() {
                         perf.cache_hits += 1;
                     }
+                    if trace_active {
+                        eprintln!(
+                            "[interaction:decode] ok changed={} target={:.3} frame_pts={:.3} elapsed_ms={:.2} exact={}",
+                            decoded_changed,
+                            self.ui_state.position_seconds,
+                            frame_pts,
+                            decode_elapsed.as_secs_f64() * 1000.0,
+                            if is_seek { seek_exact } else { true },
+                        );
+                    }
                     self.last_decoded_position = Some(self.ui_state.position_seconds);
                 } else if let Some(perf) = self.perf.as_mut() {
-                    perf.decode += start.elapsed();
+                    perf.decode += decode_elapsed;
+                    if trace_active {
+                        eprintln!(
+                            "[interaction:decode] err target={:.3} elapsed_ms={:.2} exact={}",
+                            self.ui_state.position_seconds,
+                            decode_elapsed.as_secs_f64() * 1000.0,
+                            if is_seek { seek_exact } else { true },
+                        );
+                    }
                 }
                 // Read the purely-CPU sub-stage split now that `decoded_result` (which borrowed
                 // `pipeline`) has been dropped. Cache-hit calls leave these at zero, matching that
@@ -697,29 +887,32 @@ impl AppState {
                     perf.scale += timings.scale;
                     perf.copy += timings.copy;
                 }
+                if trace_active {
+                    eprintln!(
+                        "[interaction:decode-stages] demux_ms={:.2} send_ms={:.2} receive_ms={:.2} scale_ms={:.2} copy_ms={:.2}",
+                        timings.demux.as_secs_f64() * 1000.0,
+                        timings.send.as_secs_f64() * 1000.0,
+                        timings.receive.as_secs_f64() * 1000.0,
+                        timings.scale.as_secs_f64() * 1000.0,
+                        timings.copy.as_secs_f64() * 1000.0,
+                    );
+                }
             }
+        } else if self.interaction_trace_active() {
+            eprintln!(
+                "[interaction:decode] skipped unchanged_pos={:.3}",
+                self.ui_state.position_seconds,
+            );
         }
-        let start = Instant::now();
+        advanced_playback
+    }
+
+    fn update_midi_position(&mut self) {
         let midi_time = self.ui_state.position_seconds - self.ui_state.sync_offset_seconds;
         self.compositor.update_midi(midi_time as f32);
-        if let Some(perf) = self.perf.as_mut() {
-            perf.midi += start.elapsed();
-        }
+    }
 
-        let start = Instant::now();
-        let raw_input = self.egui_state.take_egui_input(&self.window);
-        let playing_before_ui = self.ui_state.playing;
-        let full_output = {
-            let ui_state = &mut self.ui_state;
-            self.egui_ctx.run_ui(raw_input, |ui| {
-                ui::draw(ui, ui_state);
-            })
-        };
-        let playing_changed_by_ui = self.ui_state.playing != playing_before_ui;
-        if let Some(perf) = self.perf.as_mut() {
-            perf.egui += start.elapsed();
-        }
-
+    fn apply_post_ui_updates(&mut self) {
         if self.ui_state.calibration != self.applied_calibration
             || self.ui_state.note_style != self.applied_note_style
         {
@@ -829,36 +1022,32 @@ impl AppState {
                 self.export_run = None;
             }
         }
+    }
 
-        // Audio is driven by (never drives) the transport position — see `audio_playback`'s doc
-        // comment. Run this after egui and queued UI actions so Play/Pause button clicks affect
-        // the CPAL stream in the same redraw that processed the click, not one repaint later.
-        // Ordinary playback ticks only update the stream's resync anchor, but explicit scrubs
-        // force the callback cursor onto the new transport position even for tiny seeks.
-        if is_scrub {
-            self.audio
-                .seek_to_position_seconds(self.ui_state.position_seconds);
-        } else {
-            self.audio
-                .set_position_seconds(self.ui_state.position_seconds);
-        }
-        if self.ui_state.playing != self.audio_playing {
-            self.audio.set_playing(self.ui_state.playing);
-            self.audio_playing = self.ui_state.playing;
-        }
-
+    fn render_frame(
+        &mut self,
+        full_output: egui::FullOutput,
+        frame_start: Instant,
+        dt_duration: Duration,
+        playing_changed_by_ui: bool,
+    ) {
+        let trace_active = self.interaction_trace_active();
+        let stage_start = Instant::now();
         let paint_jobs = self
             .egui_ctx
             .tessellate(full_output.shapes, full_output.pixels_per_point);
+        let tessellate_elapsed = stage_start.elapsed();
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.gpu.config.width, self.gpu.config.height],
             pixels_per_point: full_output.pixels_per_point,
         };
 
+        let stage_start = Instant::now();
         for (id, delta) in &full_output.textures_delta.set {
             self.egui_renderer
                 .update_texture(&self.gpu.device, &self.gpu.queue, *id, delta);
         }
+        let texture_elapsed = stage_start.elapsed();
 
         let start = Instant::now();
         let surface_texture = match self.gpu.surface.get_current_texture() {
@@ -872,18 +1061,22 @@ impl AppState {
         if let Some(perf) = self.perf.as_mut() {
             perf.acquire += start.elapsed();
         }
+        let acquire_elapsed = start.elapsed();
         let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let start = Instant::now();
+        let render_start = Instant::now();
+        let stage_start = Instant::now();
         let mut encoder = self
             .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame_encoder"),
             });
+        let encoder_elapsed = stage_start.elapsed();
 
+        let stage_start = Instant::now();
         let egui_cmd_buffers = self.egui_renderer.update_buffers(
             &self.gpu.device,
             &self.gpu.queue,
@@ -891,7 +1084,9 @@ impl AppState {
             &paint_jobs,
             &screen_descriptor,
         );
+        let egui_buffers_elapsed = stage_start.elapsed();
 
+        let stage_start = Instant::now();
         // The compositor now renders into the offscreen preview texture, not the swapchain
         // directly — the egui pass below displays it via `egui::Image` in the central panel
         // (see CLAUDE.md's milestone 6c notes). This also sidesteps the old two-pass split that
@@ -919,7 +1114,9 @@ impl AppState {
 
             self.compositor.render(&mut render_pass);
         }
+        let compositor_elapsed = stage_start.elapsed();
 
+        let stage_start = Instant::now();
         {
             // `Clear`, not `Load` — the swapchain no longer has a prior pass drawn onto it (the
             // compositor now renders into the offscreen preview texture above instead), so this
@@ -945,19 +1142,24 @@ impl AppState {
             self.egui_renderer
                 .render(&mut render_pass, &paint_jobs, &screen_descriptor);
         }
+        let egui_render_elapsed = stage_start.elapsed();
 
         for id in &full_output.textures_delta.free {
             self.egui_renderer.free_texture(id);
         }
 
+        let stage_start = Instant::now();
         self.gpu.queue.submit(
             egui_cmd_buffers
                 .into_iter()
                 .chain(std::iter::once(encoder.finish())),
         );
+        let submit_elapsed = stage_start.elapsed();
+        let stage_start = Instant::now();
         surface_texture.present();
+        let present_elapsed = stage_start.elapsed();
         if let Some(perf) = self.perf.as_mut() {
-            perf.render_submit += start.elapsed();
+            perf.render_submit += render_start.elapsed();
         }
 
         self.egui_state
@@ -983,7 +1185,7 @@ impl AppState {
         if self.export_run.is_some() {
             self.window.request_redraw();
         }
-        if playing_changed_by_ui {
+        if playing_changed_by_ui && !self.ui_state.playing {
             self.window.request_redraw();
         }
         self.next_playback_redraw_at = if self.ui_state.playing {
@@ -992,10 +1194,44 @@ impl AppState {
                 .as_ref()
                 .map(VideoPipeline::frame_duration_seconds)
                 .unwrap_or(1.0 / 30.0);
-            Some(frame_start + Duration::from_secs_f64(frame_duration.max(0.001)))
+            let frame_duration = Duration::from_secs_f64(frame_duration.max(0.001));
+            let now = Instant::now();
+            let cadence_deadline = frame_start + frame_duration;
+            Some(if cadence_deadline > now {
+                cadence_deadline
+            } else {
+                now + frame_duration
+            })
         } else {
             None
         };
+        if trace_active {
+            eprintln!(
+                "[interaction:render] tessellate_ms={:.2} texture_ms={:.2} acquire_ms={:.2} encoder_ms={:.2} egui_buffers_ms={:.2} compositor_ms={:.2} egui_render_ms={:.2} submit_ms={:.2} present_ms={:.2}",
+                tessellate_elapsed.as_secs_f64() * 1000.0,
+                texture_elapsed.as_secs_f64() * 1000.0,
+                acquire_elapsed.as_secs_f64() * 1000.0,
+                encoder_elapsed.as_secs_f64() * 1000.0,
+                egui_buffers_elapsed.as_secs_f64() * 1000.0,
+                compositor_elapsed.as_secs_f64() * 1000.0,
+                egui_render_elapsed.as_secs_f64() * 1000.0,
+                submit_elapsed.as_secs_f64() * 1000.0,
+                present_elapsed.as_secs_f64() * 1000.0,
+            );
+        }
+        if trace_active {
+            let now = Instant::now();
+            eprintln!(
+                "[interaction:schedule] frame_total_ms={:.2} dt_ms={:.2} playing={} next_playback_due_ms={:?} ui_due_ms={:?}",
+                frame_start.elapsed().as_secs_f64() * 1000.0,
+                dt_duration.as_secs_f64() * 1000.0,
+                self.ui_state.playing,
+                self.next_playback_redraw_at
+                    .map(|deadline| deadline.saturating_duration_since(now).as_secs_f64() * 1000.0),
+                self.next_ui_redraw_at
+                    .map(|deadline| deadline.saturating_duration_since(now).as_secs_f64() * 1000.0),
+            );
+        }
         if let Some(perf) = self.perf.as_mut() {
             perf.record_frame(frame_start.elapsed(), dt_duration);
             perf.maybe_print();
@@ -1060,16 +1296,17 @@ impl ApplicationHandler for App {
         // throttle below. `redraw` (called from the `RedrawRequested` arm further down) already
         // decides for itself whether to keep the loop going, so this generic repaint-on-any-event
         // nudge should only fire for other events that actually need an immediate repaint.
-        // Passive cursor movement during playback is deliberately excluded: otherwise simply
-        // moving the mouse turns playback into an input-rate redraw loop and bypasses the
-        // video-frame scheduler. Cursor movement while a button is held is still treated as
+        // Passive pointer input during playback is deliberately excluded: otherwise simply
+        // moving or clicking the mouse turns playback into an input-rate redraw loop and bypasses
+        // the video-frame scheduler. Cursor movement while a button is held is still treated as
         // active input, so timeline/crop/calibration drags remain responsive.
-        let passive_playback_cursor_move = state.ui_state.playing
-            && state.pointer_buttons_down == 0
-            && matches!(event, WindowEvent::CursorMoved { .. });
+        let passive_playback_pointer_input = state.ui_state.playing
+            && (matches!(event, WindowEvent::MouseInput { .. })
+                || (state.pointer_buttons_down == 0
+                    && matches!(event, WindowEvent::CursorMoved { .. })));
         if response.repaint
             && !matches!(event, WindowEvent::RedrawRequested)
-            && !passive_playback_cursor_move
+            && !passive_playback_pointer_input
         {
             state.window.request_redraw();
         }
@@ -1222,6 +1459,17 @@ fn handle_shortcut(
         KeyCode::Space => {
             state.ui_state.playing = !state.ui_state.playing;
             state.last_instant = Instant::now();
+            if state.ui_state.playing {
+                state.audio_resume_pending = true;
+                if state.audio_playing {
+                    state.audio.set_playing(false);
+                    state.audio_playing = false;
+                }
+                state.trace_interaction_for("play");
+            } else {
+                state.audio_resume_pending = false;
+                state.trace_interaction_for("pause");
+            }
         }
         KeyCode::ArrowLeft => {
             let step = seek_step_seconds(state, shift);
@@ -1230,6 +1478,7 @@ fn handle_shortcut(
                 .seek_request
                 .unwrap_or(state.ui_state.position_seconds);
             state.ui_state.seek_request = Some((base - step).max(0.0));
+            state.ui_state.seek_request_exact = true;
         }
         KeyCode::ArrowRight => {
             let step = seek_step_seconds(state, shift);
@@ -1238,12 +1487,15 @@ fn handle_shortcut(
                 .seek_request
                 .unwrap_or(state.ui_state.position_seconds);
             state.ui_state.seek_request = Some((base + step).min(state.ui_state.duration_seconds));
+            state.ui_state.seek_request_exact = true;
         }
         KeyCode::Home => {
             state.ui_state.seek_request = Some(0.0);
+            state.ui_state.seek_request_exact = true;
         }
         KeyCode::End => {
             state.ui_state.seek_request = Some(state.ui_state.duration_seconds);
+            state.ui_state.seek_request_exact = true;
         }
         KeyCode::KeyS if ctrl => {
             state.ui_state.save_requested = true;

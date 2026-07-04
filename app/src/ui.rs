@@ -5,6 +5,9 @@ pub struct UiState {
     /// Set by the UI when the user drags/clicks the timeline; the app loop consumes and clears
     /// it.
     pub seek_request: Option<f64>,
+    /// True when the pending seek should decode exactly to the requested timestamp instead of
+    /// accepting the first post-seek keyframe. Used for discrete jumps, not live drags.
+    pub seek_request_exact: bool,
     /// True while a file is being dragged over the window; drives the drop-zone overlay.
     pub dropping: bool,
     pub midi_name: Option<String>,
@@ -631,6 +634,7 @@ fn draw_timeline_scrubber(ui: &mut egui::Ui, state: &mut UiState) {
         if let Some(pos) = response.interact_pointer_pos() {
             let fraction = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
             state.seek_request = Some(view_start + fraction as f64 * (view_end - view_start));
+            state.seek_request_exact = response.clicked() && !response.dragged();
 
             if response.dragged() {
                 edge_auto_scroll(ui, state, rect, pos, view_start, view_end, duration);

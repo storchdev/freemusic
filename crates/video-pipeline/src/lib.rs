@@ -237,7 +237,11 @@ impl VideoPipeline {
         let need_seek = match self.current_frame.as_ref() {
             None => true,
             Some(frame) => {
-                target_seconds + 1e-6 < frame.pts_seconds
+                // An exact seek may legitimately land on the first frame at/after the requested
+                // timestamp. Treat targets up to one frame before that cached frame as covered;
+                // otherwise resuming from an exact seek can immediately classify the unchanged
+                // transport as a backward jump and pay for another real seek.
+                target_seconds + self.frame_duration_seconds + 1e-6 < frame.pts_seconds
                     || target_seconds - frame.pts_seconds > MAX_FORWARD_STEP_SECONDS
             }
         };

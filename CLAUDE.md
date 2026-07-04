@@ -455,17 +455,15 @@ no effect).
   `midi_overlay`, by `render::Compositor` — see the MP4 export section for why this is a
   separate crate rather than living directly in `app`.
 - `AppState::redraw` in `main.rs` is the per-frame orchestrator: advance/clamp the transport
-  position → `video_pipeline.seek_and_decode_ref` → `compositor.upload_frame` only when
-  `DecodedFrameRef::changed` + `update_viewport` → `compositor.update_midi(position - sync_offset)`
-  → run egui (`ui::draw`) → apply any
-  calibration change / Save-Load/Export button press queued by that egui pass (see the
-  `project` crate section above and the MP4 export section below) → **two** render passes on
-  the swapchain view → present. Export progress still chains `window.request_redraw()` directly
-  at the end of `redraw`, but playback does not: it sets `next_playback_redraw_at`, and
-  `ApplicationHandler::about_to_wait` uses `ControlFlow::WaitUntil` to wake at the loaded video's
-  own `frame_duration_seconds`. Schedule the next playback wake from the current frame's
-  `frame_start`, not from after render completion; scheduling from `Instant::now()` at the end of
-  a 3-4ms redraw turns a 33.3ms 30fps interval into ~37ms and shows up as ~27fps.
+  position and decode → update MIDI → run egui (`ui::draw`) → if egui queued a seek, consume and
+  decode it immediately in that same redraw → apply calibration/project/export changes → sync
+  audio → render/present. `compositor.upload_frame` only runs when `DecodedFrameRef::changed`.
+  Export progress still chains `window.request_redraw()` directly at the end of `redraw`, but
+  playback does not: it sets `next_playback_redraw_at`, and `ApplicationHandler::about_to_wait`
+  uses `ControlFlow::WaitUntil` to wake at the loaded video's own `frame_duration_seconds`.
+  Schedule the next playback wake from `frame_start` when the frame finishes before its cadence
+  deadline; if render has already overrun that deadline, schedule from `Instant::now()` plus one
+  frame interval so the app does not try to catch up by immediately drawing several stale frames.
 - **Two render passes, not one** (changed in milestone 2): a `scene_pass` (`LoadOp::Clear`)
   draws `compositor` (video quad then MIDI waterfall) with a normally-scoped (non-`'static`)
   `RenderPass`, followed by an `egui_pass` (`LoadOp::Load`, so it composites on top without
@@ -902,7 +900,8 @@ no effect).
   Shift+Left/Right seek ±1s (relative to `seek_request.unwrap_or(position)`, not the raw
   position, so two quick presses before a redraw consumes the first compound rather than clobber
   each other), Home/End jump to start/end, Ctrl+S save project, Ctrl+O open project, Esc cancel an
-  in-progress export. Space (play/pause) moved into the same function, unchanged in behavior.
+  in-progress export. Space (play/pause) now mirrors the UI button's audio-resume gating and
+  diagnostic tracing instead of only flipping `ui_state.playing`.
   Every action other than Space sets the same `UiState` request flag the menu bar/tab buttons use
   (see 6b above) rather than calling `AppState` methods directly — one code path.
 - J/K/L (the "nice-to-have, skip unless there's time" item from the plan) was skipped.
@@ -928,6 +927,22 @@ no effect).
   Scrubs also increment `resync_generation`, so even a tiny one-frame seek (smaller than the
   drift threshold) snaps the cursor. This keeps normal playback continuous without letting a real
   seek stay on the old audio cursor.
+- **Unpause/seek stutter fixes**: play/resume now sets `audio_resume_pending`, pauses any already
+  running stream, and only starts audio after the first playback tick has advanced/decode-synced
+  the transport. That first tick is capped to one source-video frame; after audio is active,
+  playback uses elapsed wall time (bounded at 1s) instead of the one-frame cap so a long render
+  stall does not make the app repeatedly push CPAL's cursor backward and replay old audio. Exact
+  timeline clicks/keyboard seeks set `UiState::seek_request_exact`; live drags remain approximate.
+  `VideoPipeline::decode_ref` also treats a cached frame up to one frame after an exact target as
+  covering that target, because an exact seek can legitimately land on the first frame at/after
+  the requested timestamp. Without that tolerance, resuming from an exact seek could immediately
+  classify the unchanged transport as a backward jump and pay for a redundant real seek.
+- `FREEMUSIC_INTERACTION_LOG=1` enables narrow resume diagnostics only after Play is pressed
+  (pause stops the trace). The kept logs are env-gated and intentionally focused:
+  `[interaction:frame-start]`, `transport`, `decode`, `audio`, `render`, and `schedule`.
+  `[interaction:render]` breaks stalls down into tessellate/texture/acquire/encoder/buffer/
+  compositor/egui-render/submit/present timings; keep this gated diagnostic unless it becomes
+  misleading.
 - **cpal sample-format handling**: mirrors Neothesia's own `SynthBackend::run` pattern exactly
   (`neothesia/src/output_manager/synth_backend.rs`) — a generic `build_typed_stream<T: SizedSample
   + FromSample<f32>>` dispatched from a `match config.sample_format() { F32 => ::<f32>, I16 =>
