@@ -8,20 +8,46 @@ decision, a gotcha) gets a note here in the same session it happens, in whatever
 best (or a new one). This file is the fastest way for the next agent to get oriented — don't let
 it drift from what the code actually does.
 
-**Commit as the repo owner, no AI attribution.** Do not append a `Co-Authored-By: Claude ...`
-trailer (or any other AI-attribution line) to commit messages — commits should read like
-ordinary commits from the repo owner. This only affects the commit message body; the actual git
-author/committer identity already comes from local git config and needs no special handling.
+**Commit as the repo owner, no AI attribution, short message only.** Do not append a
+`Co-Authored-By: Claude ...` trailer (or any other AI-attribution line) to commit messages —
+commits should read like ordinary commits from the repo owner. The actual git author/committer
+identity already comes from local git config and needs no special handling. When the user asks
+you to commit, write a short one-line commit message (a plain subject line, no body/description
+paragraph, no bullet list of changes) — do not use the longer "why"-focused commit body format
+that generic Claude Code guidance elsewhere suggests. Any longer explanation of what changed and
+why belongs in this file instead, per the "keep this file up to date" note above, not in the
+commit message.
 
-**Prefer a human for interactive UI verification over an automated screenshot loop.** For
-anything that needs eyeballing in the running app (drag handles, sliders, dialogs, visual
-correctness), ask the user to drive it and report back rather than iterating with
-`scripts/click.sh`/`scripts/drag.sh`/`scripts/screenshot.sh` yourself — see "Screenshotting/
-driving the app under native Hyprland" below for why this is especially true on this machine
-(tiling-WM coordinates are unreliable and slow to re-derive per click). Still fine to build,
-launch (`scripts/run-app.sh`), and kill (`scripts/kill-app.sh`) the app yourself, and to use the
-scripts for a quick one-off sanity screenshot when no human is available to check — just don't
-default to a full click/drag/screenshot verification loop when a human can look instead.
+**Never run the app yourself. Build/compile only, then ask the user to run it.** Do not invoke
+`scripts/run-app.sh`, `cargo run --bin app`, or `scripts/click.sh`/`scripts/drag.sh`/
+`scripts/screenshot.sh` under any circumstances — not even for a "quick one-off sanity
+screenshot" with no human available. Your own verification stops at `cargo build`/`cargo check`/
+`cargo clippy`/`scripts/check.sh` succeeding. `scripts/kill-app.sh` is fine (it only kills a
+process, doesn't start one).
+
+When a change needs empirical, runtime confirmation — does the fix actually work, what does a log
+show, does a slider/drag/dialog behave correctly — ask the user to run the app themselves and
+report back, rather than trying to observe it yourself. Two ways to ask, depending on what's
+needed:
+- **Visual/interactive behavior** (drag handles, dialogs, on-screen correctness): ask the user to
+  drive the app and describe or screenshot what they see — see "Screenshotting/driving the app
+  under native Hyprland" below for why automating this yourself is also unreliable on this
+  machine (tiling-WM coordinates drift between screenshots), on top of the blanket rule above.
+- **Non-visual/diagnostic evidence** (timing, decode stats, crashes, a specific code path
+  firing): ask the user to set the relevant environment variable(s) — e.g. `RUST_LOG=debug`, or
+  an app-specific one like `FREEMUSIC_DECODE_THREADS`/`WGPU_BACKEND` — and tee the run's output
+  into a log file you name, e.g.:
+  ```sh
+  RUST_LOG=debug scripts/run-app.sh video.mp4 midi.mid 2>&1 | tee /tmp/freemusic-debug.log
+  ```
+  then share back that file's contents (or the relevant excerpt) for you to read with the `Read`
+  tool.
+
+The rest of this document (the "Verifying ..." sections, the WSL2/Hyprland screenshotting
+sections, the milestone 3-5 click/drag/screenshot patterns) predates this rule and documents *how
+the app has been verified historically* and what tooling exists for the user's own use — read it
+for context on what to ask the user to do and what output to expect, not as instructions for you
+to execute those scripts yourself.
 
 ## What this is
 
@@ -932,6 +958,9 @@ no effect).
 
 ## Verifying changes to `app` or `video-pipeline`
 
+> Per the "never run the app yourself" rule above: don't execute the commands in this section
+> yourself. Ask the user to run them and report back what they observed or a teed log file.
+
 Since there's no test suite for playback/timing correctness, changes to the decode or render path
 should be checked by actually running the app, not just by `cargo build` succeeding:
 
@@ -1044,6 +1073,10 @@ in `run-app.sh`, window-relative-vs-absolute coordinates), but a few things diff
 
 ### Verifying drag interactions and persistence (milestones 3–4 pattern)
 
+> Historical record of how this was verified pre-dating the "never run the app yourself" rule
+> above. Don't execute steps 1-2 yourself anymore — hand the whole sequence to the user and ask
+> them to report back the readouts step 3 describes (or a screenshot).
+
 Milestone 3's actual content — calibration handles, sync-offset drag value, save/load — and
 milestone 4's (transform sliders, crop handles) are interaction rather than rendering, so
 pixel-diffing screenshots isn't the right check. The pattern that worked, in order:
@@ -1079,6 +1112,11 @@ pixel-diffing screenshots isn't the right check. The pattern that worked, in ord
    plumbing, unlike milestone 2's overlay-rendering checks where note content mattered.
 
 ### Verifying MP4 export (milestone 5 pattern)
+
+> Historical record predating the "never run the app yourself" rule above. Ask the user to
+> perform steps 1-2 and hand you the resulting file (or its path); step 3's `ffprobe`/`ffmpeg`
+> inspection of the *output file* is fine for you to run yourself — that's static-file analysis,
+> not running the app.
 
 Export is neither a pure rendering change (screenshot-comparable) nor a simple UI-state
 round-trip (readable off an on-screen label) — the thing that actually needs checking is a
