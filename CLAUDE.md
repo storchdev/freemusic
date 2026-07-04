@@ -268,9 +268,23 @@ to live in `app/src/`, moved out in milestone 5 — see the MP4 export section b
 - **Rotation needs an aspect-correction step or it shears the image**: NDC's `x` and `y` axes
   don't correspond to equal physical pixel counts unless the window is square, so a plain
   rotation matrix applied directly in NDC visibly skews non-square windows. Fixed by
-  `mat3_aspect(window_width/window_height)`: scale `y` up by the window aspect ratio before
-  rotating, rotate in that now-isotropic space, then scale back down by the same factor
-  afterward.
+  `mat3_aspect`: scale `y` by `1/window_aspect` (`window_width/window_height`) *before* rotating
+  to enter an isotropic (equal-pixels-per-NDC-unit-on-both-axes) space, rotate there, then scale
+  `y` back by `window_aspect` afterward to return to NDC.
+- **Bug found and fixed: the two `mat3_aspect` factors above were swapped**, i.e. the pre-rotate
+  step scaled `y` by `window_aspect` and the post-rotate step by `1/window_aspect` — backwards
+  from the previous bullet's correct derivation. Reported as "the rotate slider warps the footage
+  severely" rather than rotating it normally. Confirmed algebraically (not just by eyeballing):
+  tracing a purely-horizontal NDC point through a 90° rotation with the swapped factors scales
+  its resulting vertical pixel offset by `window_aspect²` relative to the correct answer instead
+  of preserving magnitude — e.g. at `window_aspect = 2` (a 2:1 wide window) an 800px horizontal
+  offset became 200px vertical instead of 800px, a 4x error, growing/shrinking with how far the
+  window departs from square. Fixed in `build_transform`
+  (`crates/render/src/video_quad.rs`) by swapping which factor is applied before vs. after
+  `rotation` in the `aspect_corrected_rotation` composition. `cargo build`/`clippy` can't catch a
+  wrong-but-type-correct matrix composition like this — worth a manual re-check (drag the
+  rotation slider on a non-square window/video and confirm the footage rotates rigidly, edges
+  staying straight, rather than skewing) next time someone has hands on the running app.
 - **WGSL `mat3x3<f32>` uniform-buffer layout gotcha**: in the uniform address space each column
   is padded to 16 bytes (a `vec4`), not the 12 bytes you'd expect from 3 `f32`s — so the matrix
   is really 48 bytes, not 36. The Rust-side `Uniforms` struct mirrors this explicitly as

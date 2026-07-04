@@ -81,8 +81,8 @@ fn build_transform(letterbox: [f32; 2], window_aspect: f32, transform: &VideoTra
     let translate = mat3_translate(transform.translate_x, transform.translate_y);
     let tilt = mat3_tilt(transform.tilt_x, transform.tilt_y);
     let aspect_corrected_rotation = mat3_mul(
-        mat3_aspect(1.0 / window_aspect),
-        mat3_mul(rotation, mat3_aspect(window_aspect)),
+        mat3_aspect(window_aspect),
+        mat3_mul(rotation, mat3_aspect(1.0 / window_aspect)),
     );
     mat3_mul(
         tilt,
