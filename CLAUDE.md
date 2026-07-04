@@ -1115,6 +1115,30 @@ no effect).
   say, Brightness or Translate X actually reverts to the prior value on Enter, and that a normal
   in-range typed value commits correctly, the next time someone has hands on it.
 
+### Widened rotation and roundedness slider ranges
+
+- **Rotation** (Transform tab) widened from `-45.0..=45.0` to `-180.0..=180.0` degrees
+  (`app/src/ui.rs::draw_transform_tab`), so it can flip footage upside-down, not just apply
+  small camera-correction angles. This relies on the rotation-shear fix (see the video-quad
+  aspect-correction bug above) actually rotating rigidly at any angle — before that fix a wide
+  range would have made the warp bug far more visible. `project::VideoTransform`'s doc comment
+  updated to reflect that `rotation_degrees` is now a full-range control, distinct from
+  `tilt_x`/`tilt_y` which remain small-angle keystone-only terms.
+- **Note roundedness** (Keyboard tab) widened from `0.0..=1.0` to `0.0..=3.0`
+  (`app/src/ui.rs::draw_keyboard_tab`) so notes can go rounder than Neothesia's own default
+  corner radius (still `1.0`), up to fully pill/capsule-shaped for typical note widths. No
+  shader-side clamp exists on `radius` in the vendored waterfall SDF
+  (`neothesia-core/.../waterfall/pipeline/shader.wgsl::dist`) — pushing `roundedness` far enough
+  that `radius` exceeds half a note's shorter dimension makes the rounded-rect distance field
+  overestimate distance in the squeezed middle and can visually shrink/distort the note rather
+  than erroring, so `3.0` was picked as generous headroom without being unbounded. Neither range
+  change touches persistence (`project::NoteStyle`/`VideoTransform` still just store the `f32`,
+  no enum/validation) or the crop/calibration min-gap clamp system, which is unrelated.
+- Verified by `cargo build`/`scripts/check.sh` (fmt+clippy clean); not yet manually exercised —
+  worth dragging both sliders to their new extremes (rotation to ±180, roundedness to 3.0) and
+  confirming visually the results look like an upside-down rotation and a fully rounded/pill note
+  shape respectively, next time someone has hands on the running app.
+
 ## Verifying changes to `app` or `video-pipeline`
 
 > Per the "never run the app yourself" rule above: don't execute the commands in this section

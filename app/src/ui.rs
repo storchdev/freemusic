@@ -315,7 +315,7 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
     });
     ui.horizontal(|ui| {
         ui.label("Roundedness:");
-        validated_slider(ui, &mut state.note_style.roundedness, 0.0..=1.0, None);
+        validated_slider(ui, &mut state.note_style.roundedness, 0.0..=3.0, None);
     });
     ui.horizontal(|ui| {
         ui.label("Fall speed:");
@@ -393,7 +393,7 @@ fn draw_transform_tab(ui: &mut egui::Ui, transform: &mut project::VideoTransform
     });
     ui.horizontal(|ui| {
         ui.label("Rotation (deg):");
-        validated_slider(ui, &mut transform.rotation_degrees, -45.0..=45.0, None);
+        validated_slider(ui, &mut transform.rotation_degrees, -180.0..=180.0, None);
     });
     ui.horizontal(|ui| {
         ui.label("Tilt X:");

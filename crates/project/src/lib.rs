@@ -88,8 +88,9 @@ impl Default for NoteStyle {
 }
 
 /// Video transform applied before compositing: brightness scalar, a crop rectangle (fractions
-/// of the source frame, 0.0/1.0 = uncropped), a translate (pan) offset, and rotation/tilt
-/// (small-angle camera-correction terms, not a general corner-pin). `rotation_degrees` and
+/// of the source frame, 0.0/1.0 = uncropped), a translate (pan) offset, a full-range rotation
+/// (`rotation_degrees`, -180..=180, e.g. to flip upside-down footage), and tilt (a small-angle
+/// keystone/camera-correction term, not a general corner-pin). `rotation_degrees` and
 /// `translate_x`/`translate_y` are affine terms; `tilt_x`/`tilt_y` are the projective (keystone)
 /// terms — all folded into a single 3x3 homography matrix on the render side (see
 /// `app::video_quad`), so a future true corner-pin tilt is a data change there, not a shader
