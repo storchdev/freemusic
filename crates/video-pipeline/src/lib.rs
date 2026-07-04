@@ -172,14 +172,21 @@ impl VideoPipeline {
                     .map(|pts| pts as f64 * f64::from(self.time_base))
                     .unwrap_or(target_seconds);
 
+                // Only scale+copy the frame we're actually about to hand back. During a
+                // catch-up burst (`exact = true` and several frames between the last held one
+                // and `target_seconds`), every earlier frame in the burst used to still pay for
+                // a full-frame swscale conversion plus an ~8MB `Vec` allocation/copy in
+                // `to_decoded_frame`, immediately thrown away once the next `receive_frame` came
+                // back — real, measured cost (not skipped work) for frames nobody ever saw.
+                if exact && pts_seconds < target_seconds {
+                    continue;
+                }
+
                 let mut scaled = VideoFrame::empty();
                 self.scaler.run(&raw, &mut scaled)?;
                 let frame = to_decoded_frame(&scaled, pts_seconds);
                 self.current_frame = Some(frame.clone());
-
-                if !exact || pts_seconds >= target_seconds {
-                    return Ok(frame);
-                }
+                return Ok(frame);
             }
         }
 

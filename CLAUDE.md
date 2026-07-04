@@ -322,6 +322,35 @@ it, rather than bumping `wgpu` independently.
   same clip: avg 1.5ms, p95 2-3.4ms, no more scattered spikes through steady-state playback — the
   only elevated readings left are the first one or two calls (thread-pool spin-up / frame-pipeline
   fill latency), a one-time cost paid once at load, not a recurring stutter.
+- **Fixed: catch-up bursts scaled+copied every discarded intermediate frame, not just the one
+  actually shown**. Reported as "playback of a real ~1080p30 camera clip is laggy, one CPU core
+  pegged" even after the threading fix above (later, once threading also brought all 8 cores into
+  it: "all cores spike, still laggy"). Root-caused with a temporary call counter in
+  `seek_and_decode` (not kept — added, used, then stripped back out once the fix was confirmed):
+  logging showed `decodes/s` in the hundreds while `calls/s` (redraws that actually touched the
+  decoder) was only 6-40, i.e. dozens of frames decoded per call. That's `exact = true`'s
+  catch-up loop working as designed (decode forward until reaching `target_seconds`) — but every
+  loop iteration, including every discarded intermediate frame, was still paying for a full
+  `self.scaler.run` (YUV→BGRA swscale over the whole frame) *and* a fresh ~8MB `Vec`
+  allocation+copy in `to_decoded_frame`, immediately thrown away the instant the next
+  `receive_frame` succeeded. A second counter (gap between `target_seconds` and the held frame's
+  `pts_seconds`, plus wall-clock time per call) showed *why* this compounds instead of staying a
+  one-off hiccup: gap and call duration grew in lockstep call over call (e.g. 0.079s/80ms →
+  0.199s/220ms → ... → 0.466s/485ms before a hard reseek reset it) — a real feedback spiral,
+  since `position_seconds` advances by wall-clock `dt` every redraw regardless of how long the
+  *previous* redraw's decode took, so a slow catch-up call directly inflates the gap the *next*
+  call has to close. Fixed by moving the scale+copy after the "have we reached target yet" check
+  instead of before it — `if exact && pts_seconds < target_seconds { continue; }` skips straight
+  to the next `receive_frame` for any frame that isn't the one about to be returned, so raw h264
+  decode (needed regardless, P/B-frames require their references decoded either way) still
+  happens for every frame in the burst, but the expensive per-frame conversion only happens once,
+  for whichever frame actually reaches the caller. Measured end-to-end on the same 1080p30 clip:
+  process CPU during playback dropped from 300%+ (main thread ~80%, eight `av:h264` worker
+  threads ~25-35% each) to ~85%. Some residual periodic ~100ms stutter remained even after this
+  fix in testing — not yet root-caused; worth checking GPU-present/window-occlusion behavior (see
+  the Hyprland section below) before assuming it's decode-related, since this machine has a
+  documented history of occlusion-driven multi-hundred-ms `Surface::get_current_texture` stalls
+  that look identical from the decode side.
 
 ### Rendering (app)
 
