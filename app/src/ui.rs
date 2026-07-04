@@ -92,7 +92,6 @@ pub enum Tab {
 }
 
 pub fn draw(ui: &mut egui::Ui, state: &mut UiState) {
-    draw_menu_bar(ui, state);
     draw_side_panel(ui, state);
     draw_timeline_panel(ui, state);
 
@@ -136,48 +135,6 @@ fn fit_rect(container: egui::Rect, aspect: f32) -> egui::Rect {
         egui::vec2(container_h * aspect, container_h)
     };
     egui::Rect::from_center_size(container.center(), size)
-}
-
-/// Top menu bar (`File`): open video/MIDI, project new/open/save/save-as, exit. Wires into the
-/// same `AppState` actions the Project tab's buttons and keyboard shortcuts (`main.rs`'s
-/// `KeyboardInput` handling — Ctrl+S/Ctrl+O) already use, via the same request-flag-consumed-
-/// next-redraw pattern as the rest of `UiState` — one code path regardless of which of the three
-/// (menu, button, shortcut) triggered it.
-fn draw_menu_bar(ui: &mut egui::Ui, state: &mut UiState) {
-    egui::Panel::top("menu_bar").show(ui, |ui| {
-        ui.menu_button("File", |ui| {
-            if ui.button("Open Video…").clicked() {
-                state.open_video_requested = true;
-                ui.close();
-            }
-            if ui.button("Open MIDI…").clicked() {
-                state.open_midi_requested = true;
-                ui.close();
-            }
-            ui.separator();
-            if ui.button("New Project").clicked() {
-                state.new_project_requested = true;
-                ui.close();
-            }
-            if ui.button("Open Project…").clicked() {
-                state.open_project_requested = true;
-                ui.close();
-            }
-            if ui.button("Save Project\tCtrl+S").clicked() {
-                state.save_requested = true;
-                ui.close();
-            }
-            if ui.button("Save Project As…").clicked() {
-                state.save_project_as_requested = true;
-                ui.close();
-            }
-            ui.separator();
-            if ui.button("Exit").clicked() {
-                state.exit_requested = true;
-                ui.close();
-            }
-        });
-    });
 }
 
 /// Width range (collapsed) of the side panel once collapsed to a narrow strip — just enough to
@@ -400,9 +357,23 @@ fn draw_project_tab(ui: &mut egui::Ui, state: &mut UiState) {
         if ui.button("Load").clicked() {
             state.load_requested = true;
         }
+        if ui.button("Save As…").clicked() {
+            state.save_project_as_requested = true;
+        }
+        if ui.button("Open…").clicked() {
+            state.open_project_requested = true;
+        }
     });
+    if ui.button("New Project").clicked() {
+        state.new_project_requested = true;
+    }
     if let Some(message) = &state.status_message {
         ui.label(message);
+    }
+
+    ui.separator();
+    if ui.button("Exit").clicked() {
+        state.exit_requested = true;
     }
 }
 

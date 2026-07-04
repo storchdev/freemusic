@@ -867,13 +867,21 @@ no effect).
 
 ### File menu bar and remaining native dialogs (milestone 6b)
 
-- `ui::draw_menu_bar` (`egui::Panel::top("menu_bar")` + a single `ui.menu_button("File", ..)`)
-  adds New Project, Open Project…, Save Project (Ctrl+S), Save Project As…, and Exit alongside the
-  Open Video…/Open MIDI… buttons 6c already added to the Project tab — all of it routes through
-  the same `UiState` request-flag-consumed-next-redraw pattern the Project tab's buttons already
-  used (`new_project_requested`/`open_project_requested`/`save_project_as_requested`/
-  `exit_requested`), so the menu, the tab buttons, and 6d's keyboard shortcuts are three ways to
-  trigger the exact same `AppState` methods, never three separate code paths.
+- **Post-6b removal**: the top `File` menu bar (`ui::draw_menu_bar`) was removed entirely — there
+  is no longer any top bar at all — and its actions (New Project, Open Project…, Save Project
+  As…, Exit) folded directly into the Project tab as buttons alongside the pre-existing Open
+  Video…/Open MIDI… and Save/Load buttons, so everything project-related lives in one place. Same
+  `UiState` request flags as before (`new_project_requested`/`open_project_requested`/
+  `save_project_as_requested`/`exit_requested`), just triggered from the tab instead of a menu —
+  6d's keyboard shortcuts still route through the same flags, so there are now two trigger paths
+  (tab button, shortcut) instead of three.
+- Originally (as first built): `ui::draw_menu_bar` (`egui::Panel::top("menu_bar")` + a single
+  `ui.menu_button("File", ..)`) added New Project, Open Project…, Save Project (Ctrl+S), Save
+  Project As…, and Exit alongside the Open Video…/Open MIDI… buttons 6c already added to the
+  Project tab — all of it routed through the same `UiState` request-flag-consumed-next-redraw
+  pattern the Project tab's buttons already used, so the menu, the tab buttons, and 6d's keyboard
+  shortcuts were three ways to trigger the exact same `AppState` methods, never three separate
+  code paths. (Kept here for context on the request-flag plumbing, which is unchanged.)
 - **New Project** (`AppState::new_project`) clears the loaded video/MIDI and resets sync/
   calibration/transform/barrier/note style to defaults. It recreates the compositor from scratch
   (same construction `AppState::new` uses) rather than trying to incrementally clear

@@ -1441,9 +1441,8 @@ impl ApplicationHandler for App {
 /// Familiar keyboard navigation (6d): Space play/pause (pre-existing), Left/Right seek ±1 frame
 /// (DaVinci Resolve-style), Shift+Left/Right seek ±1s, Home/End jump to start/end, Ctrl+S save
 /// project, Ctrl+O open project, Esc cancel an in-progress export. The project/save actions route
-/// through the same
-/// `UiState` request flags the File menu (`ui::draw_menu_bar`) and Project tab buttons use —
-/// one code path regardless of which of the three triggered it, consumed next redraw.
+/// through the same `UiState` request flags the Project tab's buttons use — one code path
+/// regardless of whether the button or the shortcut triggered it, consumed next redraw.
 fn handle_shortcut(
     state: &mut AppState,
     key: PhysicalKey,
