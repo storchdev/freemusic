@@ -380,6 +380,12 @@ descheduled the decode *workers* onto (or off) the slow LP-E island. That surfac
 and never spill to the LP-E cores or oversubscribe, with no loss of steady-state throughput. `=0`
 restores the old pick-everything behaviour (reproduces the bug on such a CPU).
 
+The cap is safe on other machines (fewer-core boxes get ≤4 anyway; `available_parallelism` respects
+cgroup/affinity limits) — the only mild downside is that `export` (offline, decode-heavy, no mouse
+contention) also opens its own `VideoPipeline` and so is capped at 4 too, leaving some cores idle on
+a big all-P-core machine. Not worth fixing now; if it ever matters, have the export path request a
+higher/uncapped thread count so only interactive playback stays capped.
+
 **Secondary fix (`about_to_wait` in `app/src/main.rs`): during playback the video cadence governs;
 `next_ui_redraw_at` may no longer schedule a redraw *sooner* than the next frame.** Passive mouse
 movement makes egui request a hover repaint every update, which flows through `next_ui_redraw_at`
