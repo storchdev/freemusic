@@ -76,12 +76,22 @@ source "$HOME/.cargo/env"
 cargo build                       # debug build, whole workspace
 cargo build --release             # release build
 cargo run --bin app -- [video-file] [midi-file]   # both args optional; drag-drop also works
+cargo run --bin app -- project.fmproj.ron         # or open a saved project directly
 cargo fmt                         # this repo is fmt-clean; run before committing
 cargo clippy --all-targets        # this repo is clippy-clean; run before committing
 ```
 
-Both CLI args are optional (drag-drop a video and/or a `.mid`/`.midi` file onto the window
-instead, or in addition — dropping either replaces whatever of that kind was already loaded).
+CLI args are optional and order-independent, classified by extension exactly like drag-drop is
+(`main::main`/`WindowEvent::DroppedFile` in `app/src/main.rs`): `.mid`/`.midi` loads as MIDI,
+`.ron` (a saved `.fmproj.ron` project file) loads as a project — same code path as the Project
+tab's Load button, so it replaces video/MIDI/sync/calibration/transform/barrier/note style with
+whatever the project file contains — and anything else is treated as the video. Passing a
+project path alongside a separate video/MIDI path is unusual but not an error; the project load
+simply runs and then loads whatever the project itself references, which typically supersedes a
+separately-passed video/MIDI path since project load happens instead of (not before/after) the
+plain video_path/midi_path branch in `AppState::new`. Drag-drop still only distinguishes
+MIDI-vs-video (`WindowEvent::DroppedFile` has no `.ron` case) — dropping a project file onto the
+window loads it as a "video" and will fail to open, since that path wasn't part of this change.
 
 `~/.zshenv` on this machine now sources `$HOME/.cargo/env` (it previously only lived in
 `.bashrc`/`.bash_profile`/`.profile`, none of which a non-interactive `zsh -c` invocation reads —

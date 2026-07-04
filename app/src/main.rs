@@ -256,6 +256,7 @@ impl AppState {
         event_loop: &ActiveEventLoop,
         video_path: Option<&Path>,
         midi_path: Option<&Path>,
+        project_path: Option<&Path>,
     ) -> Self {
         let window_attributes = Window::default_attributes()
             .with_title("freemusic")
@@ -369,11 +370,15 @@ impl AppState {
             interaction_log_until: None,
         };
 
-        if let Some(path) = video_path {
-            state.load_video(path);
-        }
-        if let Some(path) = midi_path {
-            state.load_midi(path);
+        if let Some(path) = project_path {
+            state.load_project_from_path(path);
+        } else {
+            if let Some(path) = video_path {
+                state.load_video(path);
+            }
+            if let Some(path) = midi_path {
+                state.load_midi(path);
+            }
         }
 
         state
@@ -595,7 +600,15 @@ impl AppState {
     /// MIDI, sync offset, and calibration with whatever it contains.
     fn load_project(&mut self) {
         let path = PathBuf::from(&self.ui_state.project_path_text);
-        match Project::load(&path) {
+        self.load_project_from_path(&path);
+    }
+
+    /// Shared by `load_project` (path comes from the UI's text field) and the CLI's `--project`/
+    /// bare `.ron` argument (path comes from `std::env::args`) — replaces the current video,
+    /// MIDI, sync offset, calibration, transform, barrier, and note style with whatever the
+    /// project file contains.
+    fn load_project_from_path(&mut self, path: &Path) {
+        match Project::load(path) {
             Ok(project) => {
                 self.ui_state.sync_offset_seconds = project.sync_offset_seconds;
                 self.ui_state.calibration = project.calibration;
@@ -1262,6 +1275,7 @@ fn default_export_path(video_path: &Path) -> PathBuf {
 struct App {
     video_path: Option<PathBuf>,
     midi_path: Option<PathBuf>,
+    project_path: Option<PathBuf>,
     state: Option<AppState>,
 }
 
@@ -1272,6 +1286,7 @@ impl ApplicationHandler for App {
                 event_loop,
                 self.video_path.as_deref(),
                 self.midi_path.as_deref(),
+                self.project_path.as_deref(),
             ));
         }
     }
@@ -1524,10 +1539,27 @@ fn seek_step_seconds(state: &AppState, shift: bool) -> f64 {
     }
 }
 
+/// Classifies CLI args by extension the same way `WindowEvent::DroppedFile` classifies a
+/// drag-drop: `.mid`/`.midi` is MIDI, `.ron` (a saved `.fmproj.ron` project) is a project file,
+/// anything else is treated as the video. Order-independent, so `app song.fmproj.ron` and
+/// `app video.mp4 song.mid` both work without needing separate flags.
 fn main() {
-    let mut args = std::env::args().skip(1).map(PathBuf::from);
-    let video_path = args.next();
-    let midi_path = args.next();
+    let mut video_path = None;
+    let mut midi_path = None;
+    let mut project_path = None;
+    for arg in std::env::args().skip(1) {
+        let path = PathBuf::from(arg);
+        match path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("mid") | Some("midi") => midi_path = Some(path),
+            Some("ron") => project_path = Some(path),
+            _ => video_path = Some(path),
+        }
+    }
 
     let event_loop = EventLoop::new().expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -1535,6 +1567,7 @@ fn main() {
     let mut app = App {
         video_path,
         midi_path,
+        project_path,
         state: None,
     };
     event_loop.run_app(&mut app).expect("event loop error");
