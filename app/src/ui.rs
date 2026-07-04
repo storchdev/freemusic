@@ -64,6 +64,19 @@ pub struct UiState {
     pub timeline_height: f32,
     pub timeline_zoom: f64,
     pub timeline_view_start_seconds: f64,
+    /// Whether the left side panel is expanded (tabs + content) or collapsed to a narrow strip
+    /// — dragging its edge past its size limits (see `draw_side_panel`) flips this directly via
+    /// `egui::Panel::show_switched`'s own `&mut bool`, so this mirrors that rather than driving
+    /// it.
+    pub side_panel_expanded: bool,
+    /// Set by the panel's own «/» collapse/expand button; consumed and cleared the same redraw.
+    /// Not applied directly to `side_panel_expanded` at the click site — that field is on loan
+    /// to `show_switched` as a plain local `&mut bool` for the duration of the call (so the
+    /// panel's own drag-to-collapse/expand can flip it), and the click happens from inside that
+    /// same call's content closure, which borrows `UiState` as a whole to reach the tabs below
+    /// it. A flag consumed right after the call is the straightforward way to let both write to
+    /// the same logical piece of state without an overlapping-borrow conflict.
+    pub side_panel_toggle_requested: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -164,34 +177,73 @@ fn draw_menu_bar(ui: &mut egui::Ui, state: &mut UiState) {
     });
 }
 
+/// Width range (collapsed) of the side panel once collapsed to a narrow strip — just enough to
+/// hold the expand button and give something to grab for a drag-to-expand gesture.
+const SIDE_PANEL_COLLAPSED_WIDTH: f32 = 28.0;
+const SIDE_PANEL_COLLAPSED_MAX_WIDTH: f32 = 56.0;
+
 /// Hand-rolled tab strip + content for the persistent side panel — replaces the four floating
 /// windows milestones 3-5 used (Sync & Project / Video Transform / Export, plus a keyboard
 /// calibration readout folded into the first). A real `egui::SidePanel`-equivalent (`egui::
 /// Panel::left`) only became viable once the video moved to a shrinkable `egui::Image` in the
 /// central panel instead of being painted directly under floating windows — see CLAUDE.md.
+///
+/// Collapsible via `egui::Panel::show_switched`, so the video/timeline can reclaim its width:
+/// dragging the expanded panel's edge past its `min_size` collapses it to a narrow strip, and
+/// dragging that strip's edge past its own `max_size` expands it back — one shared resize-handle
+/// widget under the hood handles both directions of that drag. The «/» buttons are a
+/// discoverable alternative to the drag, not a replacement for it.
 fn draw_side_panel(ui: &mut egui::Ui, state: &mut UiState) {
-    egui::Panel::left("side_panel")
+    let mut expanded = state.side_panel_expanded;
+
+    let collapsed_panel = egui::Panel::left("side_panel_collapsed")
+        .resizable(true)
+        .min_size(SIDE_PANEL_COLLAPSED_WIDTH)
+        .max_size(SIDE_PANEL_COLLAPSED_MAX_WIDTH)
+        .default_size(SIDE_PANEL_COLLAPSED_WIDTH);
+    let expanded_panel = egui::Panel::left("side_panel")
+        .resizable(true)
         .default_size(280.0)
         .min_size(220.0)
-        .max_size(420.0)
-        .show(ui, |ui| {
+        .max_size(420.0);
+
+    egui::Panel::show_switched(
+        ui,
+        &mut expanded,
+        collapsed_panel,
+        expanded_panel,
+        |ui, is_expanded| {
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                tab_button(ui, state, Tab::Project, "Project");
-                tab_button(ui, state, Tab::Keyboard, "Keyboard");
-                tab_button(ui, state, Tab::Transform, "Transform");
-                tab_button(ui, state, Tab::Export, "Export");
-            });
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| match state.active_tab {
-                    Tab::Project => draw_project_tab(ui, state),
-                    Tab::Keyboard => draw_keyboard_tab(ui, state),
-                    Tab::Transform => draw_transform_tab(ui, &mut state.transform),
-                    Tab::Export => draw_export_tab(ui, state),
+            if is_expanded {
+                ui.horizontal(|ui| {
+                    tab_button(ui, state, Tab::Project, "Project");
+                    tab_button(ui, state, Tab::Keyboard, "Keyboard");
+                    tab_button(ui, state, Tab::Transform, "Transform");
+                    tab_button(ui, state, Tab::Export, "Export");
+                    if ui.button("«").on_hover_text("Collapse panel").clicked() {
+                        state.side_panel_toggle_requested = true;
+                    }
                 });
-        });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| match state.active_tab {
+                        Tab::Project => draw_project_tab(ui, state),
+                        Tab::Keyboard => draw_keyboard_tab(ui, state),
+                        Tab::Transform => draw_transform_tab(ui, &mut state.transform),
+                        Tab::Export => draw_export_tab(ui, state),
+                    });
+            } else if ui.button("»").on_hover_text("Expand panel").clicked() {
+                state.side_panel_toggle_requested = true;
+            }
+        },
+    );
+
+    if state.side_panel_toggle_requested {
+        expanded = !expanded;
+        state.side_panel_toggle_requested = false;
+    }
+    state.side_panel_expanded = expanded;
 }
 
 fn tab_button(ui: &mut egui::Ui, state: &mut UiState, tab: Tab, label: &str) {

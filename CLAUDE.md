@@ -808,6 +808,76 @@ it, rather than bumping `wgpu` independently.
   `set_position_seconds`/`set_playing` remain safe no-ops (they just check `self.stream.is_some()`
   first).
 
+### Timeline waveform, scroll UX, and collapsible side panel (post-6e polish)
+
+- **Audio waveform on the timeline**: `AudioPlayback` (in `crates/audio-playback`) now computes a
+  downsampled peak-amplitude summary of the whole track at load time —
+  `compute_waveform_peaks` buckets the decoded stereo samples into fixed 10ms
+  (`WAVEFORM_BUCKET_SECONDS`) windows, taking the louder of L/R per bucket — and exposes it via
+  `waveform_peaks()`/`waveform_bucket_seconds()`. A several-minute track produces tens of
+  thousands of `f32` entries, not millions of raw samples, so the UI can cheaply re-bucket it
+  into however many on-screen columns it needs at any zoom level instead of re-scanning raw audio
+  every redraw. `main.rs::load_video` mirrors both into `UiState` right after `self.audio.load`
+  (same mirror-into-`UiState` pattern `midi_note_times` already used), and `new_project` clears
+  it — this mirroring, not `AudioPlayback` itself, is what `ui.rs` actually reads from, since
+  `ui.rs` has no access to `AppState`/`AudioPlayback`.
+- **Timeline strip is split into a top half (waveform) and bottom half (MIDI note density)**,
+  computed once per redraw as a simple midpoint split of the scrubber's `rect`
+  (`draw_timeline_scrubber`). They used to share the full height — one center-aligned, the other
+  bottom-aligned — and visually interfered. `draw_waveform` centers within whatever rect it's
+  given (unchanged function, just now called with the top half instead of the full strip);
+  `draw_note_density`'s bottom margin shrank from a hardcoded 16px to 6px since it no longer
+  needs headroom for the time-ruler labels (which are drawn separately, later, against the full
+  rect's top regardless of this split).
+- **Timeline auto-scroll, two distinct behaviors**, both in `draw_timeline_scrubber`:
+  - *Follow-on-seek*: every redraw, if `state.position_seconds` has moved outside
+    `[view_start, view_end]` (an arrow-key/Home/End seek, or ordinary playback outrunning a
+    zoomed-in view), the view shifts by just enough to bring the playhead back to the edge it
+    crossed — not re-centered, so a small nudge stays a small nudge.
+  - *Edge auto-scroll while dragging the playhead* (`edge_auto_scroll`): if the pointer enters a
+    28px (`EDGE_SCROLL_ZONE_PX`) dead zone at either edge of the timeline widget during an active
+    drag, the view scrolls in that direction (speed ramps up toward the physical edge, capped at
+    1.5×/sec of the visible duration — `EDGE_SCROLL_MAX_FRACTION_PER_SEC`), so a single drag can
+    reach times currently off-screen. Uses `ui.input(|i| i.stable_dt)` for frame-rate-independent
+    speed and calls `ui.ctx().request_repaint()` explicitly — needed because holding the pointer
+    still at the edge produces no input event of its own to trigger the next frame.
+- **Collapsible left side panel** (`draw_side_panel`), via egui 0.35's `Panel::show_switched`
+  (built specifically for this: two `Panel` definitions, one narrow/collapsed
+  (`SIDE_PANEL_COLLAPSED_WIDTH` 28–56px) and one full (`220–420px`, unchanged from before), both
+  `.resizable(true)`, sharing one resize-handle widget). Dragging the expanded panel's edge past
+  its `min_size` collapses it; dragging the collapsed strip's edge past its own `max_size`
+  expands it back — gives the video/timeline more room without losing the tabs. A small `«`/`»`
+  button is a discoverable alternative to the drag, not a replacement for it.
+  - **Why the toggle button needs a request flag instead of writing straight into the bool**:
+    `show_switched` takes `is_expanded: &mut bool` as a separate argument from the content
+    closure, and the closure needs `&mut UiState` as a whole (to reach `draw_project_tab` etc.),
+    so `is_expanded` can't be `&mut state.side_panel_expanded` directly — that would be two
+    overlapping mutable borrows of `state` alive as sibling arguments to the same call. Fixed by
+    copying `state.side_panel_expanded` out into a local `expanded` before the call (which
+    `show_switched` mutates directly for drag-driven changes), having the button set
+    `state.side_panel_toggle_requested = true` instead of touching `expanded`, then applying that
+    flag to `expanded` right after the call returns and writing the merged result back to
+    `state.side_panel_expanded`. Same "request flag consumed same redraw" shape already used
+    throughout `UiState` (`save_requested`, `open_video_requested`, etc.), just applied to a new
+    problem (a bool that two different call sites need to mutate in the same frame).
+- **Fixed: side-panel collapse/expand and the File menu's open animation appeared to have a
+  "big delay" before responding to a click.** Root cause was unrelated to either feature
+  specifically — it was the unthrottled-redraw fix from milestone 6's early days coming back to
+  bite in a new way: this app's redraw loop only ever self-schedules for playback cadence or
+  export progress (see `about_to_wait`), so it never accounted for egui's *own* animation repaint
+  requests (the collapse/expand slide, a menu's open/hover animation, etc. all call
+  `Context::request_repaint[_after]` internally while they're mid-transition). A click did
+  trigger one immediate redraw (via the generic `on_window_event` repaint nudge), but that single
+  frame was all the animation got — with no further redraws scheduled, it looked frozen partway
+  through until some unrelated event (e.g. mouse movement) happened to trigger the next frame,
+  which read as "a big delay" rather than "stuck". Fixed by reading `full_output.viewport_output`
+  for the root viewport's `repaint_delay` each redraw (`Duration::MAX` = "nothing to animate,
+  don't schedule"; anything else, including `ZERO`, is a real deadline) into a new
+  `AppState::next_ui_redraw_at`, and folding that into `about_to_wait` alongside the existing
+  `next_playback_redraw_at` — whichever deadline is sooner wins, and (unlike the playback one)
+  this one applies regardless of whether the video is playing, since a menu can be open or the
+  panel mid-collapse while paused.
+
 ## Verifying changes to `app` or `video-pipeline`
 
 Since there's no test suite for playback/timing correctness, changes to the decode or render path

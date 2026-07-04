@@ -129,6 +129,12 @@ struct AppState {
     /// `applied_calibration`).
     audio_playing: bool,
     next_playback_redraw_at: Option<Instant>,
+    /// Deadline for egui's own animations (side-panel collapse/expand slide, menu open/hover,
+    /// button flash, etc.) — set from `full_output`'s per-viewport `repaint_delay` each redraw.
+    /// Without this, an in-progress animation only advances when some unrelated event (mouse
+    /// movement) happens to trigger the next repaint, since this app's redraw loop otherwise
+    /// only self-schedules for playback/export — see `about_to_wait`.
+    next_ui_redraw_at: Option<Instant>,
     pointer_buttons_down: u8,
     perf: Option<PerfStats>,
 }
@@ -284,6 +290,8 @@ impl AppState {
                 timeline_height: ui::DEFAULT_TIMELINE_HEIGHT,
                 timeline_zoom: ui::DEFAULT_TIMELINE_ZOOM,
                 timeline_view_start_seconds: 0.0,
+                side_panel_expanded: true,
+                side_panel_toggle_requested: false,
                 sync_offset_seconds: 0.0,
                 calibration: KeyboardCalibration::default(),
                 transform: project::VideoTransform::default(),
@@ -313,6 +321,7 @@ impl AppState {
             audio: AudioPlayback::new(),
             audio_playing: false,
             next_playback_redraw_at: None,
+            next_ui_redraw_at: None,
             pointer_buttons_down: 0,
             perf: std::env::var_os("FREEMUSIC_PROFILE").map(|_| PerfStats::new()),
         };
@@ -885,6 +894,19 @@ impl AppState {
         self.egui_state
             .handle_platform_output(&self.window, full_output.platform_output);
 
+        // egui requests its own repaints (side-panel collapse/expand slide, menu open/hover
+        // animations, button flash, etc.) via each viewport's `repaint_delay` —
+        // `Duration::MAX` means "nothing to animate", anything else is a real deadline
+        // (`ZERO` meaning "now"). `about_to_wait` folds this in alongside the playback
+        // schedule; without it, an in-progress animation only advances when some unrelated
+        // event (e.g. mouse movement) happens to trigger the next repaint, which is exactly
+        // why the collapse/expand slide and the File menu's open animation looked stuck.
+        self.next_ui_redraw_at = full_output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .filter(|viewport| viewport.repaint_delay < Duration::MAX)
+            .and_then(|viewport| frame_start.checked_add(viewport.repaint_delay));
+
         // Export progress can redraw as fast as the event loop allows, but playback redraws are
         // scheduled from `about_to_wait` at the video's frame interval. Immediately chaining
         // playback redraws here drives a 30fps file at the monitor refresh rate and can make
@@ -1067,20 +1089,36 @@ impl ApplicationHandler for App {
             return;
         };
 
-        if state.ui_state.playing {
-            match state.next_playback_redraw_at {
-                Some(next) if next > Instant::now() => {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(next));
-                }
-                _ => {
-                    state.next_playback_redraw_at = None;
-                    state.window.request_redraw();
-                    event_loop.set_control_flow(ControlFlow::Wait);
-                }
-            }
+        // Playback's own cadence (only relevant while playing) and egui's own animation
+        // deadline (relevant regardless of playback state — a menu can be open, or the side
+        // panel mid-collapse, while paused) are two independent reasons to wake up early;
+        // whichever comes first wins.
+        let playback_deadline = if state.ui_state.playing {
+            state.next_playback_redraw_at
         } else {
             state.next_playback_redraw_at = None;
-            event_loop.set_control_flow(ControlFlow::Wait);
+            None
+        };
+        let deadline = match (playback_deadline, state.next_ui_redraw_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+
+        match deadline {
+            Some(next) if next > Instant::now() => {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+            }
+            Some(_) => {
+                state.next_playback_redraw_at = None;
+                state.next_ui_redraw_at = None;
+                state.window.request_redraw();
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+            None => {
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
         }
     }
 }
