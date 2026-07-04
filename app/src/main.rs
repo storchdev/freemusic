@@ -118,7 +118,8 @@ struct AppState {
     export_run: Option<ExportRun>,
     /// Live modifier-key state, tracked via `WindowEvent::ModifiersChanged` since
     /// `WindowEvent::KeyboardInput` itself carries no modifier info — used to distinguish e.g.
-    /// Ctrl+S (save) from a bare S, and Left/Right (5s seek) from Shift+Left/Right (1s seek).
+    /// Ctrl+S (save) from a bare S, and Left/Right (1-frame seek) from Shift+Left/Right
+    /// (1-second seek).
     modifiers: winit::keyboard::ModifiersState,
     /// The loaded video's own audio track (if any), played back in sync with the transport —
     /// see `crates/audio-playback` for why this drives from position rather than its own clock.
@@ -278,6 +279,9 @@ impl AppState {
                 active_tab: ui::Tab::default(),
                 preview_texture_id,
                 canvas_size,
+                timeline_height: ui::DEFAULT_TIMELINE_HEIGHT,
+                timeline_zoom: ui::DEFAULT_TIMELINE_ZOOM,
+                timeline_view_start_seconds: 0.0,
                 sync_offset_seconds: 0.0,
                 calibration: KeyboardCalibration::default(),
                 transform: project::VideoTransform::default(),
@@ -1075,9 +1079,10 @@ impl ApplicationHandler for App {
     }
 }
 
-/// Familiar keyboard navigation (6d): Space play/pause (pre-existing), Left/Right seek ±5s
-/// (Shift+Left/Right ±1s), Home/End jump to start/end, Ctrl+S save project, Ctrl+O open project,
-/// Esc cancel an in-progress export. The project/save actions route through the same
+/// Familiar keyboard navigation (6d): Space play/pause (pre-existing), Left/Right seek ±1 frame
+/// (DaVinci Resolve-style), Shift+Left/Right seek ±1s, Home/End jump to start/end, Ctrl+S save
+/// project, Ctrl+O open project, Esc cancel an in-progress export. The project/save actions route
+/// through the same
 /// `UiState` request flags the File menu (`ui::draw_menu_bar`) and Project tab buttons use —
 /// one code path regardless of which of the three triggered it, consumed next redraw.
 fn handle_shortcut(
@@ -1097,7 +1102,7 @@ fn handle_shortcut(
             state.last_instant = Instant::now();
         }
         KeyCode::ArrowLeft => {
-            let step = if shift { 1.0 } else { 5.0 };
+            let step = seek_step_seconds(state, shift);
             let base = state
                 .ui_state
                 .seek_request
@@ -1105,7 +1110,7 @@ fn handle_shortcut(
             state.ui_state.seek_request = Some((base - step).max(0.0));
         }
         KeyCode::ArrowRight => {
-            let step = if shift { 1.0 } else { 5.0 };
+            let step = seek_step_seconds(state, shift);
             let base = state
                 .ui_state
                 .seek_request
@@ -1132,6 +1137,18 @@ fn handle_shortcut(
         _ => return,
     }
     state.window.request_redraw();
+}
+
+fn seek_step_seconds(state: &AppState, shift: bool) -> f64 {
+    if shift {
+        1.0
+    } else {
+        state
+            .pipeline
+            .as_ref()
+            .map(VideoPipeline::frame_duration_seconds)
+            .unwrap_or(1.0 / 30.0)
+    }
 }
 
 fn main() {

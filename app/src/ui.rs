@@ -55,6 +55,9 @@ pub struct UiState {
     /// Pixel size of that texture — the compositor's canvas, decoupled from window size (see
     /// CLAUDE.md's milestone 6c notes). Used here only to compute the aspect-fit display rect.
     pub canvas_size: (u32, u32),
+    pub timeline_height: f32,
+    pub timeline_zoom: f64,
+    pub timeline_view_start_seconds: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -427,16 +430,29 @@ fn draw_export_tab(ui: &mut egui::Ui, state: &mut UiState) {
 
 /// Height of the custom-painted ruler/playhead/density strip, not counting the transport
 /// controls row above it.
-const TIMELINE_STRIP_HEIGHT: f32 = 40.0;
+pub const DEFAULT_TIMELINE_HEIGHT: f32 = 40.0;
+const MIN_TIMELINE_HEIGHT: f32 = 24.0;
+const MAX_TIMELINE_HEIGHT: f32 = 180.0;
+const TIMELINE_RESIZE_HANDLE_HEIGHT: f32 = 6.0;
+const TIMELINE_PANEL_CHROME_HEIGHT: f32 = 62.0;
+pub const DEFAULT_TIMELINE_ZOOM: f64 = 1.0;
+const MIN_TIMELINE_ZOOM: f64 = 1.0;
+const MAX_TIMELINE_ZOOM: f64 = 128.0;
+const TIMELINE_ZOOM_SCROLL_SENSITIVITY: f64 = 0.005;
+const MIN_RULER_TICK_SPACING: f32 = 50.0;
 
 /// Bottom transport bar: play/pause, timecode, and a custom-painted timeline (time ruler,
 /// draggable/clickable playhead, note-density strip) — replaces the plain `egui::Slider`
 /// scrubber milestones 1-5 used, which had no room to show song structure while scrubbing.
 fn draw_timeline_panel(ui: &mut egui::Ui, state: &mut UiState) {
     egui::Panel::bottom("timeline")
-        .default_size(96.0)
+        .default_size(state.timeline_height + TIMELINE_PANEL_CHROME_HEIGHT)
+        .min_size(MIN_TIMELINE_HEIGHT + TIMELINE_PANEL_CHROME_HEIGHT)
+        .max_size(MAX_TIMELINE_HEIGHT + TIMELINE_PANEL_CHROME_HEIGHT)
         .resizable(false)
+        .show_separator_line(false)
         .show(ui, |ui| {
+            draw_timeline_resize_handle(ui, state);
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let play_label = if state.playing { "Pause" } else { "Play" };
@@ -459,47 +475,128 @@ fn draw_timeline_panel(ui: &mut egui::Ui, state: &mut UiState) {
         });
 }
 
+fn draw_timeline_resize_handle(ui: &mut egui::Ui, state: &mut UiState) {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), TIMELINE_RESIZE_HANDLE_HEIGHT),
+        egui::Sense::drag(),
+    );
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    if response.dragged() {
+        state.timeline_height = (state.timeline_height - response.drag_delta().y)
+            .clamp(MIN_TIMELINE_HEIGHT, MAX_TIMELINE_HEIGHT);
+    }
+
+    let color = if response.dragged() {
+        egui::Color32::from_gray(170)
+    } else if response.hovered() {
+        egui::Color32::from_gray(130)
+    } else {
+        egui::Color32::from_gray(70)
+    };
+    let full_width = ui.ctx().viewport_rect().x_range();
+    ui.painter()
+        .hline(full_width, rect.center().y, egui::Stroke::new(1.0, color));
+}
+
 fn draw_timeline_scrubber(ui: &mut egui::Ui, state: &mut UiState) {
-    let desired_size = egui::vec2(ui.available_width(), TIMELINE_STRIP_HEIGHT);
+    let desired_size = egui::vec2(ui.available_width(), state.timeline_height);
     let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
     let duration = state.duration_seconds.max(0.001);
+    let (mut view_start, mut view_end) = timeline_view_range(state);
+
+    if response.hovered() {
+        let scroll_y = ui.input(|input| input.smooth_scroll_delta.y);
+        if scroll_y.abs() > f32::EPSILON {
+            let anchor_fraction = response
+                .hover_pos()
+                .map(|pos| ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0))
+                .unwrap_or(0.5) as f64;
+            let anchor_time = view_start + anchor_fraction * (view_end - view_start);
+            let zoom_factor = (scroll_y as f64 * TIMELINE_ZOOM_SCROLL_SENSITIVITY).exp();
+            state.timeline_zoom =
+                (state.timeline_zoom * zoom_factor).clamp(MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM);
+            let view_duration = timeline_view_duration(duration, state.timeline_zoom);
+            state.timeline_view_start_seconds = clamp_timeline_view_start(
+                anchor_time - anchor_fraction * view_duration,
+                duration,
+                view_duration,
+            );
+            (view_start, view_end) = timeline_view_range(state);
+        }
+    }
 
     if response.clicked() || response.dragged() {
         if let Some(pos) = response.interact_pointer_pos() {
             let fraction = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-            state.seek_request = Some(fraction as f64 * duration);
+            state.seek_request = Some(view_start + fraction as f64 * (view_end - view_start));
         }
     }
 
     let painter = ui.painter();
     painter.rect_filled(rect, 3.0, egui::Color32::from_gray(35));
 
-    draw_note_density(painter, rect, &state.midi_note_times, duration);
-    draw_time_ruler(painter, rect, duration);
+    draw_note_density(painter, rect, &state.midi_note_times, view_start, view_end);
+    draw_time_ruler(painter, rect, view_start, view_end);
 
-    let playhead_x =
-        rect.left() + (state.position_seconds / duration).clamp(0.0, 1.0) as f32 * rect.width();
-    painter.line_segment(
-        [
-            egui::pos2(playhead_x, rect.top()),
-            egui::pos2(playhead_x, rect.bottom()),
-        ],
-        egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 90, 90)),
-    );
+    if (view_start..=view_end).contains(&state.position_seconds) {
+        let playhead_fraction =
+            ((state.position_seconds - view_start) / (view_end - view_start)).clamp(0.0, 1.0);
+        let playhead_x = rect.left() + playhead_fraction as f32 * rect.width();
+        painter.line_segment(
+            [
+                egui::pos2(playhead_x, rect.top()),
+                egui::pos2(playhead_x, rect.bottom()),
+            ],
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 90, 90)),
+        );
+    }
+}
+
+fn timeline_view_range(state: &mut UiState) -> (f64, f64) {
+    let duration = state.duration_seconds.max(0.001);
+    state.timeline_zoom = state
+        .timeline_zoom
+        .clamp(MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM);
+    let view_duration = timeline_view_duration(duration, state.timeline_zoom);
+    state.timeline_view_start_seconds =
+        clamp_timeline_view_start(state.timeline_view_start_seconds, duration, view_duration);
+    let view_start = state.timeline_view_start_seconds;
+    (view_start, view_start + view_duration)
+}
+
+fn timeline_view_duration(duration: f64, zoom: f64) -> f64 {
+    (duration / zoom).clamp(0.001, duration)
+}
+
+fn clamp_timeline_view_start(start: f64, duration: f64, view_duration: f64) -> f64 {
+    start.clamp(0.0, (duration - view_duration).max(0.0))
 }
 
 /// Buckets note onset times into columns spanning the timeline's width and draws each as a
 /// short vertical bar sized by relative density — cheap (the MIDI is already parsed once at
 /// load time) and gives a rough sense of song structure while scrubbing, without needing to
 /// actually render note content in miniature.
-fn draw_note_density(painter: &egui::Painter, rect: egui::Rect, note_times: &[f32], duration: f64) {
+fn draw_note_density(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    note_times: &[f32],
+    view_start: f64,
+    view_end: f64,
+) {
     if note_times.is_empty() {
         return;
     }
+    let view_duration = (view_end - view_start).max(0.001);
     const BUCKETS: usize = 240;
     let mut counts = [0u32; BUCKETS];
     for &t in note_times {
-        let fraction = (t as f64 / duration).clamp(0.0, 0.999_999);
+        let t = t as f64;
+        if t < view_start || t > view_end {
+            continue;
+        }
+        let fraction = ((t - view_start) / view_duration).clamp(0.0, 0.999_999);
         counts[(fraction * BUCKETS as f64) as usize] += 1;
     }
     let max_count = counts.iter().copied().max().unwrap_or(1).max(1);
@@ -521,12 +618,13 @@ fn draw_note_density(painter: &egui::Painter, rect: egui::Rect, note_times: &[f3
 }
 
 /// Draws tick marks + timecode labels at a duration-appropriate interval (aiming for roughly
-/// 6-12 ticks regardless of clip length).
-fn draw_time_ruler(painter: &egui::Painter, rect: egui::Rect, duration: f64) {
-    let interval = ruler_tick_interval(duration);
-    let mut t = 0.0;
-    while t <= duration {
-        let x = rect.left() + (t / duration) as f32 * rect.width();
+/// 6-12 ticks when there is room, while enforcing a minimum pixel gap so labels do not crowd.
+fn draw_time_ruler(painter: &egui::Painter, rect: egui::Rect, view_start: f64, view_end: f64) {
+    let view_duration = (view_end - view_start).max(0.001);
+    let interval = ruler_tick_interval(view_duration, rect.width());
+    let mut t = (view_start / interval).ceil() * interval;
+    while t <= view_end {
+        let x = rect.left() + ((t - view_start) / view_duration) as f32 * rect.width();
         painter.line_segment(
             [egui::pos2(x, rect.top()), egui::pos2(x, rect.top() + 5.0)],
             egui::Stroke::new(1.0, egui::Color32::from_gray(150)),
@@ -542,9 +640,10 @@ fn draw_time_ruler(painter: &egui::Painter, rect: egui::Rect, duration: f64) {
     }
 }
 
-fn ruler_tick_interval(duration: f64) -> f64 {
+fn ruler_tick_interval(duration: f64, width: f32) -> f64 {
     const STEPS: [f64; 10] = [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0];
-    let target = duration / 10.0;
+    let max_ticks = (width / MIN_RULER_TICK_SPACING).floor().max(1.0) as f64;
+    let target = (duration / max_ticks).max(duration / 10.0);
     STEPS
         .into_iter()
         .find(|&step| step >= target)

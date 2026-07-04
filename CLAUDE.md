@@ -596,7 +596,22 @@ it, rather than bumping `wgpu` independently.
   note_start_times` accessor (sorted onset seconds, cached at MIDI-load time in
   `midi_overlay::Loaded`) — `main.rs`'s `load_midi` copies it into `ui_state.midi_note_times`
   each time a MIDI file loads, the same mirror-into-`UiState` pattern already used for
-  `midi_name`.
+  `midi_name`. Timeline zoom state also lives in `UiState`: scrolling while hovered over the
+  scrubber grows/shrinks the visible time window around the cursor (`timeline_zoom` +
+  `timeline_view_start_seconds`), so clicks/drags, note-density buckets, ruler ticks, and the
+  playhead all map through the visible range instead of always compressing the full song into the
+  panel width. Ruler ticks enforce `MIN_RULER_TICK_SPACING` (50px) in addition to the old
+  duration-based target, so timecode labels don't crowd when the panel is narrow or zoomed.
+  Timeline height is controlled by a custom top-edge drag strip inside the bottom
+  panel (`draw_timeline_resize_handle`), clamped to 24-180px for the scrubber strip. Keep the
+  panel itself fixed from `ui_state.timeline_height` rather than using egui's built-in
+  `Panel::resizable(true)` here: egui intentionally skips storing panel size while dragging and
+  commits on release, which fought our live strip-height state and caused black space/snap-back or
+  max-height expansion on later hover redraws. The bottom panel also disables egui's own separator
+  line (`show_separator_line(false)`) so the custom drag strip is the only visible border/handle;
+  otherwise two horizontal gray lines appear, with only the lower custom one being draggable. Draw
+  that custom line across `ctx.viewport_rect().x_range()`, not the panel/content `Ui` rect, because
+  the latter includes frame margins and leaves visible gaps at the left/right window edges.
 - **Native Open Video/Open MIDI dialogs**: `rfd = "0.17"` (added to `app/Cargo.toml`, the version
   the plan identified as already proven at this exact wgpu 29 stack via Neothesia's own
   workspace) backs two buttons in the Project tab. Same request/consume-next-redraw pattern as
@@ -732,12 +747,14 @@ it, rather than bumping `wgpu` independently.
   in winit 0.30, so this is the only way to tell Ctrl+S from a bare S.
 - `main.rs::handle_shortcut` (called from the existing `KeyboardInput` match arm, after the
   pre-existing `response.consumed` guard so a focused text field's own key handling still wins)
-  adds: Left/Right seek ±5s, Shift+Left/Right ±1s (relative to `seek_request.unwrap_or(position)`,
-  not the raw position, so two quick presses before a redraw consumes the first compound rather
-  than clobber each other), Home/End jump to start/end, Ctrl+S save project, Ctrl+O open project,
-  Esc cancel an in-progress export. Space (play/pause) moved into the same function, unchanged in
-  behavior. Every action other than Space sets the same `UiState` request flag the menu bar/tab
-  buttons use (see 6b above) rather than calling `AppState` methods directly — one code path.
+  adds: Left/Right seek ±1 source-video frame (DaVinci Resolve-style, using
+  `VideoPipeline::frame_duration_seconds()` with a 30fps fallback before a video is loaded),
+  Shift+Left/Right seek ±1s (relative to `seek_request.unwrap_or(position)`, not the raw
+  position, so two quick presses before a redraw consumes the first compound rather than clobber
+  each other), Home/End jump to start/end, Ctrl+S save project, Ctrl+O open project, Esc cancel an
+  in-progress export. Space (play/pause) moved into the same function, unchanged in behavior.
+  Every action other than Space sets the same `UiState` request flag the menu bar/tab buttons use
+  (see 6b above) rather than calling `AppState` methods directly — one code path.
 - J/K/L (the "nice-to-have, skip unless there's time" item from the plan) was skipped.
 
 ### Synced audio playback (milestone 6e)
