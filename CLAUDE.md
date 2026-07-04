@@ -795,6 +795,40 @@ no effect).
   scrubbed-forward timeline position where a note is mid-fall), and setting roundedness to 0
   visibly squares off the note corners.
 
+### Note fall speed slider (post-6a addition)
+
+- `project::NoteStyle` gained `fall_speed: f32` (pixels/second, default `400.0`), a "Fall speed"
+  slider (50–2000) in the Keyboard tab's "Note style" section (`app/src/ui.rs::
+  draw_keyboard_tab`), reset by the existing "Reset note style" button since it's just another
+  `NoteStyle` field.
+- **No separate "note length" control exists, or is needed**: Neothesia's vendored waterfall
+  shader (`neothesia-core/src/render/waterfall/pipeline/shader.wgsl`) sizes each note quad as
+  `size.y = note.size.y * abs(speed)`, i.e. `duration_seconds * speed` — the same `speed` uniform
+  that scales how many pixels the note travels per second of playback. Turning the slider up
+  therefore makes notes both fall faster *and* look proportionally longer, matching what was
+  asked for.
+- **Wiring required touching both `MidiOverlay::load` and `::resize`, asymmetrically**, because
+  `WaterfallRenderer::new` and `::resize` don't treat speed the same way upstream:
+  `WaterfallRenderer::new` reads `config.animation_speed()` once at construction time, but
+  `WaterfallRenderer::resize` never touches speed at all (it only rebuilds note instances/color
+  from a fresh `Config`). So `self.config.set_animation_speed(note_style.fall_speed.max(1.0))`
+  before `WaterfallRenderer::new` is sufficient in `load`, but `resize` additionally needs an
+  explicit `loaded.renderer.pipeline().set_speed(&ngpu.queue, note_style.fall_speed.max(1.0))`
+  call after `loaded.renderer.resize(...)` — both `WaterfallRenderer::pipeline()` and
+  `WaterfallPipeline::set_speed` are already plain public methods (the latter added upstream for
+  exactly this purpose), so no forking was needed.
+- `.max(1.0)` guards against `Config::set_animation_speed(0.0)`, which upstream special-cases as
+  "invalid, negate the existing speed instead of setting it" rather than erroring — the slider's
+  own 50–2000 range keeps the UI from reaching 0 anyway, this is just a defensive floor at the
+  `MidiOverlay` boundary.
+- No new dirty-check plumbing was needed in `AppState::redraw`: `fall_speed` lives on the same
+  `NoteStyle` struct already compared whole (`ui_state.note_style != applied_note_style`) to
+  decide whether to call `compositor.resize`, so a fall-speed-only drag already goes through the
+  exact same path color/roundedness changes do.
+- Not yet manually verified in a running instance (per the "never run the app yourself" rule) —
+  worth confirming visually that dragging the slider both speeds up the fall and visibly
+  lengthens/shortens notes together, not just one or the other.
+
 ### Fixed: notes fading out ("cutting off") before reaching the barrier when it's dragged far from 0.8
 
 - **Symptom**: moving `barrier_fraction` far from its default 0.8 (either direction) made falling

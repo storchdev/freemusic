@@ -62,12 +62,16 @@ impl Default for BarrierStyle {
 
 /// Style of the falling notes themselves: a single base color (sharp/black-key notes get a
 /// darkened `dark` variant derived from it, same idea as Neothesia's own per-track
-/// `ColorSchemaV1` but with one user-picked color instead of a fixed per-track palette) and a
-/// roundedness fraction (0.0 = square corners, 1.0 = Neothesia's own default corner radius).
+/// `ColorSchemaV1` but with one user-picked color instead of a fixed per-track palette), a
+/// roundedness fraction (0.0 = square corners, 1.0 = Neothesia's own default corner radius), and
+/// `fall_speed`, the rate (pixels/second) notes travel toward the barrier. `fall_speed` also
+/// scales a note's on-screen length, since Neothesia's vendored waterfall shader sizes each note
+/// quad as `duration_seconds * speed` — there is no separate "length" control.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct NoteStyle {
     pub color: [u8; 3],
     pub roundedness: f32,
+    pub fall_speed: f32,
 }
 
 impl Default for NoteStyle {
@@ -75,6 +79,10 @@ impl Default for NoteStyle {
         Self {
             color: [93, 188, 255],
             roundedness: 1.0,
+            // Matches Neothesia's own vendored default (`default_animation_speed` in
+            // neothesia-core) so existing projects/behavior are unchanged until the user touches
+            // the slider.
+            fall_speed: 400.0,
         }
     }
 }

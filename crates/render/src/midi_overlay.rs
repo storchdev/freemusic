@@ -98,6 +98,8 @@ impl MidiOverlay {
     ) -> Result<(), String> {
         let ngpu = wrap_gpu(gpu);
         self.set_note_style(note_style);
+        self.config
+            .set_animation_speed(note_style.fall_speed.max(1.0));
         let virtual_height = virtual_canvas_height(viewport.1, calibration.barrier_fraction);
         self.transform.data.update(viewport.0, virtual_height, 1.0);
         self.transform.update(&ngpu.queue);
@@ -144,6 +146,8 @@ impl MidiOverlay {
     ) {
         let ngpu = wrap_gpu(gpu);
         self.set_note_style(note_style);
+        self.config
+            .set_animation_speed(note_style.fall_speed.max(1.0));
         let virtual_height = virtual_canvas_height(viewport.1, calibration.barrier_fraction);
         self.transform.data.update(viewport.0, virtual_height, 1.0);
         self.transform.update(&ngpu.queue);
@@ -152,6 +156,12 @@ impl MidiOverlay {
             loaded
                 .renderer
                 .resize(&self.config, keyboard_layout(viewport, calibration));
+            // `WaterfallRenderer::resize` (unlike `::new`) never re-reads `config.animation_speed()`
+            // itself, so a fall-speed-only change needs an explicit uniform write here too.
+            loaded
+                .renderer
+                .pipeline()
+                .set_speed(&ngpu.queue, note_style.fall_speed.max(1.0));
             apply_note_adjustments(
                 &mut loaded.renderer,
                 &ngpu,

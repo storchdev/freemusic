@@ -357,6 +357,12 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
         ui.label("Roundedness:");
         validated_slider(ui, &mut state.note_style.roundedness, 0.0..=1.0, None);
     });
+    ui.horizontal(|ui| {
+        ui.label("Fall speed:");
+        validated_slider(ui, &mut state.note_style.fall_speed, 50.0..=2000.0, Some(0));
+    })
+    .response
+    .on_hover_text("Also changes how long each note looks, since a note's on-screen length is its duration times this speed.");
     if ui.button("Reset note style").clicked() {
         state.note_style = project::NoteStyle::default();
     }
