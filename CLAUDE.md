@@ -769,6 +769,44 @@ no effect).
   scrubbed-forward timeline position where a note is mid-fall), and setting roundedness to 0
   visibly squares off the note corners.
 
+### Fixed: notes fading out ("cutting off") before reaching the barrier when it's dragged far from 0.8
+
+- **Symptom**: moving `barrier_fraction` far from its default 0.8 (either direction) made falling
+  notes visibly vanish before they reached the barrier line, worse the further the barrier was
+  dragged — reported as "notes cut off early". The barrier line itself still landed in the right
+  place; it was the notes approaching it that disappeared prematurely.
+- **Root cause**: `midi_overlay.rs`'s barrier trick (see `render`'s doc comment above) repositions
+  the vendored shader's hardcoded 80%-down hit line by giving *only* `wgpu::RenderPass::
+  set_viewport` a `virtual_height` different from the real canvas height — `self.transform.data`
+  (fed to the vendored `TransformUniform`, which the vertex shader uses to compute each note's
+  `note_pos`/`size` varyings) was still being built from the *real* canvas height in both `load`
+  and `resize`. The vendored fragment shader's rounded-rect distance field (`dist()` in
+  `shader.wgsl`) compares `@builtin(position)` (real, post-viewport framebuffer pixels) against
+  those `note_pos`/`size` varyings (computed in a coordinate system sized by whatever
+  `TransformUniform` was given) — the two only agreed when `virtual_height` happened to equal the
+  real canvas height (i.e. right at the default `barrier_fraction = 0.8`, where the trick is a
+  no-op). Away from that default, the two coordinate systems diverge linearly with a note's
+  distance from the top of the canvas — negligible for a freshly-spawned note near y=0, worst for
+  a note about to reach the hit line — so `dist()` computes a distance far outside `radius`, the
+  `smoothstep` collapses to 0, and the note's alpha goes to zero: it fades to fully transparent
+  the closer it gets to the barrier, and the effect scales with how far `barrier_fraction` sits
+  from 0.8. (Also found along the way: `load` never called `self.transform.data.update`/`.update`
+  at all — it relied entirely on the georeference already set by a prior `resize`, which happens
+  to run once at `Compositor::new` time but left the transform stale for any calibration/barrier
+  change made between construction and the first MIDI load.)
+- **Fix**: extracted the viewport-height formula into `virtual_canvas_height(canvas_h,
+  barrier_fraction)` and feed *that* (not the real canvas height) into `self.transform.data.
+  update` in both `load` and `resize`, so the same `virtual_height` value drives both the
+  physical `set_viewport` call in `render` and the coordinate system `note_pos`/`size` are
+  computed in — `builtin(position)` and `note_pos`/`size` are back in the same units regardless of
+  `barrier_fraction`, with the barrier's on-screen position unaffected (still solved by the same
+  `0.8 * virtual_height = canvas_height * barrier_fraction` relationship). Confirmed by re-deriving
+  the shader math by hand (`crates/render/src/midi_overlay.rs`'s new doc comment on `render` walks
+  through it) rather than by trial and error; `cargo build`/`clippy` obviously can't catch a
+  shader-side coordinate mismatch like this one, so a full manual re-verification of the barrier at
+  a few extreme `barrier_fraction` values (not just 0.05, which is what 6a originally tested) is
+  still worth doing next time someone has hands on the running app.
+
 ### File menu bar and remaining native dialogs (milestone 6b)
 
 - `ui::draw_menu_bar` (`egui::Panel::top("menu_bar")` + a single `ui.menu_button("File", ..)`)
