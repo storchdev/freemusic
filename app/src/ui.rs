@@ -255,6 +255,37 @@ fn tab_button(ui: &mut egui::Ui, state: &mut UiState, tab: Tab, label: &str) {
     }
 }
 
+/// Draws a slider whose typed edits are only validated when the edit commits (Enter pressed, or
+/// focus leaves the field), rather than on every keystroke. Plain `egui::Slider` defaults to
+/// `SliderClamping::Always` with `update_while_editing(true)`, which force-clamps the field to
+/// `range` as soon as each keystroke parses to a number — so typing e.g. "15" into a 0.0..=2.0
+/// field snaps to "2" after the "1", making it impossible to type past the bound even
+/// transiently. Here, `update_while_editing(false)` leaves the underlying value untouched while
+/// the field has focus (only the in-progress text buffer changes), and `SliderClamping::Never`
+/// means the eventual commit isn't silently clamped either — instead, once the edit commits, an
+/// out-of-range result is reverted to whatever the field held before this edit began, rather than
+/// snapped to the nearest bound. Dragging the slider handle itself is unaffected (egui always
+/// keeps that within `range`).
+fn validated_slider(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    decimals: Option<usize>,
+) -> egui::Response {
+    let previous = *value;
+    let mut slider = egui::Slider::new(value, range.clone())
+        .clamping(egui::SliderClamping::Never)
+        .update_while_editing(false);
+    if let Some(decimals) = decimals {
+        slider = slider.min_decimals(decimals).max_decimals(decimals);
+    }
+    let response = ui.add(slider);
+    if response.lost_focus() && !range.contains(&*value) {
+        *value = previous;
+    }
+    response
+}
+
 /// Minimum gap kept between the left/right calibration handles, as a fraction of the preview
 /// image width — keeps them from being dragged past each other into a zero/negative-width
 /// keyboard.
@@ -265,17 +296,11 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
     ui.label("Drag the yellow guides on the preview, or use the sliders below.");
     ui.horizontal(|ui| {
         ui.label("Left:");
-        ui.add(egui::Slider::new(
-            &mut state.calibration.left_fraction,
-            0.0..=1.0,
-        ));
+        validated_slider(ui, &mut state.calibration.left_fraction, 0.0..=1.0, None);
     });
     ui.horizontal(|ui| {
         ui.label("Right:");
-        ui.add(egui::Slider::new(
-            &mut state.calibration.right_fraction,
-            0.0..=1.0,
-        ));
+        validated_slider(ui, &mut state.calibration.right_fraction, 0.0..=1.0, None);
     });
     // Same min-gap clamp as the drag handles, so a slider can't collapse the keyboard span to
     // zero width either.
@@ -301,10 +326,12 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
     ui.label("Drag the guide on the preview, or use the slider below.");
     ui.horizontal(|ui| {
         ui.label("Position:");
-        ui.add(egui::Slider::new(
+        validated_slider(
+            ui,
             &mut state.calibration.barrier_fraction,
             BARRIER_MIN_FRACTION..=BARRIER_MAX_FRACTION,
-        ));
+            None,
+        );
     });
     ui.horizontal(|ui| {
         ui.label("Color:");
@@ -312,10 +339,7 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
     });
     ui.horizontal(|ui| {
         ui.label("Thickness:");
-        ui.add(egui::Slider::new(
-            &mut state.barrier_style.thickness,
-            1.0..=12.0,
-        ));
+        validated_slider(ui, &mut state.barrier_style.thickness, 1.0..=12.0, None);
     });
     if ui.button("Reset barrier").clicked() {
         state.calibration.barrier_fraction =
@@ -331,10 +355,7 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
     });
     ui.horizontal(|ui| {
         ui.label("Roundedness:");
-        ui.add(egui::Slider::new(
-            &mut state.note_style.roundedness,
-            0.0..=1.0,
-        ));
+        validated_slider(ui, &mut state.note_style.roundedness, 0.0..=1.0, None);
     });
     if ui.button("Reset note style").clicked() {
         state.note_style = project::NoteStyle::default();
@@ -384,53 +405,50 @@ fn draw_transform_tab(ui: &mut egui::Ui, transform: &mut project::VideoTransform
     ui.heading("Video Transform");
     ui.horizontal(|ui| {
         ui.label("Brightness:");
-        ui.add(egui::Slider::new(&mut transform.brightness, 0.0..=2.0));
+        validated_slider(ui, &mut transform.brightness, 0.0..=2.0, None);
     });
     ui.horizontal(|ui| {
         ui.label("Scale (zoom):");
-        ui.add(egui::Slider::new(&mut transform.scale, 0.2..=3.0));
+        validated_slider(ui, &mut transform.scale, 0.2..=3.0, None);
     });
     ui.horizontal(|ui| {
         ui.label("Rotation (deg):");
-        ui.add(egui::Slider::new(
-            &mut transform.rotation_degrees,
-            -45.0..=45.0,
-        ));
+        validated_slider(ui, &mut transform.rotation_degrees, -45.0..=45.0, None);
     });
     ui.horizontal(|ui| {
         ui.label("Tilt X:");
-        ui.add(egui::Slider::new(&mut transform.tilt_x, -0.3..=0.3));
+        validated_slider(ui, &mut transform.tilt_x, -0.3..=0.3, None);
     });
     ui.horizontal(|ui| {
         ui.label("Tilt Y:");
-        ui.add(egui::Slider::new(&mut transform.tilt_y, -0.3..=0.3));
+        validated_slider(ui, &mut transform.tilt_y, -0.3..=0.3, None);
     });
     ui.horizontal(|ui| {
         ui.label("Translate X:");
-        ui.add(egui::Slider::new(&mut transform.translate_x, -1.0..=1.0));
+        validated_slider(ui, &mut transform.translate_x, -1.0..=1.0, Some(3));
     });
     ui.horizontal(|ui| {
         ui.label("Translate Y:");
-        ui.add(egui::Slider::new(&mut transform.translate_y, -1.0..=1.0));
+        validated_slider(ui, &mut transform.translate_y, -1.0..=1.0, Some(3));
     });
 
     ui.separator();
     ui.label("Crop (also draggable on the preview):");
     ui.horizontal(|ui| {
         ui.label("Left:");
-        ui.add(egui::Slider::new(&mut transform.crop_left, 0.0..=1.0));
+        validated_slider(ui, &mut transform.crop_left, 0.0..=1.0, None);
     });
     ui.horizontal(|ui| {
         ui.label("Right:");
-        ui.add(egui::Slider::new(&mut transform.crop_right, 0.0..=1.0));
+        validated_slider(ui, &mut transform.crop_right, 0.0..=1.0, None);
     });
     ui.horizontal(|ui| {
         ui.label("Top:");
-        ui.add(egui::Slider::new(&mut transform.crop_top, 0.0..=1.0));
+        validated_slider(ui, &mut transform.crop_top, 0.0..=1.0, None);
     });
     ui.horizontal(|ui| {
         ui.label("Bottom:");
-        ui.add(egui::Slider::new(&mut transform.crop_bottom, 0.0..=1.0));
+        validated_slider(ui, &mut transform.crop_bottom, 0.0..=1.0, None);
     });
     // Same min-gap clamp as the drag handles, so a slider can't collapse the crop to zero size
     // either.

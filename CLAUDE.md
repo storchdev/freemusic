@@ -968,6 +968,46 @@ no effect).
   this one applies regardless of whether the video is playing, since a menu can be open or the
   panel mid-collapse while paused.
 
+### Fixed: slider text fields fought manual typing instead of validating on commit
+
+- **Symptom**: typing a value directly into any slider's numeric field (Transform tab, Keyboard
+  tab) was effectively impossible — the field would revert/snap while still mid-keystroke, before
+  a full number could ever be entered.
+- **Root cause**: plain `egui::Slider` defaults to `SliderClamping::Always` combined with
+  `update_while_editing(true)`, meaning every keystroke that parses to a number is immediately
+  written back into the bound value *and* clamped to the slider's range, live, on that same
+  frame — there's no notion of "finish typing, then validate." An out-of-range intermediate (or
+  final) value doesn't get a chance to exist even transiently.
+- **Fix**: `app/src/ui.rs::validated_slider` wraps `egui::Slider` with
+  `.clamping(SliderClamping::Never)` and `.update_while_editing(false)`, so the bound value is
+  left untouched while the field has keyboard focus (only egui's internal text buffer changes as
+  you type), and only commits — unclamped — when the edit ends (Enter or focus loss). Right after
+  `ui.add`, if `response.lost_focus()` and the committed value falls outside `range`, it's reverted
+  to whatever the field held *before* this edit began (not clamped to the nearest bound). All
+  sliders in both tabs (brightness/scale/rotation/tilt/translate/crop in Transform, keyboard
+  calibration/barrier/note-roundedness in Keyboard) now go through this helper. Mouse-dragging the
+  slider handle itself is unaffected — egui always keeps drag interactions within `range`
+  regardless of `SliderClamping`.
+- **Crop/keyboard-calibration cross-field min-gap clamps** (`CROP_MIN_GAP`/`CALIBRATION_MIN_GAP`,
+  reasserted unconditionally every frame after those sliders) were deliberately left as-is rather
+  than folded into `validated_slider`'s revert-on-commit logic: since `update_while_editing(false)`
+  now freezes the bound value for the whole duration of a typing session, that per-frame
+  reassignment is already a no-op while typing (nothing to fight) and only does anything on the
+  commit frame — where it still clamps a gap-violating typed value into the valid band rather than
+  fully reverting it. That's a minor inconsistency with the "revert to previous" behavior described
+  above, scoped narrowly to the crop-left/right and crop-top/bottom and calibration-left/right
+  pairs specifically, accepted as a low-risk tradeoff rather than reworking that gap system (which
+  also protects the separate canvas drag handles in `draw_crop_handles`/`draw_calibration_handles`,
+  unaffected by any of this).
+- **Translate X/Y now show 3 decimal places** (`validated_slider(..., Some(3))`) instead of the
+  auto-computed ~2 the rest of the sliders still use, per explicit request — `validated_slider`'s
+  `decimals: Option<usize>` parameter drives `Slider::min_decimals`/`max_decimals` only when
+  `Some`, so other fields keep egui's default auto-precision.
+- Verified by `cargo build`/`cargo fmt`/`cargo clippy --all-targets` (all clean); not yet manually
+  exercised in the running app by a human — worth confirming typing an out-of-range value into,
+  say, Brightness or Translate X actually reverts to the prior value on Enter, and that a normal
+  in-range typed value commits correctly, the next time someone has hands on it.
+
 ## Verifying changes to `app` or `video-pipeline`
 
 Since there's no test suite for playback/timing correctness, changes to the decode or render path
