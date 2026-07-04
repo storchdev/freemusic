@@ -281,12 +281,21 @@ it, rather than bumping `wgpu` independently.
 
 - All timing is `f64` seconds end-to-end, never frame counts, until a future
   decode/encode boundary — avoids drift across mixed source frame rates (23.976/29.97/30/60).
-- `VideoPipeline::seek_and_decode(target_seconds, exact)` is the only entry point, called once per
-  redraw with the current transport position. It is deliberately *not* a naive
+- `VideoPipeline::seek_and_decode(target_seconds, exact)` is the clone-returning entry point used
+  by export/bench code that really needs to own a frame. The interactive app uses
+  `seek_and_decode_ref(target_seconds, exact)` instead, which borrows the cached frame and returns
+  `DecodedFrameRef { frame, changed }` so playback can skip GPU texture uploads when the requested
+  timestamp is still covered by the previous source frame. The decode path is deliberately *not* a
+  naive
   seek-then-decode-once call:
   - It holds the last-decoded frame (`current_frame`) and skips touching the decoder entirely if
-    `target_seconds` is still covered by it — the common case, since redraws happen far more often
-    than the source frame rate requires new frames.
+    `target_seconds` is still covered by it. "Covered" means `target_seconds < pts +
+    frame_duration_seconds`, not just `target_seconds <= pts`; using only the exact PTS as the
+    cache boundary treats a 30fps frame as valid for a single instant instead of its ~33ms display
+    interval, which defeats caching on most redraws. Do not regress the app back to the owned
+    `seek_and_decode` path here: at 1080p, returning the cached frame by value clones ~8MB and the
+    app used to re-upload that same texture every display redraw (e.g. ~120 times/sec for a 30fps
+    video), causing a large CPU/memory/GPU-queue spike without decoding any new video.
   - It only issues a real `Input::seek` for a backward jump or a forward jump bigger than
     `MAX_FORWARD_STEP_SECONDS` (1.0s) — i.e. an actual scrub, not ordinary playback advancing a few
     milliseconds per redraw. Reseeking every redraw would land on/near the *same* nearest keyframe
@@ -368,13 +377,17 @@ it, rather than bumping `wgpu` independently.
   `midi_overlay`, by `render::Compositor` — see the MP4 export section for why this is a
   separate crate rather than living directly in `app`.
 - `AppState::redraw` in `main.rs` is the per-frame orchestrator: advance/clamp the transport
-  position → `video_pipeline.seek_and_decode` → `compositor.upload_frame` + `update_viewport` →
-  `compositor.update_midi(position - sync_offset)` → run egui (`ui::draw`) → apply any
+  position → `video_pipeline.seek_and_decode_ref` → `compositor.upload_frame` only when
+  `DecodedFrameRef::changed` + `update_viewport` → `compositor.update_midi(position - sync_offset)`
+  → run egui (`ui::draw`) → apply any
   calibration change / Save-Load/Export button press queued by that egui pass (see the
   `project` crate section above and the MP4 export section below) → **two** render passes on
-  the swapchain view → present. Playback continuation is driven by `window.request_redraw()`
-  called at the end of `redraw` whenever `ui_state.playing` **or an export is running** is true
-  (see below); the event loop otherwise sits in `ControlFlow::Wait`.
+  the swapchain view → present. Export progress still chains `window.request_redraw()` directly
+  at the end of `redraw`, but playback does not: it sets `next_playback_redraw_at`, and
+  `ApplicationHandler::about_to_wait` uses `ControlFlow::WaitUntil` to wake at the loaded video's
+  own `frame_duration_seconds`. Schedule the next playback wake from the current frame's
+  `frame_start`, not from after render completion; scheduling from `Instant::now()` at the end of
+  a 3-4ms redraw turns a 33.3ms 30fps interval into ~37ms and shows up as ~27fps.
 - **Two render passes, not one** (changed in milestone 2): a `scene_pass` (`LoadOp::Clear`)
   draws `compositor` (video quad then MIDI waterfall) with a normally-scoped (non-`'static`)
   `RenderPass`, followed by an `egui_pass` (`LoadOp::Load`, so it composites on top without

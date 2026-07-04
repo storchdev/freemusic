@@ -14,6 +14,14 @@ pub struct DecodedFrame {
     pub pts_seconds: f64,
 }
 
+/// Result of a decode request that borrows the pipeline's cached frame.
+pub struct DecodedFrameRef<'a> {
+    pub frame: &'a DecodedFrame,
+    /// True when this call decoded a different source frame. False means the cached frame already
+    /// covered the requested timestamp and callers can skip texture uploads.
+    pub changed: bool,
+}
+
 /// Forward steps larger than this are treated as a scrub jump (triggers a real seek) rather
 /// than ordinary playback advancing frame-by-frame.
 const MAX_FORWARD_STEP_SECONDS: f64 = 1.0;
@@ -25,6 +33,7 @@ pub struct VideoPipeline {
     scaler: ScalingContext,
     time_base: ffmpeg::Rational,
     duration_seconds: f64,
+    frame_duration_seconds: f64,
     pub width: u32,
     pub height: u32,
     /// Most recently decoded frame, held so callers advancing by a sub-frame-duration step
@@ -47,6 +56,12 @@ impl VideoPipeline {
             stream.duration() as f64 * f64::from(time_base)
         } else {
             input.duration() as f64 / f64::from(ffmpeg::rescale::TIME_BASE)
+        };
+        let frame_rate = stream.avg_frame_rate();
+        let frame_duration_seconds = if frame_rate.numerator() > 0 && frame_rate.denominator() > 0 {
+            frame_rate.denominator() as f64 / frame_rate.numerator() as f64
+        } else {
+            1.0 / 30.0
         };
 
         let mut context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
@@ -87,6 +102,7 @@ impl VideoPipeline {
             scaler,
             time_base,
             duration_seconds,
+            frame_duration_seconds,
             width,
             height,
             current_frame: None,
@@ -95,6 +111,10 @@ impl VideoPipeline {
 
     pub fn duration_seconds(&self) -> f64 {
         self.duration_seconds
+    }
+
+    pub fn frame_duration_seconds(&self) -> f64 {
+        self.frame_duration_seconds
     }
 
     /// Returns the frame that should be displayed at `target_seconds`.
@@ -129,6 +149,23 @@ impl VideoPipeline {
         target_seconds: f64,
         exact: bool,
     ) -> Result<DecodedFrame, ffmpeg::Error> {
+        self.seek_and_decode_ref(target_seconds, exact)
+            .map(|decoded| decoded.frame.clone())
+    }
+
+    pub fn seek_and_decode_ref(
+        &mut self,
+        target_seconds: f64,
+        exact: bool,
+    ) -> Result<DecodedFrameRef<'_>, ffmpeg::Error> {
+        self.decode_ref(target_seconds, exact)
+    }
+
+    fn decode_ref(
+        &mut self,
+        target_seconds: f64,
+        exact: bool,
+    ) -> Result<DecodedFrameRef<'_>, ffmpeg::Error> {
         let need_seek = match self.current_frame.as_ref() {
             None => true,
             Some(frame) => {
@@ -144,7 +181,11 @@ impl VideoPipeline {
             let target_ts = (target_seconds / f64::from(ffmpeg::rescale::TIME_BASE)) as i64;
             self.input.seek(target_ts, ..target_ts)?;
             self.decoder.flush();
-        } else if let Some(frame) = self.current_frame.as_ref() {
+        } else if self
+            .current_frame
+            .as_ref()
+            .is_some_and(|frame| target_seconds < frame.pts_seconds + self.frame_duration_seconds)
+        {
             // Already covered by the held frame — nothing to decode. This shortcut used to live
             // behind `!exact` (i.e. only ordinary playback ticks got it, never a caller passing
             // `exact = true`), but it's unconditionally safe: it only returns early when the
@@ -155,9 +196,13 @@ impl VideoPipeline {
             // below) — without this, every redraw would force a fresh decode even when the
             // currently displayed frame was still perfectly valid, subtly speeding up playback
             // on any redraw cadence faster than the video's own frame rate.
-            if target_seconds <= frame.pts_seconds {
-                return Ok(frame.clone());
-            }
+            return Ok(DecodedFrameRef {
+                frame: self
+                    .current_frame
+                    .as_ref()
+                    .expect("cached frame was just checked"),
+                changed: false,
+            });
         }
 
         for (stream, packet) in self.input.packets() {
@@ -185,12 +230,21 @@ impl VideoPipeline {
                 let mut scaled = VideoFrame::empty();
                 self.scaler.run(&raw, &mut scaled)?;
                 let frame = to_decoded_frame(&scaled, pts_seconds);
-                self.current_frame = Some(frame.clone());
-                return Ok(frame);
+                self.current_frame = Some(frame);
+                return Ok(DecodedFrameRef {
+                    frame: self.current_frame.as_ref().expect("frame was just cached"),
+                    changed: true,
+                });
             }
         }
 
-        self.current_frame.clone().ok_or(ffmpeg::Error::Eof)
+        self.current_frame
+            .as_ref()
+            .map(|frame| DecodedFrameRef {
+                frame,
+                changed: false,
+            })
+            .ok_or(ffmpeg::Error::Eof)
     }
 }
 

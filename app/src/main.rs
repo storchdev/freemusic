@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use audio_playback::AudioPlayback;
 use export::Progress as ExportProgress;
@@ -127,11 +127,81 @@ struct AppState {
     /// `cpal` stream when it actually changes, not every frame (same dirty-check idea as
     /// `applied_calibration`).
     audio_playing: bool,
+    next_playback_redraw_at: Option<Instant>,
+    perf: Option<PerfStats>,
 }
 
 struct ExportRun {
     rx: mpsc::Receiver<ExportProgress>,
     cancel: Arc<AtomicBool>,
+}
+
+struct PerfStats {
+    started: Instant,
+    frames: u32,
+    uploads: u32,
+    cache_hits: u32,
+    decode: Duration,
+    upload: Duration,
+    midi: Duration,
+    egui: Duration,
+    acquire: Duration,
+    render_submit: Duration,
+    total: Duration,
+    max_total: Duration,
+    max_dt: Duration,
+}
+
+impl PerfStats {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            frames: 0,
+            uploads: 0,
+            cache_hits: 0,
+            decode: Duration::ZERO,
+            upload: Duration::ZERO,
+            midi: Duration::ZERO,
+            egui: Duration::ZERO,
+            acquire: Duration::ZERO,
+            render_submit: Duration::ZERO,
+            total: Duration::ZERO,
+            max_total: Duration::ZERO,
+            max_dt: Duration::ZERO,
+        }
+    }
+
+    fn record_frame(&mut self, total: Duration, dt: Duration) {
+        self.frames += 1;
+        self.total += total;
+        self.max_total = self.max_total.max(total);
+        self.max_dt = self.max_dt.max(dt);
+    }
+
+    fn maybe_print(&mut self) {
+        let elapsed = self.started.elapsed();
+        if elapsed < Duration::from_secs(1) || self.frames == 0 {
+            return;
+        }
+
+        let frames = self.frames as f64;
+        eprintln!(
+            "[perf] fps={:.1} uploads/s={} cache_hits/s={} avg_us decode={:.0} upload={:.0} midi={:.0} egui={:.0} acquire={:.0} render_submit={:.0} total={:.0} max_total={:.0} max_dt_ms={:.1}",
+            frames / elapsed.as_secs_f64(),
+            self.uploads,
+            self.cache_hits,
+            self.decode.as_secs_f64() * 1_000_000.0 / frames,
+            self.upload.as_secs_f64() * 1_000_000.0 / frames,
+            self.midi.as_secs_f64() * 1_000_000.0 / frames,
+            self.egui.as_secs_f64() * 1_000_000.0 / frames,
+            self.acquire.as_secs_f64() * 1_000_000.0 / frames,
+            self.render_submit.as_secs_f64() * 1_000_000.0 / frames,
+            self.total.as_secs_f64() * 1_000_000.0 / frames,
+            self.max_total.as_secs_f64() * 1_000_000.0,
+            self.max_dt.as_secs_f64() * 1_000.0,
+        );
+        *self = Self::new();
+    }
 }
 
 impl AppState {
@@ -235,6 +305,8 @@ impl AppState {
             modifiers: winit::keyboard::ModifiersState::empty(),
             audio: AudioPlayback::new(),
             audio_playing: false,
+            next_playback_redraw_at: None,
+            perf: std::env::var_os("FREEMUSIC_PROFILE").map(|_| PerfStats::new()),
         };
 
         if let Some(path) = video_path {
@@ -295,6 +367,7 @@ impl AppState {
         self.ui_state.duration_seconds = pipeline.duration_seconds();
         self.ui_state.position_seconds = 0.0;
         self.ui_state.playing = false;
+        self.next_playback_redraw_at = None;
 
         if let Ok(frame) = pipeline.seek_and_decode(0.0, false) {
             self.set_canvas_size((even(frame.width), even(frame.height)));
@@ -429,6 +502,7 @@ impl AppState {
         self.last_decoded_position = None;
         self.audio = AudioPlayback::new();
         self.audio_playing = false;
+        self.next_playback_redraw_at = None;
 
         self.ui_state.playing = false;
         self.ui_state.position_seconds = 0.0;
@@ -473,17 +547,16 @@ impl AppState {
     }
 
     fn redraw(&mut self) {
+        let frame_start = Instant::now();
         let now = Instant::now();
-        let dt = now.duration_since(self.last_instant).as_secs_f64();
+        let dt_duration = now.duration_since(self.last_instant);
+        let dt = dt_duration.as_secs_f64();
         self.last_instant = now;
 
         // Whether this redraw's position change (if any) came from an explicit scrub (the
         // timeline being dragged/clicked, or in future a keyboard seek) rather than ordinary
-        // playback advancing by `dt`. Passed through to `seek_and_decode` as `!is_scrub` below —
-        // see that function's doc comment for why the two cases need different `exact` behavior
-        // after a reseek: conflating them was a real bug (video snapping back to a stale frame
-        // and stuttering in place whenever a redraw-cadence stall — not an actual scrub —
-        // tripped the same big-forward-jump reseek path a real scrub does).
+        // playback advancing by `dt`. Scrubs can seek approximately; playback uses exact decode,
+        // but redraws are scheduled at the video frame interval instead of chained immediately.
         let is_scrub = self.ui_state.seek_request.is_some();
         if let Some(target) = self.ui_state.seek_request.take() {
             self.ui_state.position_seconds = target.clamp(0.0, self.ui_state.duration_seconds);
@@ -503,22 +576,45 @@ impl AppState {
         // like the paused video stuttering/looping instead of holding still.
         if self.last_decoded_position != Some(self.ui_state.position_seconds) {
             if let Some(pipeline) = self.pipeline.as_mut() {
-                if let Ok(frame) =
-                    pipeline.seek_and_decode(self.ui_state.position_seconds, !is_scrub)
-                {
-                    self.compositor.upload_frame(
-                        &self.gpu.device,
-                        &self.gpu.queue,
-                        frame.width,
-                        frame.height,
-                        &frame.bgra,
-                    );
+                let start = Instant::now();
+                let decoded_result = if is_scrub {
+                    pipeline.seek_and_decode_ref(self.ui_state.position_seconds, false)
+                } else {
+                    pipeline.seek_and_decode_ref(self.ui_state.position_seconds, true)
+                };
+                if let Ok(decoded) = decoded_result {
+                    if let Some(perf) = self.perf.as_mut() {
+                        perf.decode += start.elapsed();
+                    }
+                    if decoded.changed {
+                        let frame = decoded.frame;
+                        let start = Instant::now();
+                        self.compositor.upload_frame(
+                            &self.gpu.device,
+                            &self.gpu.queue,
+                            frame.width,
+                            frame.height,
+                            &frame.bgra,
+                        );
+                        if let Some(perf) = self.perf.as_mut() {
+                            perf.upload += start.elapsed();
+                            perf.uploads += 1;
+                        }
+                    } else if let Some(perf) = self.perf.as_mut() {
+                        perf.cache_hits += 1;
+                    }
                     self.last_decoded_position = Some(self.ui_state.position_seconds);
+                } else if let Some(perf) = self.perf.as_mut() {
+                    perf.decode += start.elapsed();
                 }
             }
         }
+        let start = Instant::now();
         let midi_time = self.ui_state.position_seconds - self.ui_state.sync_offset_seconds;
         self.compositor.update_midi(midi_time as f32);
+        if let Some(perf) = self.perf.as_mut() {
+            perf.midi += start.elapsed();
+        }
 
         // Audio is driven by (never drives) the transport position — see `audio_playback`'s doc
         // comment. Position is mirrored unconditionally (cheap, an atomic store), but play/pause
@@ -530,6 +626,7 @@ impl AppState {
             self.audio_playing = self.ui_state.playing;
         }
 
+        let start = Instant::now();
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let full_output = {
             let ui_state = &mut self.ui_state;
@@ -537,6 +634,9 @@ impl AppState {
                 ui::draw(ui, ui_state);
             })
         };
+        if let Some(perf) = self.perf.as_mut() {
+            perf.egui += start.elapsed();
+        }
 
         if self.ui_state.calibration != self.applied_calibration
             || self.ui_state.note_style != self.applied_note_style
@@ -661,6 +761,7 @@ impl AppState {
                 .update_texture(&self.gpu.device, &self.gpu.queue, *id, delta);
         }
 
+        let start = Instant::now();
         let surface_texture = match self.gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
@@ -669,10 +770,14 @@ impl AppState {
                 return;
             }
         };
+        if let Some(perf) = self.perf.as_mut() {
+            perf.acquire += start.elapsed();
+        }
         let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        let start = Instant::now();
         let mut encoder = self
             .gpu
             .device
@@ -752,14 +857,33 @@ impl AppState {
                 .chain(std::iter::once(encoder.finish())),
         );
         surface_texture.present();
+        if let Some(perf) = self.perf.as_mut() {
+            perf.render_submit += start.elapsed();
+        }
 
         self.egui_state
             .handle_platform_output(&self.window, full_output.platform_output);
 
-        // Also keep redrawing while an export is running (even if playback is paused) so its
-        // progress bar advances instead of sitting frozen until some other input wakes the loop.
-        if self.ui_state.playing || self.export_run.is_some() {
+        // Export progress can redraw as fast as the event loop allows, but playback redraws are
+        // scheduled from `about_to_wait` at the video's frame interval. Immediately chaining
+        // playback redraws here drives a 30fps file at the monitor refresh rate and can make
+        // exact decode fall into a catch-up feedback loop.
+        if self.export_run.is_some() {
             self.window.request_redraw();
+        }
+        self.next_playback_redraw_at = if self.ui_state.playing {
+            let frame_duration = self
+                .pipeline
+                .as_ref()
+                .map(VideoPipeline::frame_duration_seconds)
+                .unwrap_or(1.0 / 30.0);
+            Some(frame_start + Duration::from_secs_f64(frame_duration.max(0.001)))
+        } else {
+            None
+        };
+        if let Some(perf) = self.perf.as_mut() {
+            perf.record_frame(frame_start.elapsed(), dt_duration);
+            perf.maybe_print();
         }
     }
 }
@@ -887,6 +1011,29 @@ impl ApplicationHandler for App {
             if key_event.state == ElementState::Pressed {
                 handle_shortcut(state, key_event.physical_key, state.modifiers);
             }
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(state) = self.state.as_mut() else {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        };
+
+        if state.ui_state.playing {
+            match state.next_playback_redraw_at {
+                Some(next) if next > Instant::now() => {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+                }
+                _ => {
+                    state.next_playback_redraw_at = None;
+                    state.window.request_redraw();
+                    event_loop.set_control_flow(ControlFlow::Wait);
+                }
+            }
+        } else {
+            state.next_playback_redraw_at = None;
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 }
