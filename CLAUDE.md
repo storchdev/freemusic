@@ -437,17 +437,29 @@ it, rather than bumping `wgpu` independently.
   synchronously queued the *next* `RedrawRequested`, forever, independent of `redraw`'s own
   end-of-frame decision. A self-sustaining loop with no way to stop itself once started (which is
   immediately, at the first paint after window creation).
-- **Fix**: exclude `WindowEvent::RedrawRequested` from the generic nudge —
-  `if response.repaint && !matches!(event, WindowEvent::RedrawRequested) { ... }` — so the
-  generic check still does its job for events that legitimately want a one-shot repaint (mouse
-  moved, focus changed, modifiers changed, etc.) without re-arming itself on every frame it
-  draws. Verified with the same event-tally instrumentation: idle `RedrawRequested` rate dropped
-  from ~120/sec to ~0-1/sec (only real input causes a redraw now), and idle CPU for the process
-  dropped from continuous background load to ~1-2% (`ps -o pcpu`). Playback (`ui_state.playing`)
-  still self-sustains its own redraw loop correctly via `redraw`'s existing end-of-frame check,
-  confirmed by playing a 30s synthetic clip end-to-end and watching the on-screen frame counter
-  and transport position advance smoothly and land exactly on the expected frame for elapsed
-  wall-clock time.
+- **Fix**: exclude `WindowEvent::RedrawRequested` from the generic nudge, and later also exclude
+  passive `CursorMoved` while `ui_state.playing` and no mouse button is held. The first part
+  prevents a self-sustaining redraw loop; the second prevents a user simply moving the mouse over
+  the window during playback from turning playback back into an input-rate redraw loop that
+  bypasses the video-frame scheduler and causes stutter. Mouse-button state is tracked with a
+  small `pointer_buttons_down` counter, reset on focus loss, so real drags/scrubs still request
+  immediate repaints. Verified with the same event-tally instrumentation for the original bug:
+  idle `RedrawRequested` rate dropped from ~120/sec to ~0-1/sec (only real input causes a redraw
+  now), and idle CPU for the process dropped from continuous background load to ~1-2%
+  (`ps -o pcpu`). Playback (`ui_state.playing`) still self-sustains its own redraw loop correctly
+  via `about_to_wait`/`next_playback_redraw_at`, confirmed by playing a 30s synthetic clip
+  end-to-end and watching the on-screen frame counter and transport position advance smoothly and
+  land exactly on the expected frame for elapsed wall-clock time.
+- **Play/Pause ordering gotcha**: keep audio play/pause synchronization *after* the egui pass and
+  queued UI actions in `AppState::redraw`. The transport button toggles `ui_state.playing` inside
+  `ui::draw`; syncing `AudioPlayback::set_playing` before that pass leaves CPAL in the previous
+  state until a later repaint. The visible failure mode was clicking Pause while the cursor still
+  hovered the button: hover/input repaints could make the frame/audio feel like it was
+  jackhammering until the cursor left. Post-UI audio sync makes the button click affect the audio
+  stream in the same redraw that processes the click. Also keep the `playing_before_ui` /
+  `playing_changed_by_ui` one-shot redraw: the button label itself is computed before the click is
+  processed, so the click frame still paints the old label and needs one immediate follow-up frame
+  to show "Play"/"Pause" without waiting for the cursor to move.
 - **A separate, unrelated observation from the same debugging session, not a bug**: while
   testing playback under this environment's background-job Xwayland session, `acquire` was once
   seen blocking for a full ~1 second per frame, persisting across many consecutive frames. This

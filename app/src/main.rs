@@ -128,6 +128,7 @@ struct AppState {
     /// `applied_calibration`).
     audio_playing: bool,
     next_playback_redraw_at: Option<Instant>,
+    pointer_buttons_down: u8,
     perf: Option<PerfStats>,
 }
 
@@ -306,6 +307,7 @@ impl AppState {
             audio: AudioPlayback::new(),
             audio_playing: false,
             next_playback_redraw_at: None,
+            pointer_buttons_down: 0,
             perf: std::env::var_os("FREEMUSIC_PROFILE").map(|_| PerfStats::new()),
         };
 
@@ -616,29 +618,16 @@ impl AppState {
             perf.midi += start.elapsed();
         }
 
-        // Audio is driven by (never drives) the transport position — see `audio_playback`'s doc
-        // comment. Ordinary playback ticks only update the stream's resync anchor, but explicit
-        // scrubs force the callback cursor onto the new transport position even for tiny seeks.
-        if is_scrub {
-            self.audio
-                .seek_to_position_seconds(self.ui_state.position_seconds);
-        } else {
-            self.audio
-                .set_position_seconds(self.ui_state.position_seconds);
-        }
-        if self.ui_state.playing != self.audio_playing {
-            self.audio.set_playing(self.ui_state.playing);
-            self.audio_playing = self.ui_state.playing;
-        }
-
         let start = Instant::now();
         let raw_input = self.egui_state.take_egui_input(&self.window);
+        let playing_before_ui = self.ui_state.playing;
         let full_output = {
             let ui_state = &mut self.ui_state;
             self.egui_ctx.run_ui(raw_input, |ui| {
                 ui::draw(ui, ui_state);
             })
         };
+        let playing_changed_by_ui = self.ui_state.playing != playing_before_ui;
         if let Some(perf) = self.perf.as_mut() {
             perf.egui += start.elapsed();
         }
@@ -751,6 +740,23 @@ impl AppState {
                 self.ui_state.export_progress = None;
                 self.export_run = None;
             }
+        }
+
+        // Audio is driven by (never drives) the transport position — see `audio_playback`'s doc
+        // comment. Run this after egui and queued UI actions so Play/Pause button clicks affect
+        // the CPAL stream in the same redraw that processed the click, not one repaint later.
+        // Ordinary playback ticks only update the stream's resync anchor, but explicit scrubs
+        // force the callback cursor onto the new transport position even for tiny seeks.
+        if is_scrub {
+            self.audio
+                .seek_to_position_seconds(self.ui_state.position_seconds);
+        } else {
+            self.audio
+                .set_position_seconds(self.ui_state.position_seconds);
+        }
+        if self.ui_state.playing != self.audio_playing {
+            self.audio.set_playing(self.ui_state.playing);
+            self.audio_playing = self.ui_state.playing;
         }
 
         let paint_jobs = self
@@ -876,6 +882,9 @@ impl AppState {
         if self.export_run.is_some() {
             self.window.request_redraw();
         }
+        if playing_changed_by_ui {
+            self.window.request_redraw();
+        }
         self.next_playback_redraw_at = if self.ui_state.playing {
             let frame_duration = self
                 .pipeline
@@ -949,9 +958,18 @@ impl ApplicationHandler for App {
         // `ui_state.playing`/export state, completely bypassing `redraw`'s own end-of-frame
         // throttle below. `redraw` (called from the `RedrawRequested` arm further down) already
         // decides for itself whether to keep the loop going, so this generic repaint-on-any-event
-        // nudge should only fire for other events (mouse moved, focus changed, etc. — a one-shot
-        // redraw to reflect that input, not a continuous loop).
-        if response.repaint && !matches!(event, WindowEvent::RedrawRequested) {
+        // nudge should only fire for other events that actually need an immediate repaint.
+        // Passive cursor movement during playback is deliberately excluded: otherwise simply
+        // moving the mouse turns playback into an input-rate redraw loop and bypasses the
+        // video-frame scheduler. Cursor movement while a button is held is still treated as
+        // active input, so timeline/crop/calibration drags remain responsive.
+        let passive_playback_cursor_move = state.ui_state.playing
+            && state.pointer_buttons_down == 0
+            && matches!(event, WindowEvent::CursorMoved { .. });
+        if response.repaint
+            && !matches!(event, WindowEvent::RedrawRequested)
+            && !passive_playback_cursor_move
+        {
             state.window.request_redraw();
         }
 
@@ -1002,6 +1020,20 @@ impl ApplicationHandler for App {
                 state.modifiers = modifiers.state();
                 return;
             }
+            WindowEvent::Focused(false) => {
+                state.pointer_buttons_down = 0;
+            }
+            WindowEvent::MouseInput {
+                state: button_state,
+                ..
+            } => match button_state {
+                ElementState::Pressed => {
+                    state.pointer_buttons_down = state.pointer_buttons_down.saturating_add(1);
+                }
+                ElementState::Released => {
+                    state.pointer_buttons_down = state.pointer_buttons_down.saturating_sub(1);
+                }
+            },
             _ => {}
         }
 
