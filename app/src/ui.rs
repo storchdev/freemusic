@@ -565,15 +565,28 @@ fn draw_timeline_scrubber(ui: &mut egui::Ui, state: &mut UiState) {
     let painter = ui.painter();
     painter.rect_filled(rect, 3.0, egui::Color32::from_gray(35));
 
+    // Audio waveform and MIDI note density each get their own half of the strip rather than
+    // sharing the full height — drawn on top of each other they were hard to tell apart (both
+    // reaching for the same vertical space) even though one is center-aligned and the other
+    // bottom-aligned.
+    let half_y = rect.top() + rect.height() * 0.5;
+    let top_half = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), half_y));
+    let bottom_half = egui::Rect::from_min_max(egui::pos2(rect.left(), half_y), rect.max);
     draw_waveform(
         painter,
-        rect,
+        top_half,
         &state.waveform_peaks,
         state.waveform_bucket_seconds,
         view_start,
         view_end,
     );
-    draw_note_density(painter, rect, &state.midi_note_times, view_start, view_end);
+    draw_note_density(
+        painter,
+        bottom_half,
+        &state.midi_note_times,
+        view_start,
+        view_end,
+    );
     draw_time_ruler(painter, rect, view_start, view_end);
 
     if (view_start..=view_end).contains(&state.position_seconds) {
@@ -731,7 +744,7 @@ fn draw_note_density(
     let max_count = counts.iter().copied().max().unwrap_or(1).max(1);
     let bucket_width = rect.width() / BUCKETS as f32;
     let strip_bottom = rect.bottom() - 3.0;
-    let strip_max_height = rect.height() - 16.0;
+    let strip_max_height = (rect.height() - 6.0).max(1.0);
     for (i, &count) in counts.iter().enumerate() {
         if count == 0 {
             continue;
