@@ -19,7 +19,7 @@ use std::path::Path;
 
 use midi_file::MidiFile;
 use piano_layout::{KeyboardLayout, KeyboardRange, Sizing};
-use project::{Fill, KeyboardCalibration, NoteLayer};
+use project::{BlackKeyFill, Fill, KeyboardCalibration, NoteLayer};
 
 use instance::NoteInstance;
 use pipeline::NotesPipeline;
@@ -174,19 +174,22 @@ impl NotesRenderer {
         // Resolve the fill to a top/bottom color pair once per rebuild — for `Fill::Solid` both
         // ends are the same color, so the shader's gradient mix is a no-op and every note just
         // renders flat, matching the pre-Phase-C look exactly.
-        let (top_base, bottom_base) = match &note_layer.fill {
-            Fill::Solid(binding) => {
-                let color = binding.resolve_constant();
-                (color, color)
-            }
-            Fill::VerticalGradient { top, bottom } => {
-                (top.resolve_constant(), bottom.resolve_constant())
+        let (top_base, bottom_base) = resolve_fill_base(&note_layer.fill);
+        let top_light = color_to_linear(top_base);
+        let bottom_light = color_to_linear(bottom_base);
+        // `Auto`'s output is byte-identical to the pre-Phase-F behavior (same `darken(_, 0.6)`
+        // call on the same base colors) — the required no-regression guarantee.
+        let (top_dark, bottom_dark) = match &note_layer.black_key_fill {
+            BlackKeyFill::Auto => (
+                color_to_linear(darken(top_base, 0.6)),
+                color_to_linear(darken(bottom_base, 0.6)),
+            ),
+            BlackKeyFill::Same => (top_light, bottom_light),
+            BlackKeyFill::Custom(fill) => {
+                let (dark_top, dark_bottom) = resolve_fill_base(fill);
+                (color_to_linear(dark_top), color_to_linear(dark_bottom))
             }
         };
-        let top_light = color_to_linear(top_base);
-        let top_dark = color_to_linear(darken(top_base, 0.6));
-        let bottom_light = color_to_linear(bottom_base);
-        let bottom_dark = color_to_linear(darken(bottom_base, 0.6));
 
         let mut notes: Vec<_> = loaded
             .midi
@@ -274,6 +277,20 @@ fn keyboard_layout(
     let neutral_width = keyboard_width / range.white_count() as f32;
     let neutral_height = height * 0.2;
     KeyboardLayout::from_range(Sizing::new(neutral_width, neutral_height), range)
+}
+
+/// Resolves a `Fill` to its (top, bottom) base colors — shared by the white-key fill and, since
+/// Phase F, `BlackKeyFill::Custom`'s independently resolved fill.
+fn resolve_fill_base(fill: &Fill) -> ([u8; 3], [u8; 3]) {
+    match fill {
+        Fill::Solid(binding) => {
+            let color = binding.resolve_constant();
+            (color, color)
+        }
+        Fill::VerticalGradient { top, bottom } => {
+            (top.resolve_constant(), bottom.resolve_constant())
+        }
+    }
 }
 
 fn darken(color: [u8; 3], factor: f32) -> [u8; 3] {

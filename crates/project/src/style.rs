@@ -67,6 +67,13 @@ impl Style {
                 roundedness: note_style.roundedness,
                 fall_speed: note_style.fall_speed,
                 border: None,
+                black_key_fill: match note_style.black_key_color {
+                    crate::BlackKeyColorMode::Auto => BlackKeyFill::Auto,
+                    crate::BlackKeyColorMode::Same => BlackKeyFill::Same,
+                    crate::BlackKeyColorMode::Custom(color) => {
+                        BlackKeyFill::Custom(Fill::Solid(ColorBinding::Constant(color)))
+                    }
+                },
             }),
             barrier: Timed::Static(BarrierLayer {
                 kind: BarrierKind::Line,
@@ -225,6 +232,18 @@ impl Default for Fill {
     }
 }
 
+/// How black (sharp) keys' notes are colored relative to the white-key `fill`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub enum BlackKeyFill {
+    /// Today's only behavior: darken the white-key fill by 0.6 — default, pixel-parity.
+    #[default]
+    Auto,
+    /// No darkening, identical to the white-key fill.
+    Same,
+    /// Independently resolved fill (solid or gradient) for black keys.
+    Custom(Fill),
+}
+
 /// Diagonal specular stripe swept across a note's fill.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Sheen {
@@ -263,6 +282,8 @@ pub struct NoteLayer {
     pub fall_speed: f32,
     #[serde(default)]
     pub border: Option<Border>,
+    #[serde(default)]
+    pub black_key_fill: BlackKeyFill,
 }
 
 impl Default for NoteLayer {
@@ -274,6 +295,7 @@ impl Default for NoteLayer {
             roundedness: 1.0,
             fall_speed: 400.0,
             border: None,
+            black_key_fill: BlackKeyFill::default(),
         }
     }
 }
@@ -407,6 +429,21 @@ mod tests {
     #[test]
     fn style_ron_round_trip() {
         let style = Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default());
+        let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
+        let parsed: Style = ron::from_str(&text).unwrap();
+        assert_eq!(style, parsed);
+    }
+
+    #[test]
+    fn black_key_fill_custom_gradient_round_trips() {
+        let mut style = Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default());
+        let Timed::Static(notes) = &mut style.notes else {
+            unreachable!()
+        };
+        notes.black_key_fill = BlackKeyFill::Custom(Fill::VerticalGradient {
+            top: ColorBinding::Constant([10, 20, 30]),
+            bottom: ColorBinding::Constant([1, 2, 3]),
+        });
         let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
         let parsed: Style = ron::from_str(&text).unwrap();
         assert_eq!(style, parsed);

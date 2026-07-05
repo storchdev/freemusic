@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 
 mod style;
 pub use style::{
-    BarrierKind, BarrierLayer, Border, ColorBinding, Fill, FlashSpec, Glow, NoteLayer,
-    ParticleSpec, Pulse, Ramp, ScalarBinding, Sheen, Style, Timed, TransitionKind, TransitionLayer,
+    BarrierKind, BarrierLayer, BlackKeyFill, Border, ColorBinding, Fill, FlashSpec, Glow,
+    NoteLayer, ParticleSpec, Pulse, Ramp, ScalarBinding, Sheen, Style, Timed, TransitionKind,
+    TransitionLayer,
 };
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -86,6 +87,10 @@ pub struct NoteStyle {
     pub color: [u8; 3],
     pub roundedness: f32,
     pub fall_speed: f32,
+    /// How black-key notes are colored relative to `color` — mirrors `style::BlackKeyFill` minus
+    /// gradient support (this is the legacy "quick control", not the full `.fmstyle.ron` schema).
+    #[serde(default)]
+    pub black_key_color: BlackKeyColorMode,
 }
 
 impl Default for NoteStyle {
@@ -97,8 +102,19 @@ impl Default for NoteStyle {
             // neothesia-core) so existing projects/behavior are unchanged until the user touches
             // the slider.
             fall_speed: 400.0,
+            black_key_color: BlackKeyColorMode::default(),
         }
     }
+}
+
+/// Legacy "quick control" mirror of `style::BlackKeyFill`, minus gradient support (just a solid
+/// custom color) — `Style::from_legacy` converts this into the full `BlackKeyFill` enum.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub enum BlackKeyColorMode {
+    #[default]
+    Auto,
+    Same,
+    Custom([u8; 3]),
 }
 
 /// Video transform applied before compositing: brightness scalar, a crop rectangle (fractions

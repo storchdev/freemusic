@@ -1228,7 +1228,63 @@ any of this, sample-style screenshots) are not started.**
   sheen, glow" further below. **Phase D (barrier promoted from egui overlay to a real glow/pulse
   render pass) is now done** — see "Barrier glow/pulse pass" further below. **Phase E (barrier-hit
   particle/flash transition pass) is now done** — see "Transition particles + flash pass" further
-  below. **Not started**: Phase F (sample-style screenshots/docs beyond what's already shipped).
+  below. **Not started**: the doc/screenshot cleanup this section originally called "Phase F" —
+  superseded by the lettered-phase continuation below, which reuses letters F-J for a distinct set
+  of features (see disambiguation note).
+
+### Style extensibility continuation: Phases F-J (separate plan, new letter scheme)
+
+Full plan: `~/.claude/plans/the-most-recent-changes-delightful-rabbit.md`. **Disambiguation**: this
+plan reuses letters F-J for a *different* set of features than the "Phase F" mentioned just above
+(which only ever meant "ship sample-style screenshots/docs" and was never built out under that
+name) — don't confuse the two. This continuation closes four concrete gaps found while testing
+Phases A-E, plus adds a real field-by-field spec doc: **F** separate white/black key colors, **G**
+wavy "calm ocean" barrier edge, **H** elliptical/radiating flash (breaking rename), **I** continuous
+"grinding" particles + sustained flash-as-glow, **J** `docs/fmstyle-format.md`. Order matters: H
+before I because I's spawn code touches the same `EffectInstance`/spawn helpers H's rename touches.
+
+**Phase F — separate white/black key colors — DONE.**
+- **Schema** (`crates/project/src/style.rs`): `NoteLayer` gained `#[serde(default)]
+  pub black_key_fill: BlackKeyFill`, a new enum `{ Auto (default, today's darken-by-0.6
+  behavior), Same (no darkening), Custom(Fill) (independently resolved solid/gradient fill) }`.
+- **Legacy quick control** (`crates/project/src/lib.rs`): `NoteStyle` gained
+  `#[serde(default)] pub black_key_color: BlackKeyColorMode` (`Auto`/`Same`/`Custom([u8; 3])` —
+  solid-only, mirroring `BlackKeyFill` minus gradient support). `Style::from_legacy` maps
+  `Auto→Auto`, `Same→Same`, `Custom(c)→Custom(Fill::Solid(ColorBinding::Constant(c)))`.
+- **Renderer** (`crates/render/src/notes/mod.rs`): extracted `resolve_fill_base(&Fill) -> ([u8;
+  3], [u8; 3])` out of the inline match `rebuild_instances` used to do, shared by both the
+  white-key fill resolution and (new) `BlackKeyFill::Custom`'s independent fill resolution.
+  `BlackKeyFill::Auto`'s code path calls the exact same `darken(_, 0.6)` on the exact same base
+  colors as before — verified byte-identical, the required no-regression guarantee for projects
+  with no imported style and no touched black-key UI. Per-note sharp/white key color selection
+  (`if key.kind().is_sharp() { dark } else { light }`) is unchanged.
+- **UI** (`app/src/ui.rs::draw_keyboard_tab`): a `Auto`/`Same`/`Custom` `egui::ComboBox` next to
+  the existing note "Color:" row, plus a second `color_edit_button_srgb` shown only when
+  `Custom` is selected. Picking `Custom` for the first time seeds it with `darken(color, 0.6)`
+  (new `ui.rs::darken_color` helper, matching the renderer's own darkening) rather than jumping
+  to an arbitrary color. "Reset note style" already resets the whole `NoteStyle`, so it resets
+  this new field too with no extra code.
+- **Tests**: `crates/project/src/style.rs` gained `black_key_fill_custom_gradient_round_trips`,
+  round-tripping a `BlackKeyFill::Custom(Fill::VerticalGradient{..})` through RON.
+- **Sample styles**: `crates/project/examples/dump_sample_styles.rs`'s `NoteLayer` literal needed
+  an explicit `black_key_fill: project::BlackKeyFill::Auto` (required even though the field is
+  `#[serde(default)]`, since Rust struct literals don't get that leniency — only deserialization
+  does). The three checked-in `examples/styles/*.fmstyle.ron` files were **not** regenerated
+  wholesale (the generator's current output has since drifted slightly from the checked-in files
+  on unrelated fields — e.g. `gradient-glow`'s sheen intensity/width/angle — so overwriting would
+  have picked up unrelated changes); instead `black_key_fill: Auto,` was inserted directly into
+  each file right after its existing `border: None,` line via a targeted `sed`, keeping every
+  other value untouched. Confirmed by `shipped_sample_styles_parse` (still passes) that this
+  hand-edit didn't break parsing.
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), `cargo test --workspace` all clean.
+  **Not yet manually run** (per the "never run the app yourself" rule) — worth confirming, next
+  time someone has hands on the app: with no imported style, black keys still look exactly as
+  before (Auto); switching the new combo box to `Same` makes black-key notes match white-key
+  notes exactly; `Custom` + picking a distinct color changes only black-key notes; and importing a
+  style with an explicit `black_key_fill: Custom(...)` overrides the Keyboard tab's quick control,
+  same as every other imported field already does.
+
+**Phases G-J are not yet started.**
 
 ### Vendored note pipeline, pixel-parity (Phase B of the `.fmstyle.ron` milestone)
 

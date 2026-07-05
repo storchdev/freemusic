@@ -38,6 +38,7 @@ fn main() {
             roundedness: 1.0,
             fall_speed: 400.0,
             border: None,
+            black_key_fill: project::BlackKeyFill::Auto,
         }),
         barrier: Timed::Static(BarrierLayer::default()),
         transition: Timed::Static(TransitionLayer::default()),

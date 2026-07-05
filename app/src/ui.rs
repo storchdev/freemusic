@@ -256,6 +256,16 @@ fn validated_slider(
     response
 }
 
+/// Darkens an sRGB u8 color by `factor` — matches `render::notes`' own sharp-key darkening, used
+/// here only to seed a sensible starting color when switching the black-key mode to `Custom`.
+fn darken_color(color: [u8; 3], factor: f32) -> [u8; 3] {
+    [
+        (color[0] as f32 * factor) as u8,
+        (color[1] as f32 * factor) as u8,
+        (color[2] as f32 * factor) as u8,
+    ]
+}
+
 /// Minimum gap kept between the left/right calibration handles, as a fraction of the preview
 /// image width — keeps them from being dragged past each other into a zero/negative-width
 /// keyboard.
@@ -323,6 +333,41 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
         ui.label("Color:");
         ui.color_edit_button_srgb(&mut state.note_style.color);
     });
+    ui.horizontal(|ui| {
+        ui.label("Black keys:");
+        let mode_label = match state.note_style.black_key_color {
+            project::BlackKeyColorMode::Auto => "Auto",
+            project::BlackKeyColorMode::Same => "Same",
+            project::BlackKeyColorMode::Custom(_) => "Custom",
+        };
+        egui::ComboBox::from_id_salt("black_key_color_mode")
+            .selected_text(mode_label)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(mode_label == "Auto", "Auto").clicked() {
+                    state.note_style.black_key_color = project::BlackKeyColorMode::Auto;
+                }
+                if ui.selectable_label(mode_label == "Same", "Same").clicked() {
+                    state.note_style.black_key_color = project::BlackKeyColorMode::Same;
+                }
+                if ui
+                    .selectable_label(mode_label == "Custom", "Custom")
+                    .clicked()
+                    && mode_label != "Custom"
+                {
+                    // Seed with the same darkening Auto already applies, so switching modes
+                    // doesn't jump to an arbitrary color.
+                    state.note_style.black_key_color = project::BlackKeyColorMode::Custom(
+                        darken_color(state.note_style.color, 0.6),
+                    );
+                }
+            });
+    });
+    if let project::BlackKeyColorMode::Custom(color) = &mut state.note_style.black_key_color {
+        ui.horizontal(|ui| {
+            ui.label("Black key color:");
+            ui.color_edit_button_srgb(color);
+        });
+    }
     ui.horizontal(|ui| {
         ui.label("Roundedness:");
         validated_slider(ui, &mut state.note_style.roundedness, 0.0..=3.0, None);
