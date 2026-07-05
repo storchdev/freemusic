@@ -89,6 +89,7 @@ fn run_inner(
 
     let note_layer = project.effective_note_layer();
     let barrier_layer = project.effective_barrier_layer();
+    let transition_layer = project.effective_transition_layer();
     let mut compositor = Compositor::new(
         &handles,
         (width as f32, height as f32),
@@ -162,6 +163,17 @@ fn run_inner(
             (width as f32, height as f32),
             &project.calibration,
             &barrier_layer,
+            midi_time as f32,
+        );
+        // Export renders frames in strictly increasing `t` order (never a scrub), so the
+        // particle/flash sim's per-frame `dt` derivation in `update_transition` behaves exactly
+        // like ordinary interactive playback — no special-casing needed here.
+        compositor.update_transition(
+            &gpu.device,
+            &gpu.queue,
+            (width as f32, height as f32),
+            &project.calibration,
+            &transition_layer,
             midi_time as f32,
         );
 

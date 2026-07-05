@@ -169,6 +169,19 @@ impl Project {
             .clone()
     }
 
+    /// Same "imported style wins, otherwise synthesize from the legacy sliders" rule as
+    /// `effective_note_layer`/`effective_barrier_layer`, for the barrier-hit transition axis.
+    /// `Style::from_legacy` always produces `TransitionKind::None`, so a project with no imported
+    /// style spawns no particles/flashes — matching the pre-Phase-E look exactly.
+    pub fn effective_transition_layer(&self) -> TransitionLayer {
+        self.style
+            .clone()
+            .unwrap_or_else(|| Style::from_legacy(&self.note_style, &self.barrier_style))
+            .transition
+            .resolve(0.0)
+            .clone()
+    }
+
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::new())
             .map_err(|err| format!("failed to serialize project: {err}"))?;

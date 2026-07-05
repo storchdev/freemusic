@@ -5,10 +5,11 @@
 //! GPU context to run the exact same compositing logic against.
 
 mod barrier;
+mod effects;
 mod notes;
 mod video_quad;
 
-use project::{BarrierLayer, KeyboardCalibration, NoteLayer, VideoTransform};
+use project::{BarrierLayer, KeyboardCalibration, NoteLayer, TransitionLayer, VideoTransform};
 
 pub use notes::GpuHandles;
 
@@ -16,6 +17,7 @@ pub struct Compositor {
     video_quad: video_quad::VideoQuad,
     notes: notes::NotesRenderer,
     barrier: barrier::BarrierRenderer,
+    effects: effects::EffectsRenderer,
 }
 
 impl Compositor {
@@ -29,10 +31,12 @@ impl Compositor {
         let mut notes = notes::NotesRenderer::new(gpu);
         notes.resize(gpu, viewport, calibration, note_layer);
         let barrier = barrier::BarrierRenderer::new(gpu.device, gpu.texture_format);
+        let effects = effects::EffectsRenderer::new(gpu.device, gpu.texture_format);
         Self {
             video_quad,
             notes,
             barrier,
+            effects,
         }
     }
 
@@ -118,9 +122,37 @@ impl Compositor {
             .update_pulse(queue, midi_time_seconds, self.notes.note_start_times());
     }
 
+    /// Advances the barrier-hit particle/flash simulation to `midi_time_seconds` (same
+    /// sync-offset-subtracted convention as `update_midi`/`update_barrier`) and uploads the
+    /// current pool. Unlike `update_barrier`'s pulse, this is stateful (see
+    /// `effects::EffectsRenderer`'s doc comment) — still called unconditionally every redraw, like
+    /// `update_viewport`/`update_barrier`, since the simulation itself needs to run every frame
+    /// regardless of whether any style field actually changed.
+    pub fn update_transition(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        canvas_size: (f32, f32),
+        calibration: &KeyboardCalibration,
+        transition_layer: &TransitionLayer,
+        midi_time_seconds: f32,
+    ) {
+        let barrier_fraction = calibration.barrier_fraction.clamp(0.05, 1.0);
+        self.effects.update(
+            device,
+            queue,
+            canvas_size,
+            barrier_fraction,
+            transition_layer,
+            midi_time_seconds,
+            self.notes.hit_events(),
+        );
+    }
+
     pub fn render<'rpass>(&'rpass mut self, render_pass: &mut wgpu::RenderPass<'rpass>) {
         self.video_quad.render(render_pass);
         self.notes.render(render_pass);
         self.barrier.render(render_pass);
+        self.effects.render(render_pass);
     }
 }

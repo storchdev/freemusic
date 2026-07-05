@@ -1226,8 +1226,9 @@ any of this, sample-style screenshots) are not started.**
   round-trips `style` correctly (nothing else to check visually until Phase C).
 - **Phase C (note fill effects actually rendered) is now done** — see "Note fill effects: gradient,
   sheen, glow" further below. **Phase D (barrier promoted from egui overlay to a real glow/pulse
-  render pass) is now done** — see "Barrier glow/pulse pass" further below. **Not started**: Phase
-  E (particle/flash transition pass + hit-event precompute).
+  render pass) is now done** — see "Barrier glow/pulse pass" further below. **Phase E (barrier-hit
+  particle/flash transition pass) is now done** — see "Transition particles + flash pass" further
+  below. **Not started**: Phase F (sample-style screenshots/docs beyond what's already shipped).
 
 ### Vendored note pipeline, pixel-parity (Phase B of the `.fmstyle.ron` milestone)
 
@@ -1380,6 +1381,104 @@ pass, so it now shows up in exported video too — and reads `project::BarrierLa
   barrier handle still moves it (now with no visible egui-drawn line under the cursor, since the
   rendered bar itself is what moves). Also worth exporting a short clip and confirming the barrier
   bar (previously invisible in exports) now appears baked into the output frame.
+
+### Transition particles + flash pass (Phase E of the `.fmstyle.ron` milestone) — DONE
+
+Phase E adds the last of the three visual axes from the milestone's original scope: a burst of
+particles and/or a decaying radial flash spawned when a note arrives at the barrier, reading
+`project::TransitionLayer`'s `kind`/`particles`/`flash` fields. This is the only one of the three
+axes with genuine per-frame *state* (a particle's position is the integral of its velocity/gravity
+since spawn) rather than something a `time_seconds` value alone can reproduce, unlike the barrier's
+stateless pulse (Phase D) or the note fill's per-instance-baked look (Phase C).
+
+- **Hit-event precompute lives in `render::notes`, not a new module** — `render::notes::HitEvent {
+  time_seconds, x_px }` is built in `NotesRenderer::rebuild_instances` (`crates/render/src/notes/
+  mod.rs`) in the exact same loop that builds `NoteInstance`s, since the x position needs the same
+  calibrated keyboard layout the instances are built from (`key.x() + left_x + key.width() * 0.5`,
+  the note's lane center). Stored on `Loaded` alongside the pre-existing `note_starts` (used by the
+  timeline's density strip and the barrier's pulse) and exposed via a new `NotesRenderer::
+  hit_events()` accessor — same "cached at rebuild time, sorted ascending since notes are already
+  sorted by `note.start` for draw order" shape `note_starts` already used. Events are only built for
+  the notes actually drawn (in-range, non-drum, same filter as instances) — a note that never
+  renders never spawns a transition either.
+- **New module `crates/render/src/effects.rs`** (+ `effects.wgsl`) owns `EffectsRenderer`: a CPU
+  particle pool + a flash list, simulated on the CPU and re-uploaded as instanced quads every
+  frame — structured like `notes/pipeline.rs` (own shader, own growable instance buffer(s)) but,
+  unlike every other pass added so far, genuinely stateful across calls rather than a pure function
+  of the current inputs.
+- **Spawn/simulate model**: `EffectsRenderer::update(device, queue, canvas_size, barrier_fraction,
+  transition_layer, time_seconds, hit_events)` tracks `last_time_seconds` and, on an *ordinary*
+  step (`0.0 <= time_seconds - last_time_seconds <= MAX_ORDINARY_STEP_SECONDS`, `0.35`s), binary-
+  searches `hit_events` for the slice crossed since the last call (`partition_point` twice, same
+  technique `barrier::BarrierRenderer::pulse_intensity` already uses on `note_starts`) and spawns
+  one burst per crossed event before advancing every live particle/flash by that step's `dt`.
+  A step outside that range — including the very first call (`last_time_seconds == None`) — clears
+  both pools instead of spawning every event a big jump skipped or trying to run particles
+  backward: **transient effects have no well-defined mid-scrub state to reconstruct**, so a scrub
+  (forward or backward) just starts the pool over, empty, at the new position. This is the
+  documented tradeoff the plan called out ("scrubbing backward clears the pool") extended
+  symmetrically to large forward jumps for the same reason.
+- **Particles**: spawn spread around straight up (canvas convention is y-down, so "up" is negative
+  y) within `±spread_degrees/2` of vertical, speed jittered `0.5x`-`1.0x` of `speed_px`, then
+  integrate `pos += vel * dt; vel.y += gravity_px * dt` (gravity pulls particles back down) each
+  step, fading alpha linearly over `lifetime_seconds` and expiring at zero. **Jitter uses a tiny
+  hand-rolled deterministic xorshift32 PRNG** (`effects::Rng`), not a `rand` dependency — no crate
+  in this workspace currently depends on `rand`, and a few lines of xorshift is enough for "looks
+  plausibly random" without pulling in a new dependency for it.
+- **Flashes**: a single quad per spawn at the hit position, alpha decaying linearly from
+  `intensity` to 0 over `decay_seconds`, radius fixed at `radius_px` (no growth animation) —
+  intentionally the simplest interpretation of `FlashSpec` that still reads as "a bright pop", left
+  that simple rather than adding an expansion curve the schema doesn't ask for.
+  - **No procedural texture asset**: `effects.wgsl`'s fragment shader computes a soft circular
+    falloff (`1.0 - smoothstep(0.6, 1.0, length(local))`, `local` being the quad's -1..1
+    center-relative coordinate) directly from the quad geometry, same "signed-distance math in the
+    fragment shader instead of a sampled texture" style `notes/shader.wgsl`'s rounded-rect and
+    `barrier.wgsl`'s glow falloff already use in this codebase.
+- **Two blend modes, one shader**: `effects.wgsl`'s fragment shader always outputs *premultiplied*
+  color (`rgb * alpha`, `alpha`), so `EffectsRenderer` can build two pipelines from the identical
+  shader module differing only in `BlendState` — additive (`One, One` on both channels, for
+  flashes and `ParticleSpec::additive = true` particles) and premultiplied-alpha (`One,
+  OneMinusSrcAlpha`, for `additive = false` particles). Flashes always draw additive regardless of
+  `ParticleSpec` (a flash reads as a bright pop either way; `FlashSpec` has no `additive` field of
+  its own). **Simplification, documented rather than engineered around**: which pipeline a
+  *particle* draws under is decided once per `update` call from the *currently resolved*
+  `TransitionLayer.particles.additive`, not stored per-particle at spawn time — if a running
+  project imports a different style mid-flight while particles from the old one are still alive,
+  those leftover particles finish out under the new blend mode rather than the one they spawned
+  under. Not worth the extra per-particle bookkeeping for an edge case (switching styles while
+  particles are mid-flight) this milestone doesn't otherwise need to handle.
+- **Render order**: video quad → notes → barrier → **effects** (`Compositor::render`), on top of
+  everything else, matching the plan's specified order — a spark burst should visually sit above
+  the barrier bar it's spawned from. `EffectsRenderer::render` resets the scissor rect to the full
+  canvas defensively (barrier's own `render` already does this before it runs, but re-asserting
+  costs nothing and doesn't depend on `Compositor::render`'s draw order never changing elsewhere).
+- **Wiring**: `Compositor::update_transition` (new, mirrors `update_barrier`'s shape) pulls
+  `self.notes.hit_events()` internally so callers don't need to thread them through — same pattern
+  `update_barrier` already uses for `note_start_times()`. Called unconditionally every redraw in
+  `app/src/main.rs::apply_post_ui_updates` (right after `update_barrier`, using the same
+  `midi_time` already computed there) and once per output frame in `crates/export/src/lib.rs`'s
+  render loop (right after its own `update_barrier` call) — export renders frames in strictly
+  increasing `t` order at a fixed `1/fps` step, which is always well inside
+  `MAX_ORDINARY_STEP_SECONDS`, so the sim behaves there exactly like ordinary interactive playback
+  with no special-casing needed. `Project::effective_transition_layer()`
+  (`crates/project/src/lib.rs`) and its `app/src/main.rs` free-function mirror
+  (`effective_transition_layer(&UiState)`) follow the exact same "imported style wins, else
+  synthesize via `Style::from_legacy`" shape as `effective_note_layer`/`effective_barrier_layer` —
+  `Style::from_legacy` always produces `TransitionKind::None`, so a project with no imported style
+  spawns nothing, matching the pre-Phase-E look exactly.
+- **No new UI** — per the milestone's contract, "Import style…" is still the only surface; there
+  are no sliders for particle count/speed/etc., only the `.fmstyle.ron` file format.
+  `examples/styles/sparks.fmstyle.ron` (shipped back in Phase A) already exercises
+  `TransitionKind::ParticlesAndFlash` with both a `ParticleSpec` and a `FlashSpec` populated, so no
+  new sample style was needed for this phase.
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean. **Not yet manually run** (per the "never run the app yourself" rule) — worth importing
+  `examples/styles/sparks.fmstyle.ron` next time someone has hands on the app: confirm a burst of
+  warm-colored sparks flies up and falls back down under gravity each time a note reaches the
+  barrier, alongside a quick white flash, both fading out within well under a second; confirm
+  scrubbing around (including scrubbing backward mid-burst) doesn't crash or leave stuck particles
+  hanging in place; and confirm an exported clip bakes the bursts into the output frames at the
+  right timestamps.
 
 ### Note fill effects: gradient, sheen, glow (Phase C of the `.fmstyle.ron` milestone) — DONE
 

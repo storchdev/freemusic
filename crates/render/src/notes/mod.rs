@@ -44,12 +44,26 @@ pub struct NotesRenderer {
     barrier_fraction: f32,
 }
 
+/// One note's arrival at the barrier: when (sync-offset-subtracted transport seconds, matching
+/// `note_start_times`'s convention) and where (pixel x, center of the note's lane) — everything
+/// `render::effects::EffectsRenderer` needs to spawn a particle burst/flash at the right place and
+/// time. Recomputed alongside the note instances themselves in `rebuild_instances`, since the x
+/// position depends on the same calibrated keyboard layout the instances are built from.
+#[derive(Debug, Clone, Copy)]
+pub struct HitEvent {
+    pub time_seconds: f32,
+    pub x_px: f32,
+}
+
 struct Loaded {
     midi: MidiFile,
     /// Sorted note start times in seconds, cached at load time — used by the bottom timeline's
     /// note-density strip (`ui::draw_timeline`), which just needs raw onset times, not the full
     /// per-track structure.
     note_starts: Vec<f32>,
+    /// Sorted (ascending time, matching `note_starts`) barrier-arrival events for the notes
+    /// actually drawn (in-range, non-drum) — see `HitEvent`.
+    hit_events: Vec<HitEvent>,
 }
 
 impl NotesRenderer {
@@ -74,6 +88,16 @@ impl NotesRenderer {
             .unwrap_or(&[])
     }
 
+    /// Sorted barrier-arrival events (time + x position), or an empty slice if nothing is loaded
+    /// — used by `render::effects::EffectsRenderer` to spawn particles/flashes as the transport
+    /// crosses each note's arrival time.
+    pub fn hit_events(&self) -> &[HitEvent] {
+        self.loaded
+            .as_ref()
+            .map(|l| l.hit_events.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// Parses `path` as a MIDI file and (re)builds the note instances for it.
     pub fn load(
         &mut self,
@@ -91,7 +115,11 @@ impl NotesRenderer {
             .map(|note| note.start.as_secs_f32())
             .collect();
         note_starts.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        self.loaded = Some(Loaded { midi, note_starts });
+        self.loaded = Some(Loaded {
+            midi,
+            note_starts,
+            hit_events: Vec::new(),
+        });
         self.apply_view(gpu, viewport, calibration, note_layer);
         Ok(())
     }
@@ -170,6 +198,7 @@ impl NotesRenderer {
         // Render newer notes on top of older ones, matching Neothesia's own convention.
         notes.sort_by_key(|note| note.start);
 
+        let mut hit_events = Vec::with_capacity(notes.len());
         let instances = self.pipeline.instances();
         for note in notes {
             let key = &layout.keys[note.note as usize - range_start];
@@ -179,9 +208,11 @@ impl NotesRenderer {
                 (top_light, bottom_light)
             };
             let duration = note.duration.as_secs_f32().max(0.1);
+            let note_x = key.x() + left_x;
+            let start_seconds = note.start.as_secs_f32();
 
             instances.push(NoteInstance {
-                position: [key.x() + left_x, note.start.as_secs_f32()],
+                position: [note_x, start_seconds],
                 size: [key.width() - 1.0, duration - 0.01],
                 color_top,
                 color_bottom,
@@ -189,6 +220,17 @@ impl NotesRenderer {
                 velocity: note.velocity as f32 / 127.0,
                 track_index: note.track_id as f32,
             });
+            hit_events.push(HitEvent {
+                time_seconds: start_seconds,
+                x_px: note_x + key.width() * 0.5,
+            });
+        }
+
+        // `notes` was already sorted ascending by `note.start` above, so `hit_events` (pushed in
+        // the same order) is too — `effects::EffectsRenderer::update` relies on that ordering to
+        // binary-search the slice of events crossed since the last update.
+        if let Some(loaded) = self.loaded.as_mut() {
+            loaded.hit_events = hit_events;
         }
 
         self.pipeline.prepare(gpu.device, gpu.queue);

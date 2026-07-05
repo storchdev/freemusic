@@ -92,6 +92,18 @@ fn effective_barrier_layer(ui_state: &UiState) -> project::BarrierLayer {
         .clone()
 }
 
+/// Same idea as `effective_note_layer`/`effective_barrier_layer`, for the barrier-hit transition
+/// axis — mirrors `project::Project::effective_transition_layer`.
+fn effective_transition_layer(ui_state: &UiState) -> project::TransitionLayer {
+    ui_state
+        .style
+        .clone()
+        .unwrap_or_else(|| Style::from_legacy(&ui_state.note_style, &ui_state.barrier_style))
+        .transition
+        .resolve(0.0)
+        .clone()
+}
+
 fn create_preview_texture(
     device: &wgpu::Device,
     size: (u32, u32),
@@ -998,6 +1010,20 @@ impl AppState {
             (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
             &self.ui_state.calibration,
             &barrier_layer,
+            midi_time,
+        );
+
+        // Same "cheap per-frame update, no dirty-check" treatment as `update_barrier` above, but
+        // stateful (see `render::Compositor::update_transition`'s doc comment) — the particle/
+        // flash simulation needs to advance every redraw regardless of whether any style field
+        // changed this frame.
+        let transition_layer = effective_transition_layer(&self.ui_state);
+        self.compositor.update_transition(
+            &self.gpu.device,
+            &self.gpu.queue,
+            (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
+            &self.ui_state.calibration,
+            &transition_layer,
             midi_time,
         );
 
