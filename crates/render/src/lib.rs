@@ -7,7 +7,7 @@
 mod notes;
 mod video_quad;
 
-use project::{KeyboardCalibration, NoteStyle, VideoTransform};
+use project::{KeyboardCalibration, NoteLayer, VideoTransform};
 
 pub use notes::GpuHandles;
 
@@ -21,11 +21,11 @@ impl Compositor {
         gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
-        note_style: &NoteStyle,
+        note_layer: &NoteLayer,
     ) -> Self {
         let video_quad = video_quad::VideoQuad::new(gpu.device, gpu.texture_format);
         let mut notes = notes::NotesRenderer::new(gpu);
-        notes.resize(gpu, viewport, calibration, note_style);
+        notes.resize(gpu, viewport, calibration, note_layer);
         Self { video_quad, notes }
     }
 
@@ -44,14 +44,14 @@ impl Compositor {
         gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
-        note_style: &NoteStyle,
+        note_layer: &NoteLayer,
         path: &std::path::Path,
     ) -> Result<(), String> {
         self.notes
-            .load(gpu, viewport, calibration, note_style, path)
+            .load(gpu, viewport, calibration, note_layer, path)
     }
 
-    /// Recomputes note-lane layout for a new viewport size, calibration, or note style. Not
+    /// Recomputes note-lane layout for a new viewport size, calibration, or note layer. Not
     /// needed for the video quad itself — its viewport-dependent state is the cheap per-frame
     /// uniform written by `update_viewport` instead.
     pub fn resize(
@@ -59,9 +59,9 @@ impl Compositor {
         gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
-        note_style: &NoteStyle,
+        note_layer: &NoteLayer,
     ) {
-        self.notes.resize(gpu, viewport, calibration, note_style);
+        self.notes.resize(gpu, viewport, calibration, note_layer);
     }
 
     pub fn upload_frame(

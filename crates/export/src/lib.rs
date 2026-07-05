@@ -87,11 +87,12 @@ fn run_inner(
         texture_format: format,
     };
 
+    let note_layer = project.effective_note_layer();
     let mut compositor = Compositor::new(
         &handles,
         (width as f32, height as f32),
         &project.calibration,
-        &project.note_style,
+        &note_layer,
     );
     if let Some(midi_path) = project.midi_path.as_ref() {
         compositor
@@ -99,7 +100,7 @@ fn run_inner(
                 &handles,
                 (width as f32, height as f32),
                 &project.calibration,
-                &project.note_style,
+                &note_layer,
                 midi_path,
             )
             .map_err(|err| format!("failed to load MIDI: {err}"))?;

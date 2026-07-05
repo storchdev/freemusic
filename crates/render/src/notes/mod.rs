@@ -19,7 +19,7 @@ use std::path::Path;
 
 use midi_file::MidiFile;
 use piano_layout::{KeyboardLayout, KeyboardRange, Sizing};
-use project::{KeyboardCalibration, NoteStyle};
+use project::{Fill, KeyboardCalibration, NoteLayer};
 
 use instance::NoteInstance;
 use pipeline::NotesPipeline;
@@ -80,7 +80,7 @@ impl NotesRenderer {
         gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
-        note_style: &NoteStyle,
+        note_layer: &NoteLayer,
         path: &Path,
     ) -> Result<(), String> {
         let midi = MidiFile::new(path)?;
@@ -92,20 +92,20 @@ impl NotesRenderer {
             .collect();
         note_starts.sort_by(|a, b| a.partial_cmp(b).unwrap());
         self.loaded = Some(Loaded { midi, note_starts });
-        self.apply_view(gpu, viewport, calibration, note_style);
+        self.apply_view(gpu, viewport, calibration, note_layer);
         Ok(())
     }
 
     /// Recomputes the projection and note-lane layout for a new viewport size, calibration, or
-    /// note style.
+    /// note layer (fill/sheen/glow/roundedness/fall_speed).
     pub fn resize(
         &mut self,
         gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
-        note_style: &NoteStyle,
+        note_layer: &NoteLayer,
     ) {
-        self.apply_view(gpu, viewport, calibration, note_style);
+        self.apply_view(gpu, viewport, calibration, note_layer);
     }
 
     fn apply_view(
@@ -113,16 +113,17 @@ impl NotesRenderer {
         gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
-        note_style: &NoteStyle,
+        note_layer: &NoteLayer,
     ) {
         let barrier_fraction = calibration.barrier_fraction.clamp(0.05, 1.0);
         self.pipeline
             .set_view(gpu.queue, viewport.0, viewport.1, barrier_fraction);
         self.pipeline
-            .set_speed(gpu.queue, note_style.fall_speed.max(1.0));
+            .set_speed(gpu.queue, note_layer.fall_speed.max(1.0));
+        self.pipeline.set_style(gpu.queue, note_layer);
         self.canvas_size = viewport;
         self.barrier_fraction = barrier_fraction;
-        self.rebuild_instances(gpu, viewport, calibration, note_style);
+        self.rebuild_instances(gpu, viewport, calibration, note_layer);
     }
 
     fn rebuild_instances(
@@ -130,7 +131,7 @@ impl NotesRenderer {
         gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
-        note_style: &NoteStyle,
+        note_layer: &NoteLayer,
     ) {
         self.pipeline.clear();
         let Some(loaded) = self.loaded.as_ref() else {
@@ -142,8 +143,22 @@ impl NotesRenderer {
         let range_start = range.start() as usize;
         let left_x = viewport.0 * calibration.left_fraction;
 
-        let base = color_to_linear(note_style.color);
-        let dark = color_to_linear(darken(note_style.color, 0.6));
+        // Resolve the fill to a top/bottom color pair once per rebuild — for `Fill::Solid` both
+        // ends are the same color, so the shader's gradient mix is a no-op and every note just
+        // renders flat, matching the pre-Phase-C look exactly.
+        let (top_base, bottom_base) = match &note_layer.fill {
+            Fill::Solid(binding) => {
+                let color = binding.resolve_constant();
+                (color, color)
+            }
+            Fill::VerticalGradient { top, bottom } => {
+                (top.resolve_constant(), bottom.resolve_constant())
+            }
+        };
+        let top_light = color_to_linear(top_base);
+        let top_dark = color_to_linear(darken(top_base, 0.6));
+        let bottom_light = color_to_linear(bottom_base);
+        let bottom_dark = color_to_linear(darken(bottom_base, 0.6));
 
         let mut notes: Vec<_> = loaded
             .midi
@@ -158,14 +173,19 @@ impl NotesRenderer {
         let instances = self.pipeline.instances();
         for note in notes {
             let key = &layout.keys[note.note as usize - range_start];
-            let color = if key.kind().is_sharp() { dark } else { base };
+            let (color_top, color_bottom) = if key.kind().is_sharp() {
+                (top_dark, bottom_dark)
+            } else {
+                (top_light, bottom_light)
+            };
             let duration = note.duration.as_secs_f32().max(0.1);
 
             instances.push(NoteInstance {
                 position: [key.x() + left_x, note.start.as_secs_f32()],
                 size: [key.width() - 1.0, duration - 0.01],
-                color,
-                radius: key.width() * 0.2 * note_style.roundedness,
+                color_top,
+                color_bottom,
+                radius: key.width() * 0.2 * note_layer.roundedness,
                 velocity: note.velocity as f32 / 127.0,
                 track_index: note.track_id as f32,
             });

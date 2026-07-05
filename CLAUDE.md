@@ -1224,9 +1224,9 @@ any of this, sample-style screenshots) are not started.**
   running app** — worth clicking "Import style…", picking one of the three samples, and
   confirming the label under the button flips to "Custom style imported…" and a project save/load
   round-trips `style` correctly (nothing else to check visually until Phase C).
-- **Not started**: Phase C (note fill effects actually rendered), Phase D (barrier promoted from
-  egui overlay to a real glow/pulse render pass), Phase E (particle/flash transition pass +
-  hit-event precompute).
+- **Phase C (note fill effects actually rendered) is now done** — see "Note fill effects: gradient,
+  sheen, glow" further below. **Not started**: Phase D (barrier promoted from egui overlay to a
+  real glow/pulse render pass), Phase E (particle/flash transition pass + hit-event precompute).
 
 ### Vendored note pipeline, pixel-parity (Phase B of the `.fmstyle.ron` milestone)
 
@@ -1307,6 +1307,67 @@ prior barrier-related change in this file.
   clip at the barrier, and are colored exactly as before at a few different `barrier_fraction`
   values (including far from the 0.8 default, which is what previously exposed the fade-out bug),
   since this phase touches the same code path that bug lived in.
+
+### Note fill effects: gradient, sheen, glow (Phase C of the `.fmstyle.ron` milestone) — DONE
+
+Phase C makes the vendored note pipeline (Phase B) actually read `project::NoteLayer`'s
+`fill`/`sheen`/`glow` fields instead of only `roundedness`/`fall_speed` — a vertical gradient fill,
+a diagonal specular sheen stripe, and a soft outer glow, all driven by data, no new UI beyond the
+existing "Import style…" button.
+
+- **Effective-style wiring**: `render::Compositor::new`/`load_midi`/`resize` (and
+  `render::notes::NotesRenderer`'s equivalents) now take `&project::NoteLayer` instead of
+  `&project::NoteStyle`. Both `app` and `export` compute this the same way — added
+  `Project::effective_note_layer(&self) -> NoteLayer` (`crates/project/src/lib.rs`):
+  `self.style.clone().unwrap_or_else(|| Style::from_legacy(&self.note_style,
+  &self.barrier_style)).notes.resolve(0.0).clone()`. `app/src/main.rs` has its own
+  `effective_note_layer(&UiState) -> NoteLayer` free function doing the identical computation off
+  `UiState` fields (can't call the `Project` method directly — building a whole `Project` just to
+  resolve this would mean cloning video/MIDI paths for no reason). `AppState::applied_note_layer`
+  replaces the old `applied_note_style` dirty-check field — comparing the *resolved* `NoteLayer`
+  means a style import (which doesn't touch `note_style`/`barrier_style` at all) is caught by the
+  exact same dirty check as a slider drag, one code path instead of two.
+- **`NoteInstance` gained `color_bottom`** (`crates/render/src/notes/instance.rs`) alongside the
+  existing `color` (renamed `color_top`) — a vertical-gradient fill is baked into each instance at
+  build time as two endpoints rather than needing a second draw call or a per-fragment lookup into
+  the style layer. For `Fill::Solid`, `color_top == color_bottom`, so the shader's gradient mix is
+  unconditionally a no-op and the default (no imported style) look is pixel-identical to Phase B —
+  this is what keeps `Style::from_legacy`'s output looking exactly like the pre-Phase-C sliders.
+  `NotesRenderer::rebuild_instances` resolves `NoteLayer::fill` once per rebuild (not per note) via
+  `ColorBinding::resolve_constant()`, then applies the existing sharp-key darkening (`* 0.6`) to
+  both endpoints independently, same shape as the old single-`color` darkening.
+- **Sheen and glow are style-wide uniforms, not per-note data** — a `StyleUniform` (new bind
+  group 2 in `crates/render/src/notes/pipeline.rs`/`shader.wgsl`) carries fill kind
+  (solid/gradient), sheen intensity/width/angle, and glow color/radius/intensity, uploaded once via
+  `NotesPipeline::set_style` whenever `apply_view` runs (same call sites as `set_view`/`set_speed`).
+  **Deliberately packed as four plain `vec4<f32>`s**, not a natural Rust-shaped struct with
+  `vec3`/`f32`/`u32` fields — mirrors the milestone-4 lesson (documented above) that WGSL's
+  std140-like uniform layout silently pads odd-sized fields (there it was `mat3x3<f32>`; here it
+  would have been every `vec3<f32>` bumping to 16 bytes and every scalar needing manual trailing
+  padding). All-vec4 sidesteps needing to reason about that padding at all.
+- **Glow needs the rasterized quad to extend past the note's own box**, since the fragment shader
+  can only paint pixels the rasterizer actually covers. `shader.wgsl`'s `vs_main` computes the
+  note's true (unpadded) `position`/`size` first — fed to the fragment shader unchanged, so the
+  rounded-rect distance field and gradient math are unaffected — then, only if `glow_enabled`,
+  additionally inflates the *vertex transform's* position/size by `glow_radius_px` on all sides
+  before applying `view_uniform.transform`. When glow is disabled the inflation margin is exactly
+  `0.0`, making this an algebraic no-op (not just "visually close") — re-derived by hand rather
+  than assumed, same standard this file has held every prior shader change to (the rotation-shear
+  and barrier-fade-out bugs earlier in this file were both exactly this class of mistake slipping
+  past `cargo build`/`clippy`).
+- **Fragment shader composition order**: base fill (solid or gradient) → sheen (additive
+  brightening along a fixed diagonal band, computed from the fragment's position relative to the
+  note's true top-left, independent of any glow inflation) → glow (computed last, since it needs
+  the already-composited fill color for `mix(glow_color, fill_color, base_alpha)` — glow_alpha is
+  scaled by `(1 - base_alpha)` so it only shows outside/at the note's edge rather than washing out
+  the note's own interior).
+- **Not yet manually run** (per the "never run the app yourself" rule) — worth importing
+  `examples/styles/gradient-glow.fmstyle.ron` (exercises all three: gradient + sheen + glow
+  together) via the Project tab's "Import style…" button next time someone has hands on the app,
+  scrubbing to where notes are visible, and confirming: notes show a top-to-bottom color blend, a
+  diagonal bright stripe sweeps across each note, and a soft halo extends past each note's edges.
+  Also worth confirming a project *without* an imported style still looks exactly like before this
+  phase (the pixel-parity claim above).
 
 ## Verifying changes to `app` or `video-pipeline`
 

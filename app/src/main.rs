@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use audio_playback::AudioPlayback;
 use export::Progress as ExportProgress;
 use gpu::Gpu;
-use project::{KeyboardCalibration, Project, Style};
+use project::{KeyboardCalibration, NoteLayer, Project, Style};
 use render::Compositor;
 use ui::UiState;
 use video_pipeline::VideoPipeline;
@@ -65,6 +65,20 @@ fn even(value: u32) -> u32 {
     (value & !1).max(2)
 }
 
+/// The `NoteLayer` the compositor should actually draw: an imported style's notes layer, or one
+/// synthesized from the legacy `note_style`/`barrier_style` sliders if none has been imported —
+/// mirrors `project::Project::effective_note_layer`, which can't be used directly here since
+/// `UiState` isn't a `Project` (no video/MIDI paths to snapshot just to resolve this).
+fn effective_note_layer(ui_state: &UiState) -> NoteLayer {
+    ui_state
+        .style
+        .clone()
+        .unwrap_or_else(|| Style::from_legacy(&ui_state.note_style, &ui_state.barrier_style))
+        .notes
+        .resolve(0.0)
+        .clone()
+}
+
 fn create_preview_texture(
     device: &wgpu::Device,
     size: (u32, u32),
@@ -108,10 +122,13 @@ struct AppState {
     /// each redraw so a drag only triggers the (fairly heavy, full-rebuild) `compositor.resize`
     /// when it actually changed, not every frame.
     applied_calibration: KeyboardCalibration,
-    /// Same idea as `applied_calibration`, for note color/roundedness — both are baked into each
-    /// `NoteInstance` at build time (see `render::notes::NotesRenderer::rebuild_instances`), so a
-    /// change also needs a full `compositor.resize`, not just a per-frame uniform write.
-    applied_note_style: project::NoteStyle,
+    /// Same idea as `applied_calibration`, for the effective `NoteLayer` (see
+    /// `effective_note_layer`) — fill/sheen/glow/roundedness/fall_speed are all baked into each
+    /// `NoteInstance`/style uniform at build time (see
+    /// `render::notes::NotesRenderer::rebuild_instances`), so a change (whether from the
+    /// legacy sliders or importing a `.fmstyle.ron`) needs a full `compositor.resize`, not just a
+    /// per-frame uniform write.
+    applied_note_layer: NoteLayer,
     ui_state: UiState,
     last_instant: Instant,
     /// Transport position `pipeline.seek_and_decode` was last called with, so a redraw that
@@ -273,7 +290,7 @@ impl AppState {
             &gpu_handles(&gpu),
             (canvas_size.0 as f32, canvas_size.1 as f32),
             &KeyboardCalibration::default(),
-            &project::NoteStyle::default(),
+            &NoteLayer::default(),
         );
 
         let egui_ctx = egui::Context::default();
@@ -313,7 +330,7 @@ impl AppState {
             video_path: None,
             midi_path: None,
             applied_calibration: KeyboardCalibration::default(),
-            applied_note_style: project::NoteStyle::default(),
+            applied_note_layer: NoteLayer::default(),
             ui_state: UiState {
                 playing: false,
                 position_seconds: 0.0,
@@ -407,14 +424,15 @@ impl AppState {
         self.canvas_size = size;
         self.ui_state.canvas_size = size;
         self.ui_state.preview_texture_id = self.preview_texture_id;
+        let note_layer = effective_note_layer(&self.ui_state);
         self.compositor.resize(
             &gpu_handles(&self.gpu),
             (size.0 as f32, size.1 as f32),
             &self.ui_state.calibration,
-            &self.ui_state.note_style,
+            &note_layer,
         );
         self.applied_calibration = self.ui_state.calibration;
-        self.applied_note_style = self.ui_state.note_style;
+        self.applied_note_layer = note_layer;
     }
 
     /// Opens `path` as the active video, replacing whatever was loaded before (CLI arg at
@@ -476,11 +494,12 @@ impl AppState {
     /// Parses `path` as a MIDI file and (re)builds the waterfall overlay for it.
     fn load_midi(&mut self, path: &Path) {
         let size = self.canvas_size;
+        let note_layer = effective_note_layer(&self.ui_state);
         match self.compositor.load_midi(
             &gpu_handles(&self.gpu),
             (size.0 as f32, size.1 as f32),
             &self.ui_state.calibration,
-            &self.ui_state.note_style,
+            &note_layer,
             path,
         ) {
             Ok(()) => {
@@ -568,10 +587,10 @@ impl AppState {
             &gpu_handles(&self.gpu),
             (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
             &KeyboardCalibration::default(),
-            &project::NoteStyle::default(),
+            &NoteLayer::default(),
         );
         self.applied_calibration = KeyboardCalibration::default();
-        self.applied_note_style = project::NoteStyle::default();
+        self.applied_note_layer = NoteLayer::default();
         self.last_decoded_position = None;
         self.audio = AudioPlayback::new();
         self.audio_playing = false;
@@ -932,17 +951,18 @@ impl AppState {
     }
 
     fn apply_post_ui_updates(&mut self) {
+        let note_layer = effective_note_layer(&self.ui_state);
         if self.ui_state.calibration != self.applied_calibration
-            || self.ui_state.note_style != self.applied_note_style
+            || note_layer != self.applied_note_layer
         {
             self.compositor.resize(
                 &gpu_handles(&self.gpu),
                 (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
                 &self.ui_state.calibration,
-                &self.ui_state.note_style,
+                &note_layer,
             );
             self.applied_calibration = self.ui_state.calibration;
-            self.applied_note_style = self.ui_state.note_style;
+            self.applied_note_layer = note_layer;
         }
 
         // Cheap (one small uniform write), so applied unconditionally every redraw rather than

@@ -143,6 +143,20 @@ impl Default for VideoTransform {
 }
 
 impl Project {
+    /// The `NoteLayer` the renderer should actually draw: an imported `.fmstyle.ron`'s notes
+    /// layer (resolved at `t = 0.0` — no live mid-song style swapping yet, see `Timed::resolve`),
+    /// or one synthesized from the legacy `note_style`/`barrier_style` "quick controls" if no
+    /// style has been imported. Shared by `app` and `export` so both consume the same effective
+    /// look through one code path.
+    pub fn effective_note_layer(&self) -> NoteLayer {
+        self.style
+            .clone()
+            .unwrap_or_else(|| Style::from_legacy(&self.note_style, &self.barrier_style))
+            .notes
+            .resolve(0.0)
+            .clone()
+    }
+
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::new())
             .map_err(|err| format!("failed to serialize project: {err}"))?;

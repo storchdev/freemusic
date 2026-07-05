@@ -6,9 +6,9 @@
             bottom: Constant((30, 90, 200)),
         ),
         sheen: Some((
-            intensity: 0.6,
-            width: 0.25,
-            angle_degrees: 35.0,
+            intensity: 0.5,
+            width: 0.8,
+            angle_degrees: 45.0,
         )),
         glow: Some((
             color: Constant((120, 200, 255)),
