@@ -4,16 +4,16 @@
 //! CLAUDE.md for why this was split out of `app` when milestone 5 (MP4 export) needed a second
 //! GPU context to run the exact same compositing logic against.
 
-mod midi_overlay;
+mod notes;
 mod video_quad;
 
 use project::{KeyboardCalibration, NoteStyle, VideoTransform};
 
-pub use midi_overlay::GpuHandles;
+pub use notes::GpuHandles;
 
 pub struct Compositor {
     video_quad: video_quad::VideoQuad,
-    midi_overlay: midi_overlay::MidiOverlay,
+    notes: notes::NotesRenderer,
 }
 
 impl Compositor {
@@ -24,22 +24,19 @@ impl Compositor {
         note_style: &NoteStyle,
     ) -> Self {
         let video_quad = video_quad::VideoQuad::new(gpu.device, gpu.texture_format);
-        let mut midi_overlay = midi_overlay::MidiOverlay::new(gpu);
-        midi_overlay.resize(gpu, viewport, calibration, note_style);
-        Self {
-            video_quad,
-            midi_overlay,
-        }
+        let mut notes = notes::NotesRenderer::new(gpu);
+        notes.resize(gpu, viewport, calibration, note_style);
+        Self { video_quad, notes }
     }
 
     pub fn loaded_midi_name(&self) -> Option<&str> {
-        self.midi_overlay.loaded_name()
+        self.notes.loaded_name()
     }
 
     /// Sorted note onset times in seconds; empty if no MIDI is loaded. Used by the bottom
     /// timeline's note-density strip.
     pub fn note_start_times(&self) -> &[f32] {
-        self.midi_overlay.note_start_times()
+        self.notes.note_start_times()
     }
 
     pub fn load_midi(
@@ -50,7 +47,7 @@ impl Compositor {
         note_style: &NoteStyle,
         path: &std::path::Path,
     ) -> Result<(), String> {
-        self.midi_overlay
+        self.notes
             .load(gpu, viewport, calibration, note_style, path)
     }
 
@@ -64,8 +61,7 @@ impl Compositor {
         calibration: &KeyboardCalibration,
         note_style: &NoteStyle,
     ) {
-        self.midi_overlay
-            .resize(gpu, viewport, calibration, note_style);
+        self.notes.resize(gpu, viewport, calibration, note_style);
     }
 
     pub fn upload_frame(
@@ -92,12 +88,12 @@ impl Compositor {
 
     /// Advances the waterfall to `time_seconds`, expected to already have the sync offset
     /// subtracted by the caller (`midi_time = transport_time - sync_offset_seconds`).
-    pub fn update_midi(&mut self, time_seconds: f32) {
-        self.midi_overlay.update(time_seconds);
+    pub fn update_midi(&mut self, queue: &wgpu::Queue, time_seconds: f32) {
+        self.notes.update(queue, time_seconds);
     }
 
     pub fn render<'rpass>(&'rpass mut self, render_pass: &mut wgpu::RenderPass<'rpass>) {
         self.video_quad.render(render_pass);
-        self.midi_overlay.render(render_pass);
+        self.notes.render(render_pass);
     }
 }

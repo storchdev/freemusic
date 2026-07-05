@@ -154,7 +154,7 @@ fn run_inner(
         );
         compositor.update_viewport(&gpu.queue, (width, height), &project.transform);
         let midi_time = t - project.sync_offset_seconds;
-        compositor.update_midi(midi_time as f32);
+        compositor.update_midi(&gpu.queue, midi_time as f32);
 
         let readback_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("export_readback_buffer"),

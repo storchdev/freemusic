@@ -1037,17 +1037,17 @@ fn draw_crop_handles(ui: &egui::Ui, screen: egui::Rect, transform: &mut project:
 }
 
 /// Valid range for `KeyboardCalibration::barrier_fraction` — keeps the drag handle (and the
-/// render-side viewport trick, see `render::midi_overlay::MidiOverlay::render`) away from a
-/// degenerate (near-zero-height or far-off-canvas) viewport.
+/// render-side `barrier_fraction` uniform, see `render::notes::NotesRenderer::render`) away from
+/// a degenerate (near-zero-height or far-off-canvas) viewport.
 const BARRIER_MIN_FRACTION: f32 = 0.05;
 const BARRIER_MAX_FRACTION: f32 = 0.98;
 
 /// Draws a draggable horizontal guide over the preview image marking where falling notes stop
 /// (`calibration.barrier_fraction`), styled per `barrier_style`. Same `Sense::drag()` +
 /// accumulated `drag_delta()` pattern as `draw_calibration_handles`, rotated 90°. This is a plain
-/// `egui` overlay, not a wgpu render pass — the actual barrier *behavior* (repositioning the
-/// vendored shader's hardcoded hit line, clipping notes that reach it) lives in
-/// `render::midi_overlay::MidiOverlay::render`, driven by the same `calibration.barrier_fraction`
+/// `egui` overlay, not a wgpu render pass — the actual barrier *behavior* (the hit line's real
+/// on-screen position, clipping notes that reach it) lives in
+/// `render::notes::NotesRenderer::render`, driven by the same `calibration.barrier_fraction`
 /// this handle edits.
 fn draw_barrier_handle(
     ui: &egui::Ui,

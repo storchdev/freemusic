@@ -47,10 +47,11 @@ impl Default for KeyboardCalibration {
         Self {
             left_fraction: 0.0,
             right_fraction: 1.0,
-            // Matches the hit line's hardcoded position in Neothesia's own vendored waterfall
-            // shader (`keyboard_y = size.y - size.y / 5.0`, i.e. always 80% down) — see
-            // `render::midi_overlay`'s barrier-viewport trick for how an arbitrary
-            // `barrier_fraction` is actually achieved without forking that shader.
+            // Matches the hit line's position in Neothesia's own vendored waterfall shader
+            // (`keyboard_y = size.y - size.y / 5.0`, i.e. always 80% down) at the time this
+            // default was picked. `render::notes` now owns the shader and reads
+            // `barrier_fraction` as a real uniform, so this is just a starting value, not a
+            // constraint imposed by any vendored code.
             barrier_fraction: 0.8,
         }
     }
@@ -74,12 +75,12 @@ impl Default for BarrierStyle {
 }
 
 /// Style of the falling notes themselves: a single base color (sharp/black-key notes get a
-/// darkened `dark` variant derived from it, same idea as Neothesia's own per-track
-/// `ColorSchemaV1` but with one user-picked color instead of a fixed per-track palette), a
-/// roundedness fraction (0.0 = square corners, 1.0 = Neothesia's own default corner radius), and
-/// `fall_speed`, the rate (pixels/second) notes travel toward the barrier. `fall_speed` also
-/// scales a note's on-screen length, since Neothesia's vendored waterfall shader sizes each note
-/// quad as `duration_seconds * speed` — there is no separate "length" control.
+/// darkened `dark` variant derived from it, one user-picked color instead of a fixed per-track
+/// palette), a roundedness fraction (0.0 = square corners, 1.0 = the vendored shader's original
+/// default corner radius), and `fall_speed`, the rate (pixels/second) notes travel toward the
+/// barrier. `fall_speed` also scales a note's on-screen length, since `render::notes`'s shader
+/// (vendored from, and still matching, Neothesia's own) sizes each note quad as
+/// `duration_seconds * speed` — there is no separate "length" control.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct NoteStyle {
     pub color: [u8; 3],

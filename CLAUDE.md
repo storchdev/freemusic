@@ -165,9 +165,19 @@ freemusic/
   scripts/               # cargo check, run/screenshot/click/drag the app, gen synthetic test clips
 ```
 
-### Neothesia reuse (`midi-file`, `neothesia-core`)
+### Neothesia reuse (`midi-file`, `neothesia-core`) — superseded by Phase B, kept for history
 
-`crates/render/Cargo.toml` depends on `midi-file` and `neothesia-core` as git deps pinned to an
+**As of Phase B of the `.fmstyle.ron` milestone (see "Vendored note pipeline" further below),
+`crates/render` no longer depends on `neothesia-core` or wraps `WaterfallRenderer` at all** — the
+note pipeline was vendored in-tree specifically to drop this dependency. This subsection describes
+the pre-Phase-B design (`midi_overlay.rs`, since deleted) for historical context on *why* certain
+things (the `GpuHandles` shape, the calibration-offset trick, the barrier hack fixed and later
+replaced) ended up the way they did; for the current implementation see "Vendored note pipeline,
+pixel-parity (Phase B..." below. `midi-file` is still a direct dependency (parsing MIDI files was
+never Neothesia-render-specific); `piano-layout` is now also a direct dependency instead of going
+through `neothesia-core`'s re-export.
+
+`crates/render/Cargo.toml` used to depend on `midi-file` and `neothesia-core` as git deps pinned to an
 exact commit SHA of `PolyMeilex/Neothesia` (`e61639b12cc8e466b90406c564da5f9f54d8d1a3`, fetched
 2026-06-30) — never `master`, per the plan's "no semver safety net" risk. `neothesia-core`
 re-exports `wgpu_jumpstart::{Gpu, TransformUniform, Uniform, Color}` and the whole
@@ -1203,9 +1213,9 @@ any of this, sample-style screenshots) are not started.**
   reserved word; easy to get wrong by hand). A unit test (`shipped_sample_styles_parse`) reads
   every `.ron` file in that directory and calls `Style::load` on it, so the checked-in samples
   can't silently drift out of sync with the schema as it evolves. They're already importable via
-  the button and parse correctly, but **importing one currently changes nothing on screen** —
-  Phase B (vendoring the note pipeline so the renderer actually accepts a `Style`) hasn't started,
-  so only the legacy sliders draw anything yet.
+  the button and parse correctly, but **importing one still changes nothing on screen** — the
+  note pipeline (see Phase B below) doesn't read `project::style::Style` yet, only the
+  `NoteStyle`/`BarrierStyle` "quick controls"; that wiring is Phase C+.
 - **Verified so far**: `cargo build`/`scripts/check.sh` (fmt+clippy) clean; `cargo test --workspace`
   passes, including 8 new tests in `crates/project` (`Timed::resolve` boundaries — static, keyed
   mid-range, keyed before-first-key clamp, keyed past-last-key — `ColorBinding::Constant`/
@@ -1213,12 +1223,90 @@ any of this, sample-style screenshots) are not started.**
   `style` loading, and the shipped-sample-styles parse check). **Not yet manually exercised in the
   running app** — worth clicking "Import style…", picking one of the three samples, and
   confirming the label under the button flips to "Custom style imported…" and a project save/load
-  round-trips `style` correctly (nothing else to check visually until Phase B).
-- **Not started**: Phase B (vendor the note pipeline in `crates/render/src/notes/`, own the
-  shader, drop `midi_overlay.rs`'s `virtual_canvas_height` barrier-viewport hack for a real
-  `barrier_fraction` uniform — flagged in the plan as the highest-risk phase), Phase C (note fill
-  effects actually rendered), Phase D (barrier promoted from egui overlay to a real glow/pulse
-  render pass), Phase E (particle/flash transition pass + hit-event precompute).
+  round-trips `style` correctly (nothing else to check visually until Phase C).
+- **Not started**: Phase C (note fill effects actually rendered), Phase D (barrier promoted from
+  egui overlay to a real glow/pulse render pass), Phase E (particle/flash transition pass +
+  hit-event precompute).
+
+### Vendored note pipeline, pixel-parity (Phase B of the `.fmstyle.ron` milestone)
+
+Phase B replaces the `neothesia_core`-backed `MidiOverlay` with an in-tree note-highway renderer,
+per the plan's call to vendor it the same way `mp4-encoder` was forked from `ffmpeg-encoder` —
+done specifically so `barrier_fraction` could become a real shader uniform instead of the fragile
+viewport-remapping hack documented (and now deleted) above. **No visual change from before** —
+this phase is pixel-parity, proven by re-deriving the math (not just eyeballing), same as every
+prior barrier-related change in this file.
+
+- **New module `crates/render/src/notes/`** (`mod.rs`/`pipeline.rs`/`instance.rs`/`shader.wgsl`)
+  replaces `crates/render/src/midi_overlay.rs` entirely. `NotesRenderer` (was `MidiOverlay`) keeps
+  the exact same public surface `Compositor` already called (`new`/`loaded_name`/
+  `note_start_times`/`load`/`resize`/`render`), so `crates/render/src/lib.rs` only needed
+  `mod midi_overlay` → `mod notes` and field renames — `app/src/main.rs`'s call sites are
+  untouched except `update_midi`, which now needs a `&wgpu::Queue` argument (see below). Exported
+  `GpuHandles` (same shape: borrowed `instance`/`adapter`/`device`/`queue`/`texture_format`) moved
+  from `midi_overlay` to `notes` but is otherwise unchanged, so `app::gpu_handles` and
+  `export::run_inner` (the two places that build one) needed no changes at all.
+- **`crates/render/Cargo.toml` dropped the `neothesia-core` git dependency entirely** and added
+  `piano-layout` (same pinned rev) as a *direct* dependency — exactly the situation CLAUDE.md's
+  Neothesia-reuse section flagged as the trigger for doing this ("add direct wgpu-jumpstart/
+  piano-layout deps... only when a future crate needs them without going through
+  neothesia_core"). `midi-file` stays a direct dependency, unchanged. Verified via `Cargo.lock`:
+  zero `neothesia-core` entries, one `wgpu` entry (no duplicate-version risk), one `piano-layout`
+  entry, one `midi-file` entry.
+- **Own render pipeline, hand-rolled rather than reusing `wgpu_jumpstart`'s generic `Uniform`/
+  `Instances`/`Shape` helpers** (`notes/pipeline.rs::NotesPipeline`) — same manual-wgpu-calls
+  style `video_quad.rs` already used elsewhere in this crate, now applied here too since owning
+  the shader removed the only reason to keep linking against Neothesia's renderer-side crate.
+  Two uniform bind groups (view, time — same split as upstream: view changes on
+  resize/calibration, time changes every frame) and one instance buffer that grows (doubling via
+  `create_buffer_init`-style recreate, not amortized-growth — fine, MIDI files are not
+  update-hot) whenever a MIDI file needs more instance slots than the current capacity.
+- **Own `notes/shader.wgsl`**, forked from the vendored `neothesia-core/.../waterfall/pipeline/
+  shader.wgsl` with exactly one behavioral change: `keyboard_y` is no longer hardcoded to
+  `view_uniform.size.y / 5.0` (i.e. always 80% down) — it reads a new `barrier_fraction` field on
+  `ViewUniform` directly (`keyboard_y = view_uniform.size.y * view_uniform.barrier_fraction`).
+  Because `ViewUniform.size` is now always built from the *real* canvas size (no more feeding it
+  a `virtual_height` that differs from what `set_viewport` gets), `builtin(position)` and the
+  vertex shader's `note_pos`/`size` varyings are automatically in the same coordinate system at
+  any `barrier_fraction` — the exact bug class the "notes fading out before reaching the barrier"
+  section above had to work around now can't occur, because there's no second coordinate system
+  to disagree with the first. `render::notes::NotesRenderer::render` now does only a
+  `set_scissor_rect` (real canvas pixels, no `set_viewport` override at all) to clip notes past
+  the barrier line — the whole `virtual_canvas_height`/`HARDCODED_HIT_LINE_FRACTION` apparatus
+  and its long doc-comment derivation in the old `midi_overlay.rs` are gone.
+- **`NoteInstance` gained `velocity: f32` and `track_index: f32`** (normalized 0.0-1.0 velocity,
+  raw MIDI track index as a float since vertex attributes are all floats), per the plan's explicit
+  ask to future-proof for `ColorBinding::ByVelocity`/`ByTrack` (`project::style`) — both fields
+  are populated when instances are built but **not read anywhere in the v1 shader**, matching the
+  plan's "cheap, future-proofs... even though v1 ignores them in-shader" framing.
+- **Instances are built directly in `NotesRenderer::rebuild_instances`** (was
+  `WaterfallRenderer::resize`'s internal loop) — same algorithm, ported rather than changed:
+  filter notes to the standard 88-key range and non-drum channel, sort by start time (newer notes
+  draw on top, matching Neothesia's own convention), look up each note's `piano_layout::Key` for
+  x/width/sharpness, and combine the calibrated left-offset + roundedness directly into each
+  instance's `position`/`radius` at construction time (previously a second pass,
+  `apply_note_adjustments`, mutated already-built instances after the fact — folding it into the
+  single construction loop is a minor simplification enabled by no longer needing a
+  `piano_layout`-agnostic upstream method signature to work around). The sRGB→linear color
+  conversion (`color_to_linear`) is copied verbatim from `wgpu_jumpstart::Color::into_linear_rgb`
+  (same source, credited in a doc comment) since that's the one small piece of math actually worth
+  keeping rather than re-deriving.
+- **`Compositor::update_midi` and `NotesRenderer::update` now take a `&wgpu::Queue` argument**
+  (previously the old `MidiOverlay` didn't need one at the call site, since `WaterfallRenderer`
+  cloned and kept its own `wgpu::Queue` internally). Both of this phase's two call sites
+  (`app/src/main.rs::update_midi_position`, `crates/export/src/lib.rs`'s render loop) already had
+  a `Gpu`/`gpu` in scope, so this was a one-line change at each — same pattern
+  `update_viewport`/`upload_frame` already used.
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean; the vertex-shader math (barrier line position, note fall trajectory, rounded-rect
+  distance field) was re-derived by hand against the original vendored shader line-by-line rather
+  than assumed correct from a clean build — `cargo build`/`clippy` cannot catch a
+  wrong-but-type-correct shader port, per this file's own repeated caution on shader-side bugs
+  elsewhere. **Not yet manually run** (per the "never run the app yourself" rule) — worth
+  confirming, next time someone has hands on the app, that a loaded MIDI file's notes fall,
+  clip at the barrier, and are colored exactly as before at a few different `barrier_fraction`
+  values (including far from the 0.8 default, which is what previously exposed the fade-out bug),
+  since this phase touches the same code path that bug lived in.
 
 ## Verifying changes to `app` or `video-pipeline`
 

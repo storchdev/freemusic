@@ -109,7 +109,7 @@ struct AppState {
     /// when it actually changed, not every frame.
     applied_calibration: KeyboardCalibration,
     /// Same idea as `applied_calibration`, for note color/roundedness — both are baked into each
-    /// `NoteInstance` at build time (see `render::midi_overlay::apply_note_adjustments`), so a
+    /// `NoteInstance` at build time (see `render::notes::NotesRenderer::rebuild_instances`), so a
     /// change also needs a full `compositor.resize`, not just a per-frame uniform write.
     applied_note_style: project::NoteStyle,
     ui_state: UiState,
@@ -927,7 +927,8 @@ impl AppState {
 
     fn update_midi_position(&mut self) {
         let midi_time = self.ui_state.position_seconds - self.ui_state.sync_offset_seconds;
-        self.compositor.update_midi(midi_time as f32);
+        self.compositor
+            .update_midi(&self.gpu.queue, midi_time as f32);
     }
 
     fn apply_post_ui_updates(&mut self) {

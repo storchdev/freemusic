@@ -7,6 +7,6 @@ license.workspace = true
 [dependencies]
 bytemuck = { version = "1.25.0", features = ["derive"] }
 midi-file = { git = "https://github.com/PolyMeilex/Neothesia", rev = "e61639b12cc8e466b90406c564da5f9f54d8d1a3" }
-neothesia-core = { git = "https://github.com/PolyMeilex/Neothesia", rev = "e61639b12cc8e466b90406c564da5f9f54d8d1a3" }
+piano-layout = { git = "https://github.com/PolyMeilex/Neothesia", rev = "e61639b12cc8e466b90406c564da5f9f54d8d1a3" }
 project = { version = "0.1.0", path = "../project" }
 wgpu = "29.0"

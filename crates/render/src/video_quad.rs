@@ -249,7 +249,7 @@ impl VideoQuad {
     /// Recomputes the letterbox/pillarbox scale, rotate/tilt homography, crop UV rect, and
     /// brightness for the current window size and transform, and uploads them. Cheap enough
     /// (one small uniform write) to call unconditionally every redraw rather than dirty-checking
-    /// like `midi_overlay.resize`'s full instance-buffer rebuild.
+    /// like `notes::NotesRenderer::resize`'s full instance-buffer rebuild.
     pub fn update_viewport(
         &self,
         queue: &wgpu::Queue,

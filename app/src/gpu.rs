@@ -3,9 +3,9 @@ use winit::window::Window;
 
 /// Owns the wgpu device/queue and the surface tied to the app window.
 ///
-/// Also keeps `instance`/`adapter` (unused by the video quad path) so a
-/// `neothesia_core::Gpu` wrapper can be built from them for the waterfall overlay,
-/// which owns its own copy of these types rather than sharing ours.
+/// Also keeps `instance`/`adapter` (unused by the video quad or notes render paths) so
+/// `render::GpuHandles` can borrow them uniformly for both the interactive window and export's
+/// headless GPU.
 pub struct Gpu {
     pub surface: wgpu::Surface<'static>,
     pub instance: wgpu::Instance,
