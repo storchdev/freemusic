@@ -10,13 +10,16 @@
         black_key_fill: Auto,
     )),
     barrier: Static((
-        kind: Glow,
         color: Constant((255, 220, 120)),
         thickness: 6.0,
-        glow_radius_px: 24.0,
+        glow: Some((
+            color: Constant((255, 220, 120)),
+            radius_px: 24.0,
+            brightness: 3.0,
+        )),
         pulse: Some((
-            intensity: 0.8,
             decay_seconds: 0.35,
+            brightness: 1.6,
         )),
         wavy: None,
     )),

@@ -10,10 +10,9 @@
         black_key_fill: Auto,
     )),
     barrier: Static((
-        kind: Line,
         color: Constant((255, 255, 255)),
         thickness: 4.0,
-        glow_radius_px: 0.0,
+        glow: None,
         pulse: None,
         wavy: None,
     )),
@@ -23,10 +22,10 @@
         flash: Some((
             radius_x_px: 50.0,
             radius_y_px: 30.0,
-            intensity: 0.7,
             color: Constant((255, 220, 140)),
             decay_seconds: 0.6,
             mode: Sustained,
+            brightness: 3.0,
         )),
     )),
 )

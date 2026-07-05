@@ -12,6 +12,10 @@ use project::{Fill, Glow, NoteLayer, Sheen};
 
 use super::instance::NoteInstance;
 
+/// Cutoff distance past which a `GlowLayer`'s `exp(-d / sigma_px)` contribution is treated as
+/// invisible — see `barrier.rs`'s identical constant for the full rationale.
+const GLOW_CUTOFF_SIGMAS: f32 = 5.0;
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ViewUniform {
@@ -76,8 +80,17 @@ struct QuadVertex {
 struct StyleUniform {
     fill_and_flags: [f32; 4],
     sheen_params: [f32; 4],
-    glow_color_radius: [f32; 4],
-    glow_intensity: [f32; 4],
+    /// xyz = halo color (linear), w unused (was glow radius pre-Phase-M).
+    glow_color: [f32; 4],
+    /// x = glow brightness (the "white-hot core" knob, now used only for the note's own opaque
+    /// fill — see `shader.wgsl`'s `hot_color`), yzw unused. Used to carry `Glow::intensity` too,
+    /// which was removed as a redundant axis once brightness alone drove the whole look.
+    glow_params: [f32; 4],
+    /// Phase M additive corona layers: x = layer[0].amplitude, y = layer[0].sigma_px,
+    /// z = layer[1].amplitude, w = layer[1].sigma_px.
+    glow_layers_ab: [f32; 4],
+    /// x = layer[2].amplitude, y = layer[2].sigma_px, z = precomputed glow margin (px), w unused.
+    glow_layers_c: [f32; 4],
 }
 
 impl Default for StyleUniform {
@@ -85,8 +98,10 @@ impl Default for StyleUniform {
         Self {
             fill_and_flags: [0.0; 4],
             sheen_params: [0.0; 4],
-            glow_color_radius: [0.0; 4],
-            glow_intensity: [0.0; 4],
+            glow_color: [0.0; 4],
+            glow_params: [0.0; 4],
+            glow_layers_ab: [0.0; 4],
+            glow_layers_c: [0.0; 4],
         }
     }
 }
@@ -120,28 +135,52 @@ impl StyleUniform {
             }) => (1.0, [intensity, width, angle_degrees.to_radians(), 0.0]),
             None => (0.0, [0.0; 4]),
         };
-        let (glow_enabled, glow_color_radius, glow_intensity) = match &note_layer.glow {
-            Some(Glow {
-                color,
-                radius_px,
-                intensity,
-            }) => {
-                let [r, g, b] = srgb_to_linear(color.resolve_constant());
-                (1.0, [r, g, b, *radius_px], [*intensity, 0.0, 0.0, 0.0])
-            }
-            None => (0.0, [0.0; 4], [0.0; 4]),
-        };
+        let (glow_enabled, glow_color, glow_params, glow_layers_ab, glow_layers_c) =
+            match &note_layer.glow {
+                Some(Glow {
+                    color,
+                    brightness,
+                    layers,
+                }) => {
+                    let [r, g, b] = srgb_to_linear(color.resolve_constant());
+                    let margin = layers
+                        .iter()
+                        .fold(0.0f32, |acc, layer| acc.max(layer.sigma_px))
+                        * GLOW_CUTOFF_SIGMAS;
+                    (
+                        1.0,
+                        [r, g, b, 0.0],
+                        [*brightness, 0.0, 0.0, 0.0],
+                        [
+                            layers[0].amplitude,
+                            layers[0].sigma_px,
+                            layers[1].amplitude,
+                            layers[1].sigma_px,
+                        ],
+                        [layers[2].amplitude, layers[2].sigma_px, margin, 0.0],
+                    )
+                }
+                None => (0.0, [0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4]),
+            };
         Self {
             fill_and_flags: [fill_kind, sheen_enabled, glow_enabled, 0.0],
             sheen_params,
-            glow_color_radius,
-            glow_intensity,
+            glow_color,
+            glow_params,
+            glow_layers_ab,
+            glow_layers_c,
         }
     }
 }
 
 pub struct NotesPipeline {
-    render_pipeline: wgpu::RenderPipeline,
+    /// Opaque note fill (unchanged `ALPHA_BLENDING`, `fs_core` entry point), drawn second so it
+    /// occludes the glow beneath it.
+    core_pipeline: wgpu::RenderPipeline,
+    /// Additive corona (`ONE`/`ONE` blend, `fs_glow` entry point), drawn first — only meaningful
+    /// (non-empty visual contribution) for notes whose style has `glow` set, but issued for the
+    /// whole shared instance buffer regardless since a per-note glow toggle doesn't exist.
+    glow_pipeline: wgpu::RenderPipeline,
 
     quad_vertex_buffer: wgpu::Buffer,
     quad_index_buffer: wgpu::Buffer,
@@ -161,6 +200,11 @@ pub struct NotesPipeline {
 
     style_buffer: wgpu::Buffer,
     style_bind_group: wgpu::BindGroup,
+
+    /// Stashed from the last `set_style` call, read directly by `render` — whether
+    /// `glow_pipeline` draws at all, since a style-wide `NoteLayer::glow` toggle (not a per-note
+    /// one) decides this, same pattern `barrier::BarrierRenderer::show_bar`/glow-enabled use.
+    glow_enabled: bool,
 }
 
 impl NotesPipeline {
@@ -205,8 +249,9 @@ impl NotesPipeline {
                 label: Some("notes_style_bind_group_layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    // Read by both stages: the vertex shader needs `glow_color_radius.w` to
-                    // inflate the quad, the fragment shader needs the rest for fill/sheen/glow.
+                    // Read by both stages: the vertex shader needs `glow_layers_c.z` (precomputed
+                    // margin) to inflate the quad, the fragment shader needs the rest for
+                    // fill/sheen/glow.
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -284,31 +329,54 @@ impl NotesPipeline {
         let instance_attributes = NoteInstance::attributes();
         let instance_layout = NoteInstance::layout(&instance_attributes);
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("notes_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[quad_vertex_layout, instance_layout],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+        // Additive: color/alpha both `src + dst` (`ONE`/`ONE`) — same convention `barrier.rs`'s
+        // `glow_pipeline` and `effects.rs`'s `additive_pipeline` already use.
+        let additive_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: texture_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+
+        let make_pipeline = |label: &str, entry_point: &'static str, blend: wgpu::BlendState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[quad_vertex_layout.clone(), instance_layout.clone()],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry_point),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: texture_format,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let core_pipeline = make_pipeline(
+            "notes_core_pipeline",
+            "fs_core",
+            wgpu::BlendState::ALPHA_BLENDING,
+        );
+        let glow_pipeline = make_pipeline("notes_glow_pipeline", "fs_glow", additive_blend);
 
         // Unit quad, matching `piano_layout`'s key-position convention (top-left origin, size in
         // the same units as `NoteInstance::size`) — the vertex shader scales/positions it.
@@ -345,7 +413,8 @@ impl NotesPipeline {
         let instance_buffer = Self::create_instance_buffer(device, Self::INITIAL_INSTANCE_CAPACITY);
 
         Self {
-            render_pipeline,
+            core_pipeline,
+            glow_pipeline,
             quad_vertex_buffer,
             quad_index_buffer,
             quad_index_count: INDICES.len() as u32,
@@ -360,6 +429,7 @@ impl NotesPipeline {
             time_bind_group,
             style_buffer,
             style_bind_group,
+            glow_enabled: false,
         }
     }
 
@@ -415,6 +485,7 @@ impl NotesPipeline {
     /// parameters, which apply uniformly to every note rather than varying per-note.
     pub fn set_style(&mut self, queue: &wgpu::Queue, note_layer: &NoteLayer) {
         let style_data = StyleUniform::from_note_layer(note_layer);
+        self.glow_enabled = note_layer.glow.is_some();
         queue.write_buffer(&self.style_buffer, 0, bytemuck::cast_slice(&[style_data]));
     }
 
@@ -443,13 +514,20 @@ impl NotesPipeline {
         if self.instances.is_empty() {
             return;
         }
-        render_pass.set_pipeline(&self.render_pipeline);
         render_pass.set_bind_group(0, &self.view_bind_group, &[]);
         render_pass.set_bind_group(1, &self.time_bind_group, &[]);
         render_pass.set_bind_group(2, &self.style_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.quad_vertex_buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         render_pass.set_index_buffer(self.quad_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        // Glow first (additive), core second (alpha-blended) — the opaque fill drawn on top
+        // correctly occludes the glow directly beneath it. Both draws reuse the same instance
+        // buffer/bind groups, no duplication of instance data.
+        if self.glow_enabled {
+            render_pass.set_pipeline(&self.glow_pipeline);
+            render_pass.draw_indexed(0..self.quad_index_count, 0, 0..self.instances.len() as u32);
+        }
+        render_pass.set_pipeline(&self.core_pipeline);
         render_pass.draw_indexed(0..self.quad_index_count, 0, 0..self.instances.len() as u32);
     }
 }

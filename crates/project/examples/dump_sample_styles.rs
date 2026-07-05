@@ -5,8 +5,8 @@
 //! corresponding files if the schema ever changes.
 
 use project::{
-    BarrierKind, BarrierLayer, ColorBinding, Fill, FlashSpec, Glow, NoteLayer, ParticleSpec, Pulse,
-    Sheen, Style, Timed, TransitionKind, TransitionLayer, WavySpec,
+    BarrierLayer, ColorBinding, Fill, FlashSpec, Glow, NoteLayer, ParticleSpec, Pulse, Sheen,
+    Style, Timed, TransitionKind, TransitionLayer, WavySpec,
 };
 
 fn print_style(name: &str, style: &Style) {
@@ -33,7 +33,7 @@ fn main() {
             glow: Some(Glow {
                 color: ColorBinding::Constant([120, 200, 255]),
                 radius_px: 12.0,
-                intensity: 0.5,
+                brightness: 1.0,
             }),
             roundedness: 1.0,
             fall_speed: 400.0,
@@ -48,13 +48,16 @@ fn main() {
         version: 1,
         notes: Timed::Static(NoteLayer::default()),
         barrier: Timed::Static(BarrierLayer {
-            kind: BarrierKind::Glow,
             color: ColorBinding::Constant([255, 220, 120]),
             thickness: 6.0,
-            glow_radius_px: 24.0,
+            glow: Some(Glow {
+                color: ColorBinding::Constant([255, 220, 120]),
+                radius_px: 24.0,
+                brightness: 1.0,
+            }),
             pulse: Some(Pulse {
-                intensity: 0.8,
                 decay_seconds: 0.35,
+                brightness: 1.6,
             }),
             wavy: None,
         }),
@@ -65,10 +68,13 @@ fn main() {
         version: 1,
         notes: Timed::Static(NoteLayer::default()),
         barrier: Timed::Static(BarrierLayer {
-            kind: BarrierKind::Glow,
             color: ColorBinding::Constant([120, 200, 255]),
             thickness: 5.0,
-            glow_radius_px: 18.0,
+            glow: Some(Glow {
+                color: ColorBinding::Constant([120, 200, 255]),
+                radius_px: 18.0,
+                brightness: 1.0,
+            }),
             pulse: None,
             wavy: Some(WavySpec {
                 amplitude_px: 6.0,
@@ -96,14 +102,15 @@ fn main() {
                 color: ColorBinding::Constant([255, 240, 200]),
                 additive: true,
                 emission: project::EmissionMode::Burst,
+                brightness: 1.0,
             }),
             flash: Some(FlashSpec {
                 radius_x_px: 40.0,
                 radius_y_px: 40.0,
-                intensity: 0.9,
                 color: ColorBinding::Constant([255, 255, 255]),
                 decay_seconds: 0.15,
                 mode: project::FlashMode::Instant,
+                brightness: 1.0,
             }),
         }),
     };
@@ -118,10 +125,10 @@ fn main() {
             flash: Some(FlashSpec {
                 radius_x_px: 70.0,
                 radius_y_px: 20.0,
-                intensity: 0.9,
                 color: ColorBinding::Constant([255, 255, 255]),
                 decay_seconds: 0.2,
                 mode: project::FlashMode::Instant,
+                brightness: 1.0,
             }),
         }),
     };
@@ -144,6 +151,7 @@ fn main() {
                 emission: project::EmissionMode::Continuous {
                     rate_per_second: 30.0,
                 },
+                brightness: 1.0,
             }),
             flash: None,
         }),
@@ -159,10 +167,10 @@ fn main() {
             flash: Some(FlashSpec {
                 radius_x_px: 50.0,
                 radius_y_px: 30.0,
-                intensity: 0.7,
                 color: ColorBinding::Constant([255, 220, 140]),
                 decay_seconds: 0.6,
                 mode: project::FlashMode::Sustained,
+                brightness: 1.0,
             }),
         }),
     };

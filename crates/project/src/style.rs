@@ -79,12 +79,12 @@ impl Style {
                 },
             }),
             barrier: Timed::Static(BarrierLayer {
-                kind: BarrierKind::Line,
                 color: ColorBinding::Constant(barrier_style.color),
                 thickness: barrier_style.thickness,
-                glow_radius_px: 0.0,
+                glow: None,
                 pulse: None,
                 wavy: None,
+                show_bar: true,
             }),
             transition: Timed::Static(TransitionLayer::default()),
         }
@@ -256,12 +256,69 @@ pub struct Sheen {
     pub angle_degrees: f32,
 }
 
-/// Soft outer halo around a note's silhouette.
+fn default_brightness() -> f32 {
+    1.0
+}
+
+/// One exponential falloff term in an additive corona sum (Phase M): `amplitude *
+/// exp(-d / sigma_px)`, where `d` is distance outside the glowing surface's opaque edge. A
+/// `Glow`/`FlashSpec`/`ParticleSpec` sums three of these (tight/mid/wide, see
+/// `default_glow_layers`) to build a light source that reads as a genuine white-hot core fading
+/// through a tinted halo, rather than a single flat (possibly whitened) color at one spatial
+/// scale — see `docs/fmstyle-format.md`'s "Brightness/overexposure" section for the full
+/// before/after rationale.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GlowLayer {
+    pub amplitude: f32,
+    pub sigma_px: f32,
+}
+
+/// Tune-by-eye default corona: a tight near-white core bloom, a mid halo, and a wide soft spread.
+/// Not load-bearing — every consumer exposes this as the `layers` default so old/simple styles
+/// get a reasonable glow for free, but any style can override it.
+fn default_glow_layers() -> [GlowLayer; 3] {
+    [
+        GlowLayer {
+            amplitude: 2.6,
+            sigma_px: 5.0,
+        },
+        GlowLayer {
+            amplitude: 1.1,
+            sigma_px: 16.0,
+        },
+        GlowLayer {
+            amplitude: 0.38,
+            sigma_px: 48.0,
+        },
+    ]
+}
+
+/// Soft outer halo around a note's silhouette (or, since Phase K, the barrier bar too — this
+/// struct is shared by `NoteLayer::glow` and `BarrierLayer::glow`). Since Phase M the halo itself
+/// is an **additive** sum of `layers` (see `GlowLayer`'s doc comment) rather than a single
+/// alpha-blended ring — this is what lets it read as light radiating from a white-hot core instead
+/// of a flat lighter color. `brightness` scales how much light the corona adds (and, on the
+/// glowing surface's own opaque fill, still drives the pre-existing `hot_color` desaturate-toward-
+/// white mix): `brightness <= 1.0` behaves as a plain dimmer, pushed past `1.0` the look reads as
+/// overexposure. `brightness = 1.0` is an exact no-op. Unlike before Phase M, `brightness` no
+/// longer widens how far the corona reaches — reach is purely `layers[i].sigma_px`-driven now.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Glow {
     pub color: ColorBinding,
-    pub radius_px: f32,
-    pub intensity: f32,
+    #[serde(default = "default_brightness")]
+    pub brightness: f32,
+    #[serde(default = "default_glow_layers")]
+    pub layers: [GlowLayer; 3],
+}
+
+impl Default for Glow {
+    fn default() -> Self {
+        Self {
+            color: ColorBinding::default(),
+            brightness: 1.0,
+            layers: default_glow_layers(),
+        }
+    }
 }
 
 /// Schema-only this milestone (documented extension point) — parses and round-trips, but no
@@ -304,19 +361,28 @@ impl Default for NoteLayer {
     }
 }
 
-/// Whether the barrier is drawn as a flat line (today's look) or a glowing bar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum BarrierKind {
-    #[default]
-    Line,
-    Glow,
+/// Tune-by-eye default for `Pulse::brightness` (see its doc comment) — approximate/adjustable
+/// once seen rendered, same convention as `effects.wgsl`'s existing `1.6` soft-glow exponent.
+/// Picked so the shipped `barrier-pulse.fmstyle.ron` sample still reads as "brightens on hit"
+/// without the sample author having to touch it, while a style can push further for a real
+/// blowout.
+fn default_pulse_brightness() -> f32 {
+    1.6
 }
 
-/// Barrier brightens briefly when notes arrive, then decays back to its resting intensity.
+/// Barrier brightens briefly when notes arrive, then decays back to its resting look (the
+/// barrier's own `Glow::brightness` if it has one, else a plain `1.0`/no-op). `brightness` is the
+/// peak color multiplier at the instant a note arrives, decaying linearly to that resting
+/// baseline over `decay_seconds` — see `Glow`'s doc comment for the white-hot-core/corona
+/// mechanism this shares. There used to be a separate `intensity` (0..1 peak amplitude) knob
+/// multiplying into `brightness`; removed as a redundant axis — `brightness` alone is now the
+/// peak, so what used to be `intensity: 0.8, brightness: 1.6` (peak effective multiplier `1.48`)
+/// becomes simply `brightness: 1.48` (or whatever peak look is wanted) with no amplitude term.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Pulse {
-    pub intensity: f32,
     pub decay_seconds: f32,
+    #[serde(default = "default_pulse_brightness")]
+    pub brightness: f32,
 }
 
 /// Which edges of the barrier ripple, and how the bottom edge (if it ripples at all) relates to
@@ -355,28 +421,42 @@ pub struct WavySpec {
     pub mode: WavyMode,
 }
 
-/// The horizontal barrier where falling notes stop.
+fn default_true() -> bool {
+    true
+}
+
+/// The horizontal barrier where falling notes stop. `glow` (Phase K) replaced the earlier
+/// `kind: BarrierKind` + `glow_radius_px: f32` pair — presence of a `Glow` *is* the on/off switch
+/// now (`None` = flat line, the only look before this phase), the same pattern `NoteLayer::glow`
+/// already used. **Breaking change**: old `.fmstyle.ron` files with
+/// `barrier: (kind: ..., glow_radius_px: ...)` need manual editing to the new
+/// `glow: Some((color: ..., brightness: 1.0))` / `glow: None` shape — see
+/// `docs/fmstyle-format.md`'s changelog. `show_bar` (Phase M) is independent of `glow` — whether
+/// the flat/opaque bar itself renders at all, separate from whether it has a corona. A note has
+/// no equivalent field since a note without its own fill isn't a sensible look.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BarrierLayer {
-    pub kind: BarrierKind,
     pub color: ColorBinding,
     pub thickness: f32,
-    pub glow_radius_px: f32,
+    #[serde(default)]
+    pub glow: Option<Glow>,
     #[serde(default)]
     pub pulse: Option<Pulse>,
     #[serde(default)]
     pub wavy: Option<WavySpec>,
+    #[serde(default = "default_true")]
+    pub show_bar: bool,
 }
 
 impl Default for BarrierLayer {
     fn default() -> Self {
         Self {
-            kind: BarrierKind::default(),
             color: ColorBinding::default(),
             thickness: 4.0,
-            glow_radius_px: 0.0,
+            glow: None,
             pulse: None,
             wavy: None,
+            show_bar: true,
         }
     }
 }
@@ -417,6 +497,15 @@ pub struct ParticleSpec {
     pub additive: bool,
     #[serde(default)]
     pub emission: EmissionMode,
+    /// Color multiplier applied at spawn time (Phase K) — see `Glow`'s doc comment for the
+    /// overdrive mechanism; `1.0` is a no-op, reproducing every particle look that existed before
+    /// this field did.
+    #[serde(default = "default_brightness")]
+    pub brightness: f32,
+    /// Additive corona layers (Phase M), same mechanism and default as `Glow::layers` — only
+    /// meaningful when `additive` is true (a non-additive "puff" particle never reads this field).
+    #[serde(default = "default_glow_layers")]
+    pub layers: [GlowLayer; 3],
 }
 
 /// When a spawned flash starts decaying.
@@ -431,16 +520,29 @@ pub enum FlashMode {
     Sustained,
 }
 
-/// Decaying radial flash spawned on note arrival.
+/// Decaying radial flash spawned on note arrival. Since a flash always renders additively, its
+/// peak opacity and its color-brightness had the exact same visual effect (both just scale the
+/// additive contribution) — the old separate `intensity` (peak alpha) knob was redundant with
+/// `brightness` and has been removed; a flash is always fully opaque at spawn (fading to 0 over
+/// `decay_seconds`, as before) and `brightness` alone controls how hot/white it looks, same
+/// mechanism as `Glow`'s doc comment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlashSpec {
     pub radius_x_px: f32,
     pub radius_y_px: f32,
-    pub intensity: f32,
     pub color: ColorBinding,
     pub decay_seconds: f32,
     #[serde(default)]
     pub mode: FlashMode,
+    /// Color multiplier applied at spawn time (Phase K) — see `Glow`'s doc comment for the
+    /// overdrive mechanism; `1.0` is a no-op, reproducing every flash look that existed before
+    /// this field did (including `FlashMode::Sustained`'s "key glow" look).
+    #[serde(default = "default_brightness")]
+    pub brightness: f32,
+    /// Additive corona layers (Phase M), same mechanism and default as `Glow::layers` — a flash
+    /// always renders additively, so this always applies.
+    #[serde(default = "default_glow_layers")]
+    pub layers: [GlowLayer; 3],
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -527,6 +629,95 @@ mod tests {
         let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
         let parsed: Style = ron::from_str(&text).unwrap();
         assert_eq!(style, parsed);
+    }
+
+    /// Phase K: `BarrierLayer::glow` (replacing the earlier `kind`/`glow_radius_px` pair) and the
+    /// new `brightness` fields on `Pulse`/`FlashSpec`/`ParticleSpec` round-trip through RON.
+    #[test]
+    fn barrier_layer_with_glow_and_pulse_brightness_round_trips() {
+        let mut style = Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default());
+        let Timed::Static(barrier) = &mut style.barrier else {
+            unreachable!()
+        };
+        barrier.glow = Some(Glow {
+            color: ColorBinding::Constant([255, 220, 120]),
+            brightness: 3.0,
+            layers: default_glow_layers(),
+        });
+        barrier.pulse = Some(Pulse {
+            decay_seconds: 0.35,
+            brightness: 4.0,
+        });
+        let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
+        let parsed: Style = ron::from_str(&text).unwrap();
+        assert_eq!(style, parsed);
+    }
+
+    #[test]
+    fn barrier_layer_without_glow_round_trips() {
+        let style = Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default());
+        let Timed::Static(barrier) = &style.barrier else {
+            unreachable!()
+        };
+        assert_eq!(barrier.glow, None);
+        let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
+        let parsed: Style = ron::from_str(&text).unwrap();
+        assert_eq!(style, parsed);
+    }
+
+    #[test]
+    fn transition_layer_brightness_fields_round_trip() {
+        let style = Style {
+            version: 1,
+            notes: Timed::default(),
+            barrier: Timed::default(),
+            transition: Timed::Static(TransitionLayer {
+                kind: TransitionKind::ParticlesAndFlash,
+                particles: Some(ParticleSpec {
+                    count: 10,
+                    lifetime_seconds: 0.4,
+                    size_px: 4.0,
+                    speed_px: 180.0,
+                    spread_degrees: 60.0,
+                    gravity_px: 300.0,
+                    color: ColorBinding::Constant([255, 240, 200]),
+                    additive: true,
+                    emission: EmissionMode::Burst,
+                    brightness: 5.0,
+                    layers: default_glow_layers(),
+                }),
+                flash: Some(FlashSpec {
+                    radius_x_px: 40.0,
+                    radius_y_px: 40.0,
+                    color: ColorBinding::Constant([255, 255, 255]),
+                    decay_seconds: 0.15,
+                    mode: FlashMode::Instant,
+                    brightness: 6.0,
+                    layers: default_glow_layers(),
+                }),
+            }),
+        };
+        let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
+        let parsed: Style = ron::from_str(&text).unwrap();
+        assert_eq!(style, parsed);
+    }
+
+    /// Old `.fmstyle.ron` files predating Phase K's `brightness` field (and Phase M's `layers`
+    /// field) have neither key on `Glow`/`Pulse`/`FlashSpec`/`ParticleSpec` — `serde(default)`
+    /// should load them with the documented defaults rather than failing to parse.
+    #[test]
+    fn glow_without_brightness_field_loads_with_default() {
+        let text = "(color: Constant((1, 2, 3)))";
+        let glow: Glow = ron::from_str(text).unwrap();
+        assert_eq!(glow.brightness, 1.0);
+        assert_eq!(glow.layers, default_glow_layers());
+    }
+
+    #[test]
+    fn pulse_without_brightness_field_loads_with_tuned_default() {
+        let text = "(decay_seconds: 0.35)";
+        let pulse: Pulse = ron::from_str(text).unwrap();
+        assert_eq!(pulse.brightness, 1.6);
     }
 
     /// Guards the shipped `examples/styles/*.fmstyle.ron` samples against drifting out of sync

@@ -13,6 +13,16 @@
 //! I of the style-extensibility continuation in CLAUDE.md). A big jump (forward or backward — a
 //! scrub, not ordinary playback) clears the pool instead of trying to catch up or rewind it,
 //! since these are transient effects with no "correct" mid-scrub state to reconstruct.
+//!
+//! **Additive multi-layer corona (Phase M)**: flashes and additive-mode particles now use the
+//! same additive exponential-layered-sum formula as `barrier.rs`/`notes/pipeline.rs` (`fs_glow`)
+//! instead of the old `mix(hard_edge, soft_glow, softness)` blend — `softness` is gone. Unlike
+//! barrier/notes, this file needs **no second render pipeline for occlusion**: additively-blended
+//! effects never sit on top of opaque geometry the way an opaque core does, so "hard dot +
+//! additive halo" can just be the same additive draw. The existing two-pipeline split
+//! (`additive_pipeline`/`alpha_pipeline`) stays exactly as it was, just routing to different
+//! fragment entry points (`fs_glow`/`fs_puff`) — non-additive "puff" particles are completely
+//! unchanged pixel-for-pixel.
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -26,6 +36,10 @@ use super::notes::NoteInterval;
 /// cleared instead of spawning every event the jump skipped over or trying to run particles
 /// backward.
 const MAX_ORDINARY_STEP_SECONDS: f32 = 0.35;
+
+/// Cutoff distance past which a `GlowLayer`'s `exp(-d / sigma_px)` contribution is treated as
+/// invisible — see `barrier.rs`'s identical constant for the full rationale.
+const GLOW_CUTOFF_SIGMAS: f32 = 5.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -52,24 +66,38 @@ impl Default for ViewUniform {
     }
 }
 
+/// Phase M: `radius`/`softness` replaced by a `core_radius`/`quad_radius` split (same idea as
+/// `notes::NoteInstance`'s `true_size`/`draw_size`) plus per-instance additive corona layers,
+/// baked in at spawn time (`spawn_one_particle`/`spawn_flash`) rather than read from a shared
+/// uniform, since particles/flashes already bake their final linear color into the instance this
+/// way. `core_radius` is the configured half-extent (ellipse-aware); `quad_radius` is
+/// `core_radius + margin` for glow instances (flashes, additive particles) or exactly
+/// `core_radius` for non-additive "puff" particles (`fs_puff` never reads `layer_amp`/
+/// `layer_sigma` at all, so leaving them zeroed for puffs is not a footgun).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct EffectInstance {
     center: [f32; 2],
-    radius: [f32; 2],
+    core_radius: [f32; 2],
+    quad_radius: [f32; 2],
     alpha: f32,
     color: [f32; 3],
-    softness: f32,
+    /// x/y/z = layer[0..3].amplitude, pre-multiplied by the spec's `brightness` at spawn time
+    /// (a plain multiply, not a `hot_color` mix — additive saturation whitens for free).
+    layer_amp: [f32; 3],
+    layer_sigma: [f32; 3],
 }
 
 impl EffectInstance {
-    fn attributes() -> [wgpu::VertexAttribute; 5] {
+    fn attributes() -> [wgpu::VertexAttribute; 7] {
         wgpu::vertex_attr_array![
-            1 => Float32x2,
-            2 => Float32x2,
-            3 => Float32,
-            4 => Float32x3,
-            5 => Float32,
+            1 => Float32x2, // center
+            2 => Float32x2, // core_radius
+            3 => Float32x2, // quad_radius
+            4 => Float32,   // alpha
+            5 => Float32x3, // color
+            6 => Float32x3, // layer_amp
+            7 => Float32x3, // layer_sigma
         ]
     }
 
@@ -103,6 +131,27 @@ fn srgb_to_linear([r, g, b]: [u8; 3]) -> [f32; 3] {
     [component(r), component(g), component(b)]
 }
 
+/// CPU-side equivalent of `barrier.wgsl`/`notes/shader.wgsl`'s `hot_color`: desaturates `base`
+/// toward pure white as `brightness` climbs past `1.0`, rather than just scaling its channels up
+/// (which doesn't converge to white unless they already share the same magnitude) — same
+/// rationale as those shaders' doc comments. `brightness <= 1.0` is a plain dimmer;
+/// `brightness == 1.0` is an exact no-op. Since Phase M this is only used for non-additive "puff"
+/// particles (which have no separate opaque core to whiten, unlike barrier/notes, so the fill
+/// color itself is whitened) — flashes and additive particles instead pre-multiply `brightness`
+/// into their additive corona `layer_amp`, letting additive saturation whiten for free.
+fn hot_color([r, g, b]: [f32; 3], brightness: f32) -> [f32; 3] {
+    let b_mul = brightness.max(0.0);
+    if b_mul <= 1.0 {
+        return [r * b_mul, g * b_mul, b * b_mul];
+    }
+    let whiteness = 1.0 - 1.0 / b_mul;
+    [
+        r + (1.0 - r) * whiteness,
+        g + (1.0 - g) * whiteness,
+        b + (1.0 - b) * whiteness,
+    ]
+}
+
 struct Particle {
     pos: [f32; 2],
     vel: [f32; 2],
@@ -111,6 +160,10 @@ struct Particle {
     lifetime_seconds: f32,
     size_px: f32,
     color: [f32; 3],
+    /// `0.0` for non-additive "puff" particles (no corona, `quad_radius == core_radius`).
+    margin_px: f32,
+    layer_amp: [f32; 3],
+    layer_sigma: [f32; 3],
 }
 
 struct Flash {
@@ -124,8 +177,10 @@ struct Flash {
     decay_seconds: f32,
     radius_x_px: f32,
     radius_y_px: f32,
-    intensity: f32,
     color: [f32; 3],
+    margin_px: f32,
+    layer_amp: [f32; 3],
+    layer_sigma: [f32; 3],
 }
 
 /// Tiny deterministic xorshift32 PRNG for particle spawn jitter — not worth pulling in a `rand`
@@ -237,10 +292,11 @@ impl EffectsRenderer {
         let instance_layout = EffectInstance::layout(&instance_attributes);
 
         // Additive (`One, One`) for flashes and additive-mode particles (sparks, glints — light
-        // stacking on light); premultiplied-alpha (`One, OneMinusSrcAlpha`) for particles with
-        // `ParticleSpec::additive = false` (soft/smoke-like puffs that should occlude, not just
-        // brighten). The fragment shader always emits premultiplied color regardless of which
-        // pipeline draws it, so only the target's blend factors differ between the two.
+        // stacking on light, `fs_glow`'s additive-layered-sum formula); premultiplied-alpha
+        // (`One, OneMinusSrcAlpha`) for particles with `ParticleSpec::additive = false`
+        // (soft/smoke-like puffs that should occlude, not just brighten — `fs_puff`'s unchanged
+        // hard-edge shape). Each pipeline uses a different fragment entry point (Phase M) since
+        // the two formulas no longer share one `mix(hard_edge, soft_glow, softness)` shader.
         let additive_blend = wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -266,7 +322,7 @@ impl EffectsRenderer {
             },
         };
 
-        let make_pipeline = |label: &str, blend: wgpu::BlendState| {
+        let make_pipeline = |label: &str, entry_point: &'static str, blend: wgpu::BlendState| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -278,7 +334,7 @@ impl EffectsRenderer {
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
-                    entry_point: Some("fs_main"),
+                    entry_point: Some(entry_point),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: texture_format,
                         blend: Some(blend),
@@ -293,8 +349,13 @@ impl EffectsRenderer {
                 cache: None,
             })
         };
-        let additive_pipeline = make_pipeline("effects_additive_pipeline", additive_blend);
-        let alpha_pipeline = make_pipeline("effects_alpha_pipeline", premultiplied_alpha_blend);
+        let additive_pipeline =
+            make_pipeline("effects_additive_pipeline", "fs_glow", additive_blend);
+        let alpha_pipeline = make_pipeline(
+            "effects_alpha_pipeline",
+            "fs_puff",
+            premultiplied_alpha_blend,
+        );
 
         const VERTICES: &[QuadVertex] = &[
             QuadVertex {
@@ -492,8 +553,33 @@ impl EffectsRenderer {
 
     /// Spawns a single particle — shared by burst spawns (`spawn_particles`, called `count`
     /// times per note arrival) and continuous emission (called a variable number of times per
-    /// frame, spread across a held note's key width).
+    /// frame, spread across a held note's key width). `color` is the spec's already
+    /// srgb-to-linear-converted color, before `ParticleSpec::brightness`/`layers` are baked in
+    /// (Phase M): non-additive "puff" particles keep the pre-Phase-M behavior exactly (`hot_color`
+    /// whitens the fill itself, no corona); additive particles instead leave `color` unwhitened
+    /// and pre-multiply `brightness` into `layer_amp`, since their corona is additive and whitens
+    /// via saturation instead.
     fn spawn_one_particle(&mut self, x_px: f32, y_px: f32, spec: &ParticleSpec, color: [f32; 3]) {
+        let (color, margin_px, layer_amp, layer_sigma) = if spec.additive {
+            let layer_amp = [
+                spec.layers[0].amplitude * spec.brightness,
+                spec.layers[1].amplitude * spec.brightness,
+                spec.layers[2].amplitude * spec.brightness,
+            ];
+            let layer_sigma = [
+                spec.layers[0].sigma_px,
+                spec.layers[1].sigma_px,
+                spec.layers[2].sigma_px,
+            ];
+            let margin_px = spec
+                .layers
+                .iter()
+                .fold(0.0f32, |acc, layer| acc.max(layer.sigma_px))
+                * GLOW_CUTOFF_SIGMAS;
+            (color, margin_px, layer_amp, layer_sigma)
+        } else {
+            (hot_color(color, spec.brightness), 0.0, [0.0; 3], [1.0; 3])
+        };
         // Spread around straight up (canvas convention is y-down, so "up" is negative y) —
         // `angle_degrees` measured from that upward axis.
         let angle_deg = -90.0
@@ -511,19 +597,43 @@ impl EffectsRenderer {
             lifetime_seconds: lifetime,
             size_px: spec.size_px.max(0.5),
             color,
+            margin_px,
+            layer_amp,
+            layer_sigma,
         });
     }
 
     fn spawn_flash(&mut self, x_px: f32, y_px: f32, spec: &FlashSpec, decay_start_seconds: f32) {
+        // A flash always renders additively (Phase M): `color` stays unwhitened, `brightness` is
+        // pre-multiplied into `layer_amp` instead of baked in via `hot_color` — additive
+        // saturation whitens for free. A flash is always fully "on" at spawn, fading to 0 over
+        // `decay_seconds` as before.
         let color = srgb_to_linear(spec.color.resolve_constant());
+        let layer_amp = [
+            spec.layers[0].amplitude * spec.brightness,
+            spec.layers[1].amplitude * spec.brightness,
+            spec.layers[2].amplitude * spec.brightness,
+        ];
+        let layer_sigma = [
+            spec.layers[0].sigma_px,
+            spec.layers[1].sigma_px,
+            spec.layers[2].sigma_px,
+        ];
+        let margin_px = spec
+            .layers
+            .iter()
+            .fold(0.0f32, |acc, layer| acc.max(layer.sigma_px))
+            * GLOW_CUTOFF_SIGMAS;
         self.flashes.push(Flash {
             pos: [x_px, y_px],
             decay_start_seconds,
             decay_seconds: spec.decay_seconds.max(0.01),
             radius_x_px: spec.radius_x_px.max(1.0),
             radius_y_px: spec.radius_y_px.max(1.0),
-            intensity: spec.intensity,
             color,
+            margin_px,
+            layer_amp,
+            layer_sigma,
         });
     }
 
@@ -546,12 +656,18 @@ impl EffectsRenderer {
             // decaying once the note actually ends.
             let elapsed = (time_seconds - flash.decay_start_seconds).max(0.0);
             let t = 1.0 - (elapsed / flash.decay_seconds).clamp(0.0, 1.0);
+            let core_radius = [flash.radius_x_px, flash.radius_y_px];
             self.additive_instances.push(EffectInstance {
                 center: flash.pos,
-                radius: [flash.radius_x_px, flash.radius_y_px],
-                alpha: flash.intensity * t,
+                core_radius,
+                quad_radius: [
+                    core_radius[0] + flash.margin_px,
+                    core_radius[1] + flash.margin_px,
+                ],
+                alpha: t,
                 color: flash.color,
-                softness: 1.0,
+                layer_amp: flash.layer_amp,
+                layer_sigma: flash.layer_sigma,
             });
         }
 
@@ -562,12 +678,18 @@ impl EffectsRenderer {
         };
         for particle in &self.particles {
             let t = (particle.life_seconds / particle.lifetime_seconds).clamp(0.0, 1.0);
+            let core_radius = [particle.size_px, particle.size_px];
             target.push(EffectInstance {
                 center: particle.pos,
-                radius: [particle.size_px, particle.size_px],
+                core_radius,
+                quad_radius: [
+                    core_radius[0] + particle.margin_px,
+                    core_radius[1] + particle.margin_px,
+                ],
                 alpha: t,
                 color: particle.color,
-                softness: 0.0,
+                layer_amp: particle.layer_amp,
+                layer_sigma: particle.layer_sigma,
             });
         }
     }

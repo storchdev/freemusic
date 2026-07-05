@@ -1,15 +1,41 @@
 //! Renders the barrier where falling notes stop: a full-canvas-width horizontal bar, optionally
-//! with a soft glow falloff (`BarrierKind::Glow`) and a decaying brightness pulse when a note
-//! arrives (Phase D of the `.fmstyle.ron` milestone). A real wgpu pass rather than the plain
-//! `egui` overlay milestone 6a used — see CLAUDE.md — so the barrier now shows up in exported
-//! video too; `ui::draw_barrier_handle` keeps only the drag hit-region for editing.
+//! with a soft glow falloff (`BarrierLayer::glow`) and a decaying brightness pulse when a note
+//! arrives (Phase D of the `.fmstyle.ron` milestone; glow unified onto the shared `Glow` struct in
+//! Phase K — see CLAUDE.md). A real wgpu pass rather than the plain `egui` overlay milestone 6a
+//! used — see CLAUDE.md — so the barrier now shows up in exported video too; `ui::
+//! draw_barrier_handle` keeps only the drag hit-region for editing.
 //!
 //! Self-contained quad pass, structured like `video_quad.rs`: no vertex buffer (six hardcoded
 //! unit-quad corners, positioned/sized in the vertex shader from a uniform), one bind group.
+//!
+//! **"White-hot pipe" redesign (post-Phase-K)**: `brightness` used to be a plain color multiplier
+//! applied only to the glow *halo*, with a separate `intensity` knob controlling the halo's
+//! opacity — the bar's own core color never changed, so a bright glow read as a colored ring
+//! stuck to the edges rather than the bar itself heating up. Both `Glow::intensity` and
+//! `Pulse::intensity` are gone now (redundant with `brightness`); `brightness` alone drives the
+//! core bar's own color, desaturating toward pure white as brightness climbs past `1.0`
+//! (`barrier.wgsl`'s `hot_color`, shared with `notes/shader.wgsl`'s and `effects.rs`'s identical
+//! logic).
+//!
+//! **Additive multi-layer corona (Phase M)**: the halo used to be a single alpha-blended ring at
+//! one spatial scale, which read as "a lighter flat color" rather than a real light source. It's
+//! now an *additive* sum of three exponential falloff terms (`Glow::layers`, tight/mid/wide),
+//! drawn with a separate render pipeline (`glow_pipeline`, `ONE`/`ONE` blend) *before* the existing
+//! opaque core pipeline (`core_pipeline`, unchanged `ALPHA_BLENDING`) — additive light can't also
+//! occlude what's under it, so the two looks need two passes, with the core drawn second so it
+//! correctly occludes the glow directly beneath it. `show_bar` (also Phase M) independently
+//! controls whether the opaque core pipeline draws at all, decoupled from whether `glow` is set —
+//! a barrier can be a pure glow with no visible bar, a bar with no glow, both, or neither. See
+//! `barrier.wgsl` for the actual math.
 
 use bytemuck::{Pod, Zeroable};
 
-use project::{BarrierKind, BarrierLayer, Pulse, WavyMode, WavySpec};
+use project::{BarrierLayer, Pulse, WavyMode, WavySpec};
+
+/// Cutoff distance past which a `GlowLayer`'s `exp(-d / sigma_px)` contribution is treated as
+/// invisible (`exp(-5) ≈ 0.0067`, well below 8-bit display precision) — used to size how far past
+/// the core each layer's rasterized quad needs to extend. Shared verbatim by `notes/pipeline.rs`.
+const GLOW_CUTOFF_SIGMAS: f32 = 5.0;
 
 /// All-vec4 layout, same reasoning as `notes::pipeline::StyleUniform` — every field is already
 /// vec4-aligned so there's no std140 column-padding mismatch (the `mat3x3<f32>` uniform CLAUDE.md
@@ -19,22 +45,39 @@ use project::{BarrierKind, BarrierLayer, Pulse, WavyMode, WavySpec};
 struct Uniforms {
     /// x = canvas width, y = canvas height, z = barrier center y (pixels), w = thickness (pixels).
     geometry: [f32; 4],
-    /// xyz = barrier color (linear), w = glow radius (pixels).
-    color_glow_radius: [f32; 4],
-    /// x = glow enabled (0/1), y = pulse intensity (0..1, decaying), z = wavy enabled (0/1),
+    /// xyz = bar color (linear), w unused (was glow radius pre-Phase-M).
+    bar_color: [f32; 4],
+    /// x = glow enabled (0/1), y = pulse curve (0..1, decaying), z = wavy enabled (0/1),
     /// w = wavy mode (0=TopOnly, 1=Mirrored, 2=BothEdges; only meaningful when z is set).
     flags: [f32; 4],
     /// x = wave amplitude (px), y = wavelength (px), z = speed, w = transport time (seconds).
     wave: [f32; 4],
+    /// xyz = halo color (linear, independent of the bar's own `bar_color`), w unused.
+    glow_style: [f32; 4],
+    /// x = resting brightness (the bar's `Glow::brightness` when glow is set, else `1.0`), y =
+    /// peak brightness at `pulse = 1.0` (the bar's `Pulse::brightness`, or the resting value when
+    /// no pulse is configured so a no-pulse mix is an exact no-op), zw unused.
+    glow_brightness_pulse: [f32; 4],
+    /// Phase M additive corona layers: x = layer[0].amplitude, y = layer[0].sigma_px,
+    /// z = layer[1].amplitude, w = layer[1].sigma_px.
+    glow_layers_ab: [f32; 4],
+    /// x = layer[2].amplitude, y = layer[2].sigma_px, z = precomputed glow margin in pixels
+    /// (`max(sigma) * GLOW_CUTOFF_SIGMAS`, computed once on the CPU rather than per-vertex), w
+    /// unused.
+    glow_layers_c: [f32; 4],
 }
 
 impl Default for Uniforms {
     fn default() -> Self {
         Self {
             geometry: [1.0, 1.0, 0.0, 4.0],
-            color_glow_radius: [1.0, 1.0, 1.0, 0.0],
+            bar_color: [1.0, 1.0, 1.0, 0.0],
             flags: [0.0, 0.0, 0.0, 0.0],
             wave: [0.0, 0.0, 0.0, 0.0],
+            glow_style: [1.0, 1.0, 1.0, 0.0],
+            glow_brightness_pulse: [1.0, 1.0, 0.0, 0.0],
+            glow_layers_ab: [0.0, 0.0, 0.0, 0.0],
+            glow_layers_c: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -55,7 +98,12 @@ fn srgb_to_linear([r, g, b]: [u8; 3]) -> [f32; 3] {
 }
 
 pub struct BarrierRenderer {
-    pipeline: wgpu::RenderPipeline,
+    /// Opaque flat bar, drawn second so it occludes the glow beneath it (unchanged
+    /// `ALPHA_BLENDING`, `fs_core` entry point). Drawn only when `show_bar` is true.
+    core_pipeline: wgpu::RenderPipeline,
+    /// Additive corona, drawn first (`ONE`/`ONE` blend, `fs_glow` entry point). Drawn only when
+    /// `glow` is set.
+    glow_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     data: Uniforms,
@@ -63,6 +111,9 @@ pub struct BarrierRenderer {
     /// Stashed from the last `set_style` call so `update_pulse` (called separately, every frame)
     /// doesn't need the whole `BarrierLayer` threaded through again just for this one field.
     pulse: Option<Pulse>,
+    /// Stashed from the last `set_style` call, read directly by `render` (Phase M) — independent
+    /// of `data.flags[0]` (glow enabled), see the module doc comment.
+    show_bar: bool,
 }
 
 impl BarrierRenderer {
@@ -92,31 +143,54 @@ impl BarrierRenderer {
             immediate_size: 0,
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("barrier_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+        // Additive: color/alpha both `src + dst` (`ONE`/`ONE`) — light stacking on light, same
+        // convention `effects.rs`'s `additive_blend` already uses for flashes/additive particles.
+        let additive_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: texture_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+
+        let make_pipeline = |label: &str, entry_point: &'static str, blend: wgpu::BlendState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry_point),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: texture_format,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let core_pipeline = make_pipeline(
+            "barrier_core_pipeline",
+            "fs_core",
+            wgpu::BlendState::ALPHA_BLENDING,
+        );
+        let glow_pipeline = make_pipeline("barrier_glow_pipeline", "fs_glow", additive_blend);
 
         let data = Uniforms::default();
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -135,12 +209,14 @@ impl BarrierRenderer {
         });
 
         Self {
-            pipeline,
+            core_pipeline,
+            glow_pipeline,
             uniform_buffer,
             bind_group,
             data,
             canvas_size: (1.0, 1.0),
             pulse: None,
+            show_bar: true,
         }
     }
 
@@ -157,13 +233,47 @@ impl BarrierRenderer {
     ) {
         let (width, height) = (canvas_size.0.max(1.0), canvas_size.1.max(1.0));
         let barrier_y = height * barrier_fraction;
-        let glow_enabled = matches!(barrier_layer.kind, BarrierKind::Glow) as u8 as f32;
         let [r, g, b] = srgb_to_linear(barrier_layer.color.resolve_constant());
         self.canvas_size = (width, height);
         self.pulse = barrier_layer.pulse;
+        self.show_bar = barrier_layer.show_bar;
         self.data.geometry = [width, height, barrier_y, barrier_layer.thickness.max(0.0)];
-        self.data.color_glow_radius = [r, g, b, barrier_layer.glow_radius_px.max(0.0)];
-        self.data.flags[0] = glow_enabled;
+        self.data.bar_color[0] = r;
+        self.data.bar_color[1] = g;
+        self.data.bar_color[2] = b;
+        match &barrier_layer.glow {
+            Some(glow) => {
+                let [gr, gg, gb] = srgb_to_linear(glow.color.resolve_constant());
+                let layers = glow.layers;
+                let margin = layers
+                    .iter()
+                    .fold(0.0f32, |acc, layer| acc.max(layer.sigma_px))
+                    * GLOW_CUTOFF_SIGMAS;
+                self.data.flags[0] = 1.0;
+                self.data.glow_style = [gr, gg, gb, 0.0];
+                self.data.glow_brightness_pulse[0] = glow.brightness;
+                self.data.glow_layers_ab = [
+                    layers[0].amplitude,
+                    layers[0].sigma_px,
+                    layers[1].amplitude,
+                    layers[1].sigma_px,
+                ];
+                self.data.glow_layers_c = [layers[2].amplitude, layers[2].sigma_px, margin, 0.0];
+            }
+            None => {
+                self.data.flags[0] = 0.0;
+                self.data.glow_style = [0.0; 4];
+                self.data.glow_brightness_pulse[0] = 1.0;
+                self.data.glow_layers_ab = [0.0; 4];
+                self.data.glow_layers_c = [0.0; 4];
+            }
+        }
+        // No pulse configured: peak == resting, so `mix(resting, peak, pulse_curve)` in the
+        // shader is an exact no-op regardless of what `pulse_curve` computes to.
+        self.data.glow_brightness_pulse[1] = barrier_layer
+            .pulse
+            .map(|pulse| pulse.brightness)
+            .unwrap_or(self.data.glow_brightness_pulse[0]);
         match &barrier_layer.wavy {
             Some(WavySpec {
                 amplitude_px,
@@ -193,12 +303,13 @@ impl BarrierRenderer {
     }
 
     /// The most recent note at or before `time_seconds` (expected to already have the sync offset
-    /// subtracted, same convention as `notes::NotesRenderer::update`) brightens the bar, decaying
-    /// linearly to 0 over `pulse.decay_seconds`. Stateless by design: scrubbing anywhere just
-    /// recomputes from whatever note last landed at or before the new position — no separate
-    /// "clear on scrub" bookkeeping needed (unlike the transition pass's particle pool, which is
-    /// inherently stateful and won't get this luxury).
-    fn pulse_intensity(&self, time_seconds: f32, note_starts: &[f32]) -> f32 {
+    /// subtracted, same convention as `notes::NotesRenderer::update`) triggers a decaying `1.0 ->
+    /// 0.0` curve over `pulse.decay_seconds`, which the shader mixes between the resting and peak
+    /// brightness (see `barrier.wgsl`). Stateless by design: scrubbing anywhere just recomputes
+    /// from whatever note last landed at or before the new position — no separate "clear on
+    /// scrub" bookkeeping needed (unlike the transition pass's particle pool, which is inherently
+    /// stateful and won't get this luxury).
+    fn pulse_curve(&self, time_seconds: f32, note_starts: &[f32]) -> f32 {
         let Some(pulse) = self.pulse else {
             return 0.0;
         };
@@ -213,17 +324,17 @@ impl BarrierRenderer {
         if !(0.0..pulse.decay_seconds).contains(&elapsed) {
             return 0.0;
         }
-        pulse.intensity * (1.0 - elapsed / pulse.decay_seconds)
+        1.0 - elapsed / pulse.decay_seconds
     }
 
-    /// Recomputes and uploads the pulse intensity for `time_seconds` against `note_starts` (the
+    /// Recomputes and uploads the pulse curve for `time_seconds` against `note_starts` (the
     /// same sorted onset list `notes::NotesRenderer::note_start_times` already caches for the
     /// timeline's note-density strip). Split from `set_style` since this needs to run every frame
     /// as the transport advances, while `set_style`'s inputs only change on a slider drag or style
     /// import — both are cheap uniform writes regardless, so `Compositor::update_barrier` calls
     /// them together.
     pub fn update_pulse(&mut self, queue: &wgpu::Queue, time_seconds: f32, note_starts: &[f32]) {
-        self.data.flags[1] = self.pulse_intensity(time_seconds, note_starts);
+        self.data.flags[1] = self.pulse_curve(time_seconds, note_starts);
         self.data.wave[3] = time_seconds;
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.data]));
     }
@@ -239,8 +350,18 @@ impl BarrierRenderer {
             self.canvas_size.0.round().max(1.0) as u32,
             self.canvas_size.1.round().max(1.0) as u32,
         );
-        render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &self.bind_group, &[]);
-        render_pass.draw(0..6, 0..1);
+        // Glow first (additive), core second (alpha-blended) — the opaque core drawn on top
+        // correctly occludes the glow directly beneath it. Independent conditions: a barrier can
+        // be pure glow with no bar, a bar with no glow, both, or neither.
+        if self.data.flags[0] > 0.5 {
+            render_pass.set_pipeline(&self.glow_pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.draw(0..6, 0..1);
+        }
+        if self.show_bar {
+            render_pass.set_pipeline(&self.core_pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.draw(0..6, 0..1);
+        }
     }
 }

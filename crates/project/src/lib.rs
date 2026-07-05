@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 
 mod style;
 pub use style::{
-    BarrierKind, BarrierLayer, BlackKeyFill, Border, ColorBinding, EmissionMode, Fill, FlashMode,
-    FlashSpec, Glow, NoteLayer, ParticleSpec, Pulse, Ramp, ScalarBinding, Sheen, Style, Timed,
-    TransitionKind, TransitionLayer, WavyMode, WavySpec,
+    BarrierLayer, BlackKeyFill, Border, ColorBinding, EmissionMode, Fill, FlashMode, FlashSpec,
+    Glow, NoteLayer, ParticleSpec, Pulse, Ramp, ScalarBinding, Sheen, Style, Timed, TransitionKind,
+    TransitionLayer, WavyMode, WavySpec,
 };
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

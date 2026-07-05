@@ -10,10 +10,9 @@
         black_key_fill: Auto,
     )),
     barrier: Static((
-        kind: Line,
         color: Constant((255, 255, 255)),
         thickness: 4.0,
-        glow_radius_px: 0.0,
+        glow: None,
         pulse: None,
         wavy: None,
     )),
@@ -31,6 +30,7 @@
             emission: Continuous(
                 rate_per_second: 30.0,
             ),
+            brightness: 1.0,
         )),
         flash: None,
     )),

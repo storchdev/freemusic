@@ -299,6 +299,7 @@ impl AppState {
         video_path: Option<&Path>,
         midi_path: Option<&Path>,
         project_path: Option<&Path>,
+        style_path: Option<&Path>,
     ) -> Self {
         let window_attributes = Window::default_attributes()
             .with_title("freemusic")
@@ -424,6 +425,13 @@ impl AppState {
                 state.load_midi(path);
             }
         }
+        // Applied after the project branch above (not folded into it) so a CLI-passed style
+        // always wins over whatever `style` field a loaded project itself carries — same
+        // "more specific/later wins" precedent as passing a project path alongside a separate
+        // video/midi path (see `main`'s doc comment).
+        if let Some(path) = style_path {
+            state.load_style(path);
+        }
 
         state
     }
@@ -533,6 +541,24 @@ impl AppState {
                 self.ui_state.midi_note_times = self.compositor.note_start_times().to_vec();
             }
             Err(err) => eprintln!("failed to open midi file {path:?}: {err}"),
+        }
+    }
+
+    /// Imports a `.fmstyle.ron` file into `ui_state.style`, same effect as the Project tab's
+    /// "Import style…" button (`rfd::FileDialog` picker in `apply_post_ui_updates`) — shared so
+    /// both the button and a CLI-passed style path go through one code path. Note this only sets
+    /// `ui_state.style`; the caller (here, or the button's picker) is responsible for triggering
+    /// whatever compositor rebuild picks the new effective note/barrier/transition layers up
+    /// (the existing `applied_note_layer`/`applied_calibration` dirty-check in `redraw` already
+    /// does this on the next frame, so no extra call is needed from either call site).
+    fn load_style(&mut self, path: &Path) {
+        match Style::load(path) {
+            Ok(style) => {
+                self.ui_state.style = Some(style);
+                self.ui_state.status_message =
+                    Some(format!("Imported style from {}", path.display()));
+            }
+            Err(err) => self.ui_state.status_message = Some(err),
         }
     }
 
@@ -1059,14 +1085,7 @@ impl AppState {
                 .add_filter("Style", &["ron"])
                 .pick_file()
             {
-                match Style::load(&path) {
-                    Ok(style) => {
-                        self.ui_state.style = Some(style);
-                        self.ui_state.status_message =
-                            Some(format!("Imported style from {}", path.display()));
-                    }
-                    Err(err) => self.ui_state.status_message = Some(err),
-                }
+                self.load_style(&path);
             }
         }
         if self.ui_state.new_project_requested {
@@ -1370,6 +1389,7 @@ struct App {
     video_path: Option<PathBuf>,
     midi_path: Option<PathBuf>,
     project_path: Option<PathBuf>,
+    style_path: Option<PathBuf>,
     state: Option<AppState>,
 }
 
@@ -1381,6 +1401,7 @@ impl ApplicationHandler for App {
                 self.video_path.as_deref(),
                 self.midi_path.as_deref(),
                 self.project_path.as_deref(),
+                self.style_path.as_deref(),
             ));
         }
     }
@@ -1634,15 +1655,30 @@ fn seek_step_seconds(state: &AppState, shift: bool) -> f64 {
 }
 
 /// Classifies CLI args by extension the same way `WindowEvent::DroppedFile` classifies a
-/// drag-drop: `.mid`/`.midi` is MIDI, `.ron` (a saved `.fmproj.ron` project) is a project file,
-/// anything else is treated as the video. Order-independent, so `app song.fmproj.ron` and
-/// `app video.mp4 song.mid` both work without needing separate flags.
+/// drag-drop: `.mid`/`.midi` is MIDI, `.fmstyle.ron` is a visual style (checked against the full
+/// file name, not just `Path::extension()`'s last-component view, since both a style and a plain
+/// project file end in `.ron`), a remaining `.ron` is a saved `.fmproj.ron` project file, anything
+/// else is treated as the video. Order-independent, so `app song.fmproj.ron`, `app look.fmstyle.ron`,
+/// and `app video.mp4 song.mid` all work without needing separate flags. Unlike drag-drop
+/// (`WindowEvent::DroppedFile` has no `.ron`/`.fmstyle.ron` case at all), a style path passed here
+/// is applied *after* a project path, so it always wins over whatever `style` field the project
+/// itself carries.
 fn main() {
     let mut video_path = None;
     let mut midi_path = None;
     let mut project_path = None;
+    let mut style_path = None;
     for arg in std::env::args().skip(1) {
         let path = PathBuf::from(arg);
+        let is_style = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_ascii_lowercase().ends_with(".fmstyle.ron"))
+            .unwrap_or(false);
+        if is_style {
+            style_path = Some(path);
+            continue;
+        }
         match path
             .extension()
             .and_then(|ext| ext.to_str())
@@ -1662,6 +1698,7 @@ fn main() {
         video_path,
         midi_path,
         project_path,
+        style_path,
         state: None,
     };
     event_loop.run_app(&mut app).expect("event loop error");
