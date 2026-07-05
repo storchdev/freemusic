@@ -57,22 +57,71 @@ fn effective_brightness() -> f32 {
     return mix(uniforms.glow_brightness_pulse.x, uniforms.glow_brightness_pulse.y, pulse);
 }
 
-// Calm, stochastic-looking (not one literal sine) top-edge displacement at pixel-x `x` — three
-// incommensurate-frequency sine terms weighted 0.6/0.3/0.1 (sum to 1.0), so |offset| <=
-// uniforms.wave.x always holds exactly, which is what the vertex shader's inflation margin below
-// relies on. Returns 0 (flat edge, today's only look) when wavy is disabled.
+// Cheap 2D value-noise hash (fract-based, no textures) — pseudo-random but continuous, used below
+// to build a non-periodic ripple field instead of a literal traveling sine wave.
+fn hash21(p: vec2<f32>) -> f32 {
+    var p3 = fract(vec3<f32>(p.x, p.y, p.x) * vec3<f32>(0.1031, 0.1030, 0.0973));
+    p3 += vec3<f32>(dot(p3, p3.yzx + 33.33));
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+// Bilinearly-interpolated (smoothstepped) value noise, range [-1, 1].
+fn noise2(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let a = hash21(i);
+    let b = hash21(i + vec2<f32>(1.0, 0.0));
+    let c = hash21(i + vec2<f32>(0.0, 1.0));
+    let d = hash21(i + vec2<f32>(1.0, 1.0));
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 2.0 - 1.0;
+}
+
+// SeeMusic-style top-edge displacement at pixel-x `x`: a stochastic ripple field sampled from
+// value noise rather than a sum of sines, so the pattern reads as genuinely irregular instead of
+// periodic. `x` and `t` (transport time) drive two *independent* noise axes — there is no
+// combined `x*k + t*speed` term, so ripples fluctuate in place rather than scrolling horizontally.
+// `wavelength_px` sets the spatial scale of the ripples (bigger = broader/calmer), `speed` sets
+// how fast they mutate over time, and `amplitude_px` sets their baseline size — all three keep
+// their original "how calm are the ripples" meaning, just applied to noise instead of a sine.
+//
+// Three octaves at incommensurate scales/rates (weights 0.55/0.30/0.15, summing to 1.0) keep the
+// base field bounded to |n| <= 1. That raw sum, though, spends most of its time at moderate
+// (non-tiny) magnitude — a sum of several signed random terms rarely lands near zero — so before
+// shaping, small everyday fluctuations already read as "sizable," leaving the field looking evenly
+// wobbly rather than "mostly calm, occasionally a big one." `sign(n) * |n|^NOISE_SHAPE_POWER`
+// flattens small deviations toward 0 much more than it reduces values already near +-1 (fixed
+// points 0 and +-1 are unchanged by any power), so ordinary moments stay calm while genuinely large
+// coincidences of the octaves still read as full-size spikes. A separate slow, large-scale envelope
+// then occasionally swells the (already-shaped) ripple past its baseline — this is what produces
+// "occasionally you see a bigger one" rather than a uniformly-sized wobble. `envelope` is bounded
+// to `[1, WAVE_ENVELOPE_MAX]`, and shaping keeps `|n| <= 1`, so the overall result is bounded to
+// `amp * WAVE_ENVELOPE_MAX`, which is what the vertex shader's inflation margin below must account
+// for. Returns 0 (flat edge, today's only look) when wavy is disabled.
+const WAVE_ENVELOPE_MAX: f32 = 2.6;
+const NOISE_SHAPE_POWER: f32 = 2.2;
 fn wavy_offset(x: f32) -> f32 {
     if (uniforms.flags.z < 0.5) {
         return 0.0;
     }
     let amp = uniforms.wave.x;
-    let k = 6.283185307 / max(uniforms.wave.y, 1.0);
+    let wavelength = max(uniforms.wave.y, 1.0);
     let speed = uniforms.wave.z;
     let t = uniforms.wave.w;
-    let p1 = x * k * 1.00       + t * speed * 1.00;
-    let p2 = x * k * 2.17 + 1.7 + t * speed * 1.37;
-    let p3 = x * k * 3.91 + 4.2 + t * speed * 0.61;
-    return amp * (0.6 * sin(p1) + 0.3 * sin(p2) + 0.1 * sin(p3));
+
+    let sx = x / wavelength;
+    let st = t * speed;
+
+    var n = 0.0;
+    n += 0.55 * noise2(vec2<f32>(sx * 1.00, st * 1.00));
+    n += 0.30 * noise2(vec2<f32>(sx * 2.13 + 7.1, st * 1.53 + 3.7));
+    n += 0.15 * noise2(vec2<f32>(sx * 4.77 + 1.9, st * 0.71 + 9.2));
+    n = sign(n) * pow(abs(n), NOISE_SHAPE_POWER);
+
+    let envelope_n = noise2(vec2<f32>(sx * 0.23 + 5.0, st * 0.31 + 2.0));
+    let envelope = 1.0 + (WAVE_ENVELOPE_MAX - 1.0) * envelope_n * envelope_n;
+
+    return amp * n * envelope;
 }
 
 struct VertexOutput {
@@ -102,11 +151,11 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     // precomputed on the CPU (`barrier.rs`'s `glow_layers_c.z`, `max(layer sigmas) * 5`) rather
     // than recomputed per-vertex here. Also inflate symmetrically top/bottom by the wave amplitude
     // when wavy is enabled — every `WavyMode`'s per-edge offset is bounded to
-    // `[-amplitude_px, amplitude_px]` (see the fragment shaders below), so a single symmetric
-    // margin covers `TopWave`/`Edge`/`FullWave` alike — zero margin when disabled, same exact-no-op
-    // guarantee.
+    // `[-amplitude_px * WAVE_ENVELOPE_MAX, amplitude_px * WAVE_ENVELOPE_MAX]` (see `wavy_offset`'s
+    // doc comment below), so a single symmetric margin covers `TopWave`/`Edge`/`FullWave` alike —
+    // zero margin when disabled, same exact-no-op guarantee.
     let glow_margin = select(0.0, uniforms.glow_layers_c.z, uniforms.flags.x > 0.5);
-    let wavy_margin = select(0.0, uniforms.wave.x, uniforms.flags.z > 0.5);
+    let wavy_margin = select(0.0, uniforms.wave.x * WAVE_ENVELOPE_MAX, uniforms.flags.z > 0.5);
     let half_extent = thickness * 0.5 + glow_margin + wavy_margin;
 
     let corner = corners[vertex_index];

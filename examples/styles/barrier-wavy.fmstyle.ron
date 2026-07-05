@@ -11,7 +11,7 @@
     )),
     barrier: Static((
         color: Constant((120, 200, 255)),
-        thickness: 8.0,
+        thickness: 4.0,
         glow: Some((
             color: Constant((120, 200, 255)),
             brightness: 1.5,
@@ -23,7 +23,7 @@
         )),
         pulse: None,
         wavy: Some((
-            amplitude_px: 3.0,
+            amplitude_px: 10.0,
             wavelength_px: 50.0,
             speed: 2.0,
             mode: Edge,

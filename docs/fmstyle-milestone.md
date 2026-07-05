@@ -962,3 +962,54 @@ glowing column with no visible gap or seam down the middle; confirm `sparks.fmst
 particles/flash still look right; a rough performance glance during scrubbing (barrier/notes now
 issue 2 draw calls instead of 1).
 
+### Wavy barrier redesign: noise-based ripples instead of traveling sines (follow-up to the wavy work above)
+
+The original `wavy_offset(x)` (introduced earlier in this doc, "three incommensurate-frequency
+sine terms") combined a spatial term (`x * k`) and a temporal term (`t * speed`) *additively inside
+the same phase* (`p1 = x*k + t*speed`, etc.) — which makes the ripple pattern a rigid shape
+scrolling horizontally at a constant rate, and however many sine terms are summed, the result is
+still exactly periodic in both x and t. Feedback from actually looking at it next to SeeMusic: it
+reads as "a wave translating across the screen," not the irregular, occasionally-larger ripple
+texture SeeMusic has, and there's no reason for the barrier's ripple to have net horizontal motion
+at all.
+
+Rewrote `wavy_offset` in `crates/render/src/barrier.wgsl` around a hand-rolled 2D value-noise
+(`hash21`/`noise2`, hash-based, no textures) sampled on two *independent* axes — `x / wavelength_px`
+for space and `t * speed` for time — rather than one combined traveling-phase term. This keeps the
+existing three fields' meaning close to their old one but reinterpreted: `wavelength_px` is the
+spatial scale of the noise (bigger = broader/calmer ripples), `speed` is how fast the noise field
+mutates over time (no horizontal scrolling at any speed value), and `amplitude_px` is still the
+baseline ripple size. Three noise octaves at incommensurate scales/rates (weights 0.55/0.30/0.15,
+summing to 1.0, matching the old sine sum's weighting convention) keep the base field non-periodic
+and bounded to `|n| <= 1`.
+
+**"Occasionally you see a bigger one"**: a separate, much-lower-frequency noise sample
+(`envelope_n`, scaled by `0.23`/`0.31` relative to the base octaves) drives a `1 +
+(WAVE_ENVELOPE_MAX - 1) * envelope_n^2` envelope that multiplies the base ripple — squaring makes
+the swell rare and its sign irrelevant (both large-positive and large-negative `envelope_n` produce
+a swell), rather than a uniform-looking wobble. `WAVE_ENVELOPE_MAX = 2.6` is a real not just
+theoretical bound (`n` bounded to `[-1,1]`, `envelope` bounded to `[1, 2.6]`), so the vertex
+shader's rasterized-quad inflation margin (`wavy_margin` in `vs_main`) had to change from
+`wave.x` to `wave.x * WAVE_ENVELOPE_MAX` to keep covering the true worst case — under-sizing that
+margin would clip the biggest ripples against the quad's raster bounds instead of just not drawing
+them, a much worse artifact than a slightly larger (mostly-empty) inflated quad.
+
+**Not yet manually run**: re-import a style with a `wavy` barrier (e.g.
+`examples/styles/barrier-wavy.fmstyle.ron`) and confirm the ripple now looks irregular/stochastic
+rather than a scrolling wave, that it has no net horizontal drift at any `speed` value, that
+occasional larger swells are visible without ever clipping against the bar's rasterized bounds, and
+that `wavelength_px`/`amplitude_px` still read as "how calm are the ripples" as `speed` still reads
+as "how fast do they fluctuate."
+
+**Follow-up: flatten small deviations, amplify big ones.** The first cut above still looked too
+uniformly wobbly — a straight sum of three signed noise octaves rarely lands near zero, so ordinary
+moments already had noticeable size, before the envelope even multiplies anything up. Added a
+power-law shaping step, `n = sign(n) * pow(abs(n), NOISE_SHAPE_POWER)` with `NOISE_SHAPE_POWER =
+2.2`, applied to the octave sum right before the envelope multiply. Since `n` is bounded to `[-1,
+1]`, raising `|n|` to a power > 1 pulls small values toward 0 much faster than it pulls values
+already near +-1 (both endpoints and 0 are fixed points of any power), so the baseline reads calmer
+while genuinely large coincidences of the octaves still reach close to full size — then the
+existing envelope layers "occasionally much bigger" on top of that already-shaped field, instead of
+on top of the uniformly-sized raw sum. Bound is unchanged (`|n_shaped| <= 1`, same as raw `n`), so
+`WAVE_ENVELOPE_MAX` and the vertex shader's inflation margin didn't need to change.
+
