@@ -1,9 +1,8 @@
 # freemusic
 
-A native desktop app (Rust, `winit` + `wgpu` + `egui`) that lets piano players composite real
-filmed footage with an animated falling-notes MIDI overlay (a "note highway"), manually sync the
-two, apply basic video transforms, and export the result to a real MP4. It's a cross-platform
-(Windows/macOS/Linux) alternative to tools like SeeMusic.
+A native desktop app (Rust, `winit` + `wgpu` + `egui`) for making those Synthesia-style
+piano-cover videos you see on YouTube and TikTok, with a real UI instead of manual video editing.
+Cross-platform (Windows/macOS/Linux), and a free alternative to tools like SeeMusic.
 
 ## Features
 
@@ -17,6 +16,14 @@ two, apply basic video transforms, and export the result to a real MP4. It's a c
 - Native Open/Save dialogs, a File menu, keyboard shortcuts, and project files (`.fmproj.ron`)
   that save/restore the whole session
 - Offline MP4 export (video + audio) of the composited result
+
+> **Note:** the in-app UI only exposes a limited subset of what `.fmstyle.ron` can actually do —
+> full styling control (gradients, sheen, glow, particles, per-key colors, custom shaders, etc.)
+> currently requires hand-writing or generating a `.fmstyle.ron` file yourself and loading it via
+> the Project tab's "Import style…" button (or a CLI arg — see below). A practical way to do this
+> without learning the format by hand: hand `docs/fmstyle-format.md` (the field-by-field spec) to
+> an LLM and ask it to generate a `.ron` file for the look you want. Broader UI support for
+> `.fmstyle.ron` is on the roadmap below.
 
 ## Building
 
