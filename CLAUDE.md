@@ -1398,7 +1398,7 @@ before I because I's spawn code touches the same `EffectInstance`/spawn helpers 
   frame-to-frame at a given timestamp versus interactive playback at the same timestamp.
 
 **Phase H — Elliptical, radiating-glow flash — DONE.** Plan:
-`~/.claude/plans/the-most-recent-changes-delightful-rabbit.md`. **Phases I-J are not yet started.**
+`~/.claude/plans/the-most-recent-changes-delightful-rabbit.md`.
 
 - **Schema** (`crates/project/src/style.rs`): `FlashSpec.radius_px: f32` → `radius_x_px: f32,
   radius_y_px: f32` — a clean breaking rename (pre-1.0 format, no back-compat shim), confirmed with
@@ -1445,6 +1445,89 @@ before I because I's spawn code touches the same `EffectInstance`/spawn helpers 
   visibly glows/radiates rather than reading as a flat disc); importing `ellipse-flash.fmstyle.ron`
   shows a visibly stretched (non-circular) flash that still reads as a soft radiating glow, not a
   solid ellipse; and if the `1.6` falloff exponent looks off, that's the value to tune first.
+
+**Phase I — Continuous "grinding" particles + sustained flash-as-glow — DONE.** Plan:
+`~/.claude/plans/the-most-recent-changes-delightful-rabbit.md`. **Phase J (docs) is not yet
+started.**
+
+- **Unified `HitEvent` into a richer `NoteInterval`** (`crates/render/src/notes/mod.rs`): the old
+  `HitEvent { time_seconds, x_px }` (attack instant + lane-center x) only had enough information
+  for one-shot spawns. Replaced with `NoteInterval { start_seconds, end_seconds, x_left, x_right }`
+  (plus an `x_center()` helper) built in the same `rebuild_instances` loop that already computed
+  `note_x`/`key.width()`/`duration` for the note instances — `Loaded.note_intervals` replaces
+  `Loaded.hit_events`, and `NotesRenderer::note_intervals()` replaces `hit_events()` 1:1.
+  `Compositor::update_transition` (`crates/render/src/lib.rs`) needed only its one internal call
+  site updated (`self.notes.hit_events()` → `self.notes.note_intervals()`) — its own public
+  signature, and both its callers in `app/src/main.rs`/`crates/export/src/lib.rs`, are unchanged.
+  `barrier::BarrierRenderer`'s separate `note_start_times()`-based pulse (Phase D) is a different,
+  untouched accessor.
+- **Continuous particle emission** (`project::EmissionMode`, new enum on `ParticleSpec`):
+  `Burst` (default, today's one-burst-per-arrival behavior, unchanged) or
+  `Continuous { rate_per_second }` (particles spawned every frame a note is held, spread across
+  the note's *key width* rather than its center point). `crates/render/src/effects.rs` extracted
+  the existing per-burst spawn loop into a shared `spawn_one_particle` helper (`spawn_particles`,
+  the burst entry point, is now a thin loop calling it `count` times — behavior-preserving
+  refactor) so continuous emission's per-frame spawn calls (a Poisson-style fractional-count draw,
+  `expected = rate_per_second * dt`, floor + a random round-up for the fractional remainder) can
+  reuse the identical spawn math. Continuous emission uses **a plain point-in-time containment
+  check** (`interval.start_seconds <= time_seconds <= interval.end_seconds`), scanning the whole
+  `note_intervals` slice every ordinary step — deliberately not the crossing/binary-search check
+  the burst spawn uses, since burst is a one-shot cue that must not be missed while continuous
+  emission is a per-frame density sample where a note too short to visibly register as "held"
+  needs no special-casing anyway. `O(n)` per step, same "fine for MIDI-file-sized data, not worth
+  amortizing" tradeoff already made elsewhere in this codebase (e.g. the barrier pulse's own
+  linear-scan alternatives).
+- **Sustained flash** (`project::FlashMode`, new enum on `FlashSpec`): `Instant` (default, today's
+  behavior — decays over `decay_seconds` starting immediately at note-on) or `Sustained` (holds at
+  full intensity for as long as the note is held, decaying only after the note ends) — the "glow
+  triggered by a key press" look the user called out as central to the seemusic/Synthesia
+  aesthetic. **No repeated per-frame spawning needed, unlike continuous particles**: `Flash` was
+  reworked from an incrementally-aged `age_seconds` counter to an absolute
+  `decay_start_seconds` threshold, chosen once at spawn time (`time_seconds` for `Instant`, the
+  note's already-known `interval.end_seconds` for `Sustained`) and never touched again. Alpha
+  became a pure function of current transport time:
+  `elapsed = (time_seconds - flash.decay_start_seconds).max(0.0); t = 1.0 - (elapsed /
+  decay_seconds).clamp(0.0, 1.0)` — for `Instant` this is identical to the old curve (elapsed
+  grows immediately from spawn); for `Sustained`, `decay_start_seconds` sits in the future at
+  spawn time, so `elapsed` stays clamped to `0` (full intensity) for the note's whole held
+  duration and only starts counting up once the note actually ends, at which point it decays
+  along the exact same curve `Instant` always used. Expiry (`retain`) became
+  `time_seconds - flash.decay_start_seconds < flash.decay_seconds` — correctly keeps a
+  still-held `Sustained` flash alive (LHS negative/clamped) with no extra branching. This
+  parameterize-not-special-case shape mirrors `BlackKeyFill::Auto`/`Fill::Solid` elsewhere in this
+  codebase. `rebuild_instances` (which builds the per-frame instance list from the pool) needed
+  `time_seconds` threaded in as a new parameter, since flash alpha is no longer computed from a
+  value already stored per-flash.
+- **Wiring**: no changes needed in `app/src/main.rs`/`crates/export/src/lib.rs` — both new knobs
+  are read entirely inside `effects::EffectsRenderer::update`/`rebuild_instances` from data
+  (`ParticleSpec`/`FlashSpec`/`NoteInterval`) those call sites already pass through unchanged.
+- **Examples**: `dump_sample_styles.rs`'s `sparks` example needed explicit
+  `emission: EmissionMode::Burst`/`mode: FlashMode::Instant` added to its literals (required even
+  though both fields are `#[serde(default)]`, since Rust struct literals don't get deserialization
+  leniency) — `sparks.fmstyle.ron`/`ellipse-flash.fmstyle.ron` got the same two lines hand-inserted
+  (targeted edit, not a wholesale regenerate — same convention every prior phase in this milestone
+  used, since the generator's current output has drifted from the checked-in files on unrelated
+  fields in some of them; these two files happened to still match exactly, but the edit was still
+  done as a targeted insert for consistency). Two new samples ship to concretely demo each new
+  look: `examples/styles/grinding-particles.fmstyle.ron` (`TransitionKind::Particles`,
+  `Continuous{rate_per_second: 40.0}`, small/short `size_px`/`lifetime_seconds` so it reads as
+  streaming grit rather than sparks) and `examples/styles/key-glow.fmstyle.ron`
+  (`TransitionKind::Flash`, `FlashMode::Sustained`, a soft elliptical shape with a gentle 0.6s
+  release decay, no particles) — the latter is the one that most directly demonstrates the
+  "glow triggered by the key press" look.
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean (`shipped_sample_styles_parse` now finds 8 sample files). **Not yet manually run** (per the
+  "never run the app yourself" rule) — worth confirming, next time someone has hands on the app:
+  `Burst`/`Instant` (no fields set) still looks identical to before (one burst, one quick decaying
+  flash per arrival); importing `grinding-particles.fmstyle.ron` shows particles streaming across
+  the *width* of each held key, stopping exactly when the note ends, with a longer-held note
+  visibly producing more particles than a short one at the same rate; importing `key-glow.fmstyle.ron`
+  shows the glow appearing at note-on, holding at full brightness for the entire held duration (not
+  a quick pulse), and only fading over `decay_seconds` after release — confirm a long-held note
+  stays glowing throughout and a short note's glow barely shows before decaying, i.e. glow duration
+  genuinely tracks note length rather than being a fixed-length flash; and that scrubbing
+  (forward/backward, including mid-burst/mid-glow) doesn't leave stuck particles or a frozen glow,
+  relying on the existing scrub-clears-the-pool behavior unchanged by this phase.
 
 ### Vendored note pipeline, pixel-parity (Phase B of the `.fmstyle.ron` milestone)
 

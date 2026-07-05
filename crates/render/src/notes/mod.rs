@@ -44,15 +44,24 @@ pub struct NotesRenderer {
     barrier_fraction: f32,
 }
 
-/// One note's arrival at the barrier: when (sync-offset-subtracted transport seconds, matching
-/// `note_start_times`'s convention) and where (pixel x, center of the note's lane) — everything
-/// `render::effects::EffectsRenderer` needs to spawn a particle burst/flash at the right place and
-/// time. Recomputed alongside the note instances themselves in `rebuild_instances`, since the x
+/// One note's full window at the barrier: arrival/departure time (sync-offset-subtracted
+/// transport seconds, matching `note_start_times`'s convention) and the x-span of its key —
+/// everything `render::effects::EffectsRenderer` needs to spawn a one-shot burst/flash at
+/// arrival *or* to sample "is a note sustained right now" for continuous particles/sustained
+/// flash. Recomputed alongside the note instances themselves in `rebuild_instances`, since the x
 /// position depends on the same calibrated keyboard layout the instances are built from.
 #[derive(Debug, Clone, Copy)]
-pub struct HitEvent {
-    pub time_seconds: f32,
-    pub x_px: f32,
+pub struct NoteInterval {
+    pub start_seconds: f32,
+    pub end_seconds: f32,
+    pub x_left: f32,
+    pub x_right: f32,
+}
+
+impl NoteInterval {
+    pub fn x_center(&self) -> f32 {
+        (self.x_left + self.x_right) * 0.5
+    }
 }
 
 struct Loaded {
@@ -61,9 +70,9 @@ struct Loaded {
     /// note-density strip (`ui::draw_timeline`), which just needs raw onset times, not the full
     /// per-track structure.
     note_starts: Vec<f32>,
-    /// Sorted (ascending time, matching `note_starts`) barrier-arrival events for the notes
-    /// actually drawn (in-range, non-drum) — see `HitEvent`.
-    hit_events: Vec<HitEvent>,
+    /// Sorted (ascending start time, matching `note_starts`) intervals for the notes actually
+    /// drawn (in-range, non-drum) — see `NoteInterval`.
+    note_intervals: Vec<NoteInterval>,
 }
 
 impl NotesRenderer {
@@ -88,13 +97,14 @@ impl NotesRenderer {
             .unwrap_or(&[])
     }
 
-    /// Sorted barrier-arrival events (time + x position), or an empty slice if nothing is loaded
-    /// — used by `render::effects::EffectsRenderer` to spawn particles/flashes as the transport
-    /// crosses each note's arrival time.
-    pub fn hit_events(&self) -> &[HitEvent] {
+    /// Sorted note intervals (start/end time + key x-span), or an empty slice if nothing is
+    /// loaded — used by `render::effects::EffectsRenderer` to spawn particles/flashes as the
+    /// transport crosses each note's arrival time, and to sample which notes are currently held
+    /// for continuous particle emission / sustained flash.
+    pub fn note_intervals(&self) -> &[NoteInterval] {
         self.loaded
             .as_ref()
-            .map(|l| l.hit_events.as_slice())
+            .map(|l| l.note_intervals.as_slice())
             .unwrap_or(&[])
     }
 
@@ -118,7 +128,7 @@ impl NotesRenderer {
         self.loaded = Some(Loaded {
             midi,
             note_starts,
-            hit_events: Vec::new(),
+            note_intervals: Vec::new(),
         });
         self.apply_view(gpu, viewport, calibration, note_layer);
         Ok(())
@@ -201,7 +211,7 @@ impl NotesRenderer {
         // Render newer notes on top of older ones, matching Neothesia's own convention.
         notes.sort_by_key(|note| note.start);
 
-        let mut hit_events = Vec::with_capacity(notes.len());
+        let mut note_intervals = Vec::with_capacity(notes.len());
         let instances = self.pipeline.instances();
         for note in notes {
             let key = &layout.keys[note.note as usize - range_start];
@@ -223,17 +233,19 @@ impl NotesRenderer {
                 velocity: note.velocity as f32 / 127.0,
                 track_index: note.track_id as f32,
             });
-            hit_events.push(HitEvent {
-                time_seconds: start_seconds,
-                x_px: note_x + key.width() * 0.5,
+            note_intervals.push(NoteInterval {
+                start_seconds,
+                end_seconds: start_seconds + duration,
+                x_left: note_x,
+                x_right: note_x + key.width(),
             });
         }
 
-        // `notes` was already sorted ascending by `note.start` above, so `hit_events` (pushed in
-        // the same order) is too — `effects::EffectsRenderer::update` relies on that ordering to
-        // binary-search the slice of events crossed since the last update.
+        // `notes` was already sorted ascending by `note.start` above, so `note_intervals` (pushed
+        // in the same order) is too — `effects::EffectsRenderer::update` relies on that ordering
+        // to binary-search the slice of events crossed since the last update.
         if let Some(loaded) = self.loaded.as_mut() {
-            loaded.hit_events = hit_events;
+            loaded.note_intervals = note_intervals;
         }
 
         self.pipeline.prepare(gpu.device, gpu.queue);

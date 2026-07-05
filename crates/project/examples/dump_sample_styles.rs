@@ -95,6 +95,7 @@ fn main() {
                 gravity_px: 300.0,
                 color: ColorBinding::Constant([255, 240, 200]),
                 additive: true,
+                emission: project::EmissionMode::Burst,
             }),
             flash: Some(FlashSpec {
                 radius_x_px: 40.0,
@@ -102,6 +103,7 @@ fn main() {
                 intensity: 0.9,
                 color: ColorBinding::Constant([255, 255, 255]),
                 decay_seconds: 0.15,
+                mode: project::FlashMode::Instant,
             }),
         }),
     };
@@ -119,6 +121,48 @@ fn main() {
                 intensity: 0.9,
                 color: ColorBinding::Constant([255, 255, 255]),
                 decay_seconds: 0.2,
+                mode: project::FlashMode::Instant,
+            }),
+        }),
+    };
+
+    let grinding_particles = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer::default()),
+        barrier: Timed::Static(BarrierLayer::default()),
+        transition: Timed::Static(TransitionLayer {
+            kind: TransitionKind::Particles,
+            particles: Some(ParticleSpec {
+                count: 0,
+                lifetime_seconds: 0.45,
+                size_px: 6.0,
+                speed_px: 140.0,
+                spread_degrees: 100.0,
+                gravity_px: 250.0,
+                color: ColorBinding::Constant([255, 210, 90]),
+                additive: true,
+                emission: project::EmissionMode::Continuous {
+                    rate_per_second: 30.0,
+                },
+            }),
+            flash: None,
+        }),
+    };
+
+    let key_glow = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer::default()),
+        barrier: Timed::Static(BarrierLayer::default()),
+        transition: Timed::Static(TransitionLayer {
+            kind: TransitionKind::Flash,
+            particles: None,
+            flash: Some(FlashSpec {
+                radius_x_px: 50.0,
+                radius_y_px: 30.0,
+                intensity: 0.7,
+                color: ColorBinding::Constant([255, 220, 140]),
+                decay_seconds: 0.6,
+                mode: project::FlashMode::Sustained,
             }),
         }),
     };
@@ -128,4 +172,6 @@ fn main() {
     print_style("barrier-wavy", &barrier_wavy);
     print_style("sparks", &sparks);
     print_style("ellipse-flash", &ellipse_flash);
+    print_style("grinding-particles", &grinding_particles);
+    print_style("key-glow", &key_glow);
 }

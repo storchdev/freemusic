@@ -21,12 +21,12 @@
         kind: Flash,
         particles: None,
         flash: Some((
-            radius_x_px: 70.0,
-            radius_y_px: 20.0,
-            intensity: 0.9,
-            color: Constant((255, 255, 255)),
-            decay_seconds: 0.2,
-            mode: Instant,
+            radius_x_px: 50.0,
+            radius_y_px: 30.0,
+            intensity: 0.7,
+            color: Constant((255, 220, 140)),
+            decay_seconds: 0.6,
+            mode: Sustained,
         )),
     )),
 )

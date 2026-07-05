@@ -28,6 +28,7 @@
             gravity_px: 300.0,
             color: Constant((255, 240, 200)),
             additive: true,
+            emission: Burst,
         )),
         flash: Some((
             radius_x_px: 40.0,
@@ -35,6 +36,7 @@
             intensity: 0.9,
             color: Constant((255, 255, 255)),
             decay_seconds: 0.15,
+            mode: Instant,
         )),
     )),
 )

@@ -145,7 +145,7 @@ impl Compositor {
             barrier_fraction,
             transition_layer,
             midi_time_seconds,
-            self.notes.hit_events(),
+            self.notes.note_intervals(),
         );
     }
 

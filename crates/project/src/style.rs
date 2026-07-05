@@ -388,6 +388,18 @@ pub enum TransitionKind {
     ParticlesAndFlash,
 }
 
+/// How particles are spawned relative to a note's held duration.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub enum EmissionMode {
+    /// Today's only behavior: `count` particles spawned once, at note arrival.
+    #[default]
+    Burst,
+    /// Particles spawned continuously, every frame a note is held, spread across the width of
+    /// its key — reads as the key being "ground down" rather than sparking once. `count` does
+    /// not apply in this mode; particles/second is `rate_per_second`.
+    Continuous { rate_per_second: f32 },
+}
+
 /// Fixed-pool particle burst spawned on note arrival (MIDIVisualizer-style: spawn, fade, expire —
 /// no external texture asset, rendered as a procedural radial sprite).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -400,6 +412,20 @@ pub struct ParticleSpec {
     pub gravity_px: f32,
     pub color: ColorBinding,
     pub additive: bool,
+    #[serde(default)]
+    pub emission: EmissionMode,
+}
+
+/// When a spawned flash starts decaying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FlashMode {
+    /// Today's only behavior: decays over `decay_seconds` starting immediately at note-on.
+    #[default]
+    Instant,
+    /// Holds at full intensity for as long as the note is held, decaying over `decay_seconds`
+    /// only after the note ends — a glow triggered by the key press rather than a quick pulse,
+    /// matching the seemusic/Synthesia look.
+    Sustained,
 }
 
 /// Decaying radial flash spawned on note arrival.
@@ -410,6 +436,8 @@ pub struct FlashSpec {
     pub intensity: f32,
     pub color: ColorBinding,
     pub decay_seconds: f32,
+    #[serde(default)]
+    pub mode: FlashMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

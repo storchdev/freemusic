@@ -8,16 +8,18 @@
 //! spawn, so it cannot be derived from `time_seconds` alone without also knowing every particle's
 //! spawn time, initial velocity, and RNG draw. `update` therefore tracks `last_time_seconds` and
 //! advances the pool by `time_seconds - last_time_seconds` each call, spawning one burst per
-//! `HitEvent` whose time falls in `(last_time_seconds, time_seconds]`. A big jump (forward or
-//! backward — a scrub, not ordinary playback) clears the pool instead of trying to catch up or
-//! rewind it, since these are transient effects with no "correct" mid-scrub state to reconstruct.
+//! `NoteInterval` whose start falls in `(last_time_seconds, time_seconds]` (plus, for
+//! `EmissionMode::Continuous`, streaming particles for every interval currently held — see Phase
+//! I of the style-extensibility continuation in CLAUDE.md). A big jump (forward or backward — a
+//! scrub, not ordinary playback) clears the pool instead of trying to catch up or rewind it,
+//! since these are transient effects with no "correct" mid-scrub state to reconstruct.
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use project::{FlashSpec, ParticleSpec, TransitionKind, TransitionLayer};
+use project::{EmissionMode, FlashMode, FlashSpec, ParticleSpec, TransitionKind, TransitionLayer};
 
-use super::notes::HitEvent;
+use super::notes::NoteInterval;
 
 /// A `time_seconds` jump larger than this (in either direction) between two `update` calls is
 /// treated as a scrub rather than ordinary playback advancing by a redraw's `dt` — the pool is
@@ -113,7 +115,12 @@ struct Particle {
 
 struct Flash {
     pos: [f32; 2],
-    age_seconds: f32,
+    /// Absolute transport-time threshold at which decay begins — `time_seconds` at spawn for
+    /// `FlashMode::Instant`, or the note's `end_seconds` (in the future, at spawn time) for
+    /// `FlashMode::Sustained`. Alpha is a pure function of `time_seconds - decay_start_seconds`,
+    /// so a sustained flash simply stays at full intensity for as long as this stays in the
+    /// future — no separate per-frame "is the note still held" bookkeeping needed.
+    decay_start_seconds: f32,
     decay_seconds: f32,
     radius_x_px: f32,
     radius_y_px: f32,
@@ -355,9 +362,11 @@ impl EffectsRenderer {
 
     /// Advances the simulation to `time_seconds` (expected to already have the sync offset
     /// subtracted, same convention as `notes::NotesRenderer::update`/`barrier::BarrierRenderer::
-    /// update_pulse`), spawning a burst for every `hit_events` entry crossed since the previous
-    /// call, then uploads the current pool. `hit_events` must be sorted ascending by
-    /// `time_seconds` (guaranteed by `notes::NotesRenderer::rebuild_instances`).
+    /// update_pulse`), spawning a one-shot burst/flash for every `note_intervals` entry crossed
+    /// since the previous call (plus, for `EmissionMode::Continuous`, streaming particles for
+    /// every interval currently held), then uploads the current pool. `note_intervals` must be
+    /// sorted ascending by `start_seconds` (guaranteed by `notes::NotesRenderer::
+    /// rebuild_instances`).
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
@@ -367,7 +376,7 @@ impl EffectsRenderer {
         barrier_fraction: f32,
         transition_layer: &TransitionLayer,
         time_seconds: f32,
-        hit_events: &[HitEvent],
+        note_intervals: &[NoteInterval],
     ) {
         self.canvas_size = (canvas_size.0.max(1.0), canvas_size.1.max(1.0));
         let barrier_y = self.canvas_size.1 * barrier_fraction;
@@ -381,8 +390,8 @@ impl EffectsRenderer {
 
         if is_ordinary_step {
             let last = self.last_time_seconds.unwrap();
-            let start = hit_events.partition_point(|e| e.time_seconds <= last);
-            let end = hit_events.partition_point(|e| e.time_seconds <= time_seconds);
+            let start = note_intervals.partition_point(|e| e.start_seconds <= last);
+            let end = note_intervals.partition_point(|e| e.start_seconds <= time_seconds);
             let spawn_particles = matches!(
                 transition_layer.kind,
                 TransitionKind::Particles | TransitionKind::ParticlesAndFlash
@@ -391,20 +400,54 @@ impl EffectsRenderer {
                 transition_layer.kind,
                 TransitionKind::Flash | TransitionKind::ParticlesAndFlash
             );
-            for event in &hit_events[start..end] {
+            for interval in &note_intervals[start..end] {
                 if spawn_particles {
                     if let Some(spec) = &transition_layer.particles {
-                        self.spawn_particles(event.x_px, barrier_y, spec);
+                        if matches!(spec.emission, EmissionMode::Burst) {
+                            self.spawn_particles(interval.x_center(), barrier_y, spec);
+                        }
                     }
                 }
                 if spawn_flash {
                     if let Some(spec) = &transition_layer.flash {
-                        self.spawn_flash(event.x_px, barrier_y, spec);
+                        let decay_start = match spec.mode {
+                            FlashMode::Instant => time_seconds,
+                            FlashMode::Sustained => interval.end_seconds,
+                        };
+                        self.spawn_flash(interval.x_center(), barrier_y, spec, decay_start);
                     }
                 }
             }
 
             let dt = step.max(0.0);
+
+            // Continuous emission: sample every note currently held (a plain "is this note
+            // active right now" point check, not a crossing check like the burst spawn above —
+            // this is a per-frame density sample, not a one-shot cue, so there's nothing to
+            // "miss" the way a burst would if it skipped an arrival).
+            if spawn_particles {
+                if let Some(spec) = &transition_layer.particles {
+                    if let EmissionMode::Continuous { rate_per_second } = spec.emission {
+                        let color = srgb_to_linear(spec.color.resolve_constant());
+                        let expected = rate_per_second.max(0.0) * dt;
+                        for interval in note_intervals {
+                            if interval.start_seconds <= time_seconds
+                                && time_seconds <= interval.end_seconds
+                            {
+                                let mut n = expected.floor() as u32;
+                                if self.rng.range(0.0, 1.0) < expected.fract() {
+                                    n += 1;
+                                }
+                                for _ in 0..n {
+                                    let x = self.rng.range(interval.x_left, interval.x_right);
+                                    self.spawn_one_particle(x, barrier_y, spec, color);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             for particle in &mut self.particles {
                 particle.pos[0] += particle.vel[0] * dt;
                 particle.pos[1] += particle.vel[1] * dt;
@@ -413,10 +456,8 @@ impl EffectsRenderer {
             }
             self.particles.retain(|p| p.life_seconds > 0.0);
 
-            for flash in &mut self.flashes {
-                flash.age_seconds += dt;
-            }
-            self.flashes.retain(|f| f.age_seconds < f.decay_seconds);
+            self.flashes
+                .retain(|f| time_seconds - f.decay_start_seconds < f.decay_seconds);
         } else {
             // First call, or a scrub (forward or backward) large enough that "catch up" doesn't
             // make sense for a transient effect — clear rather than guess.
@@ -430,7 +471,7 @@ impl EffectsRenderer {
             .as_ref()
             .map(|spec| spec.additive)
             .unwrap_or(true);
-        self.rebuild_instances(particle_additive);
+        self.rebuild_instances(particle_additive, time_seconds);
 
         queue.write_buffer(
             &self.view_buffer,
@@ -444,33 +485,40 @@ impl EffectsRenderer {
 
     fn spawn_particles(&mut self, x_px: f32, y_px: f32, spec: &ParticleSpec) {
         let color = srgb_to_linear(spec.color.resolve_constant());
-        let lifetime = spec.lifetime_seconds.max(0.01);
         for _ in 0..spec.count {
-            // Bursts spread around straight up (canvas convention is y-down, so "up" is negative
-            // y) — `angle_degrees` measured from that upward axis.
-            let angle_deg = -90.0
-                + self
-                    .rng
-                    .range(-spec.spread_degrees * 0.5, spec.spread_degrees * 0.5);
-            let angle = angle_deg.to_radians();
-            let speed = spec.speed_px * self.rng.range(0.5, 1.0);
-            self.particles.push(Particle {
-                pos: [x_px, y_px],
-                vel: [angle.cos() * speed, angle.sin() * speed],
-                gravity_px: spec.gravity_px,
-                life_seconds: lifetime,
-                lifetime_seconds: lifetime,
-                size_px: spec.size_px.max(0.5),
-                color,
-            });
+            self.spawn_one_particle(x_px, y_px, spec, color);
         }
     }
 
-    fn spawn_flash(&mut self, x_px: f32, y_px: f32, spec: &FlashSpec) {
+    /// Spawns a single particle — shared by burst spawns (`spawn_particles`, called `count`
+    /// times per note arrival) and continuous emission (called a variable number of times per
+    /// frame, spread across a held note's key width).
+    fn spawn_one_particle(&mut self, x_px: f32, y_px: f32, spec: &ParticleSpec, color: [f32; 3]) {
+        // Spread around straight up (canvas convention is y-down, so "up" is negative y) —
+        // `angle_degrees` measured from that upward axis.
+        let angle_deg = -90.0
+            + self
+                .rng
+                .range(-spec.spread_degrees * 0.5, spec.spread_degrees * 0.5);
+        let angle = angle_deg.to_radians();
+        let speed = spec.speed_px * self.rng.range(0.5, 1.0);
+        let lifetime = spec.lifetime_seconds.max(0.01);
+        self.particles.push(Particle {
+            pos: [x_px, y_px],
+            vel: [angle.cos() * speed, angle.sin() * speed],
+            gravity_px: spec.gravity_px,
+            life_seconds: lifetime,
+            lifetime_seconds: lifetime,
+            size_px: spec.size_px.max(0.5),
+            color,
+        });
+    }
+
+    fn spawn_flash(&mut self, x_px: f32, y_px: f32, spec: &FlashSpec, decay_start_seconds: f32) {
         let color = srgb_to_linear(spec.color.resolve_constant());
         self.flashes.push(Flash {
             pos: [x_px, y_px],
-            age_seconds: 0.0,
+            decay_start_seconds,
             decay_seconds: spec.decay_seconds.max(0.01),
             radius_x_px: spec.radius_x_px.max(1.0),
             radius_y_px: spec.radius_y_px.max(1.0),
@@ -485,12 +533,19 @@ impl EffectsRenderer {
     /// `ParticleSpec::additive` — a style swap mid-flight is a documented edge case where
     /// already-alive particles from the previous style render under the new blend mode instead of
     /// finishing out their old one, not worth extra per-particle bookkeeping for.
-    fn rebuild_instances(&mut self, particle_additive: bool) {
+    fn rebuild_instances(&mut self, particle_additive: bool, time_seconds: f32) {
         self.additive_instances.clear();
         self.alpha_instances.clear();
 
         for flash in &self.flashes {
-            let t = 1.0 - (flash.age_seconds / flash.decay_seconds).clamp(0.0, 1.0);
+            // Pure function of current transport time vs. the flash's stored decay-start
+            // threshold — for `FlashMode::Instant` that threshold is the spawn time, so `elapsed`
+            // grows immediately (identical curve to before this phase); for `Sustained` it's the
+            // note's `end_seconds` (in the future at spawn time), so `elapsed` stays clamped to
+            // 0 (t == 1.0, full intensity) for the note's entire held duration and only starts
+            // decaying once the note actually ends.
+            let elapsed = (time_seconds - flash.decay_start_seconds).max(0.0);
+            let t = 1.0 - (elapsed / flash.decay_seconds).clamp(0.0, 1.0);
             self.additive_instances.push(EffectInstance {
                 center: flash.pos,
                 radius: [flash.radius_x_px, flash.radius_y_px],
