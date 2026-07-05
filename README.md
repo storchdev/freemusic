@@ -1,0 +1,87 @@
+# freemusic
+
+A native desktop app (Rust, `winit` + `wgpu` + `egui`) that lets piano players composite real
+filmed footage with an animated falling-notes MIDI overlay (a "note highway"), manually sync the
+two, apply basic video transforms, and export the result to a real MP4. It's a cross-platform
+(Windows/macOS/Linux) alternative to tools like SeeMusic.
+
+## Features
+
+- Load a video file and a MIDI file, and preview them composited together in real time
+- Manual audio/MIDI sync with keyboard-driven fine calibration
+- Video transforms: brightness, scale, crop, rotate, tilt, translate
+- A "barrier" and note-highway renderer with an extensible `.fmstyle.ron` visual style format
+  (gradients, sheen, glow, particles, per-key colors, wavy barrier, and more — see
+  `docs/fmstyle-format.md`)
+- Synced audio playback of the loaded video's own audio track during preview
+- Native Open/Save dialogs, a File menu, keyboard shortcuts, and project files (`.fmproj.ron`)
+  that save/restore the whole session
+- Offline MP4 export (video + audio) of the composited result
+
+## Building
+
+System dependencies (not vendored):
+
+- FFmpeg dev libraries (`libavcodec`, `libavformat`, `libavutil`, `libswscale`, `libswresample`)
+  plus `clang`/`llvm` (needed by `ffmpeg-sys-next`'s bindgen step)
+- A Vulkan loader and driver (or another `wgpu`-supported backend)
+- `libxkbcommon-x11` if running under X11 (native Wayland doesn't need it)
+
+```sh
+cargo build --release
+cargo run --bin app -- [video-file] [midi-file]                      # both args optional; drag-and-drop also works
+cargo run --bin app -- project.fmproj.ron                            # or open a saved project directly
+cargo run --bin app -- project.fmproj.ron mystyle.fmstyle.ron        # or open a project and a style file
+```
+
+See `CLAUDE.md` and `docs/` for a full architecture writeup, including the phased build history
+and the design decisions behind each subsystem.
+
+## Roadmap
+
+Ideas being considered for future work, roughly grouped:
+
+**`.fmstyle.ron` (visual style format)**
+- Y-level-dependent note styles
+- Flashes/particles that match note color
+- Alpha (transparency) on notes
+- Custom note textures and background textures, both compatible with note alpha — alpha would
+  let a note "see through" into a static background
+- Octave lines
+- Reflectivity settings, for a metal-bar look
+- Key-property-based styles (e.g. driven by pitch or velocity)
+- Custom shaders
+
+**UI**
+- Better slider input/dragging mechanics
+- More export options
+- Broader `.fmstyle.ron` feature support in the UI
+
+**End-to-end**
+- Multiple styles within the same timeline (would require reworking the timeline UI and the
+  `.fmstyle.ron` pipeline)
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 (GPL-3.0-only) — see
+[`LICENSE`](LICENSE).
+
+### Third-party code and licenses
+
+- `crates/render` depends on [`midi-file`](https://github.com/PolyMeilex/Neothesia) and
+  [`piano-layout`](https://github.com/PolyMeilex/Neothesia), pinned git dependencies from the
+  [Neothesia](https://github.com/PolyMeilex/Neothesia) project (GPL-3.0), by PolyMeilex and
+  contributors.
+- `crates/mp4-encoder` is a fork of Neothesia's own `ffmpeg-encoder` crate (GPL-3.0), adapted here
+  with a parameterized frame rate, explicit codec selection, and optional audio muxing. See
+  `docs/architecture.md` for the details of what changed.
+- `crates/render`'s note-highway shader and rendering approach were originally based on
+  Neothesia's vendored `neothesia-core` waterfall renderer before being rewritten in-tree; see
+  `docs/fmstyle-milestone.md` for that history.
+- All other dependencies are pulled from crates.io under their own published licenses (see
+  `Cargo.lock` and each crate's own `Cargo.toml`/license file).
+
+Neothesia is also GPL-3.0-licensed, so this project's own GPL-3.0-only license is compatible with
+reusing and adapting its code. If you redistribute this project or a derivative of it, you must
+keep the GPL-3.0 license and preserve copyright/attribution notices for the above third-party
+code, per the terms in `LICENSE`.
