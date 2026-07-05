@@ -12,7 +12,7 @@
         )),
         glow: Some((
             color: Constant((120, 200, 255)),
-            brightness: 1.0,
+            brightness: 1,
             layers: (
                 (amplitude: 2.6, sigma_px: 1.25),
                 (amplitude: 1.1, sigma_px: 4.0),

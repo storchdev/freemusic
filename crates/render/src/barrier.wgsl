@@ -212,10 +212,20 @@ fn fs_core(in: VertexOutput) -> @location(0) vec4<f32> {
 // halo read as light radiating from a white-hot core instead of a single flat (possibly whitened)
 // color at one spatial scale. `brightness` scales the total amount of light added; whitening
 // happens for free via additive saturation, no explicit mix-toward-white needed here.
+//
+// `edge_dist` (and so `strength`) is 0 not just right at the bar's edge but everywhere under the
+// bar's full thickness (the shared `edge_shape` distance field saturates at 0 for the whole
+// interior, same convention `notes/shader.wgsl`'s `dist` uses) — so without `show_bar_flag`, the
+// occlusion term below would zero the corona's output across that entire band regardless of
+// whether the opaque core actually painted over it, leaving a visible gap in the middle of the
+// halo whenever `show_bar` is false. Skipping the occlusion in that case instead lets the corona
+// shine at full (edge) strength straight across the bar's footprint, reading as a single solid
+// glowing blade with no seam.
 @fragment
 fn fs_glow(in: VertexOutput) -> @location(0) vec4<f32> {
     let shape = edge_shape(in.position.y, in.position.x);
     let brightness = effective_brightness();
+    let show_bar_flag = uniforms.glow_layers_c.w;
 
     let d = shape.edge_dist;
     var strength = 0.0;
@@ -225,6 +235,9 @@ fn fs_glow(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Don't add light where the opaque core will draw over it anyway (drawn after this pass) —
     // avoids wasted additive buildup directly under the core that the core pipeline will occlude.
-    let light = uniforms.glow_style.rgb * strength * brightness * (1.0 - shape.core_alpha);
+    // Only applies when the core is actually drawn (`show_bar`); otherwise there's nothing to
+    // avoid double-painting under, so the corona is left at full strength (see above).
+    let occlusion = select(0.0, shape.core_alpha, show_bar_flag > 0.5);
+    let light = uniforms.glow_style.rgb * strength * brightness * (1.0 - occlusion);
     return vec4<f32>(light, 1.0);
 }

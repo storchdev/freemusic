@@ -421,10 +421,6 @@ pub struct WavySpec {
     pub mode: WavyMode,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 /// The horizontal barrier where falling notes stop. `glow` (Phase K) replaced the earlier
 /// `kind: BarrierKind` + `glow_radius_px: f32` pair — presence of a `Glow` *is* the on/off switch
 /// now (`None` = flat line, the only look before this phase), the same pattern `NoteLayer::glow`
@@ -432,8 +428,11 @@ fn default_true() -> bool {
 /// `barrier: (kind: ..., glow_radius_px: ...)` need manual editing to the new
 /// `glow: Some((color: ..., brightness: 1.0))` / `glow: None` shape — see
 /// `docs/fmstyle-format.md`'s changelog. `show_bar` (Phase M) is independent of `glow` — whether
-/// the flat/opaque bar itself renders at all, separate from whether it has a corona. A note has
-/// no equivalent field since a note without its own fill isn't a sensible look.
+/// the flat/opaque bar itself renders at all, separate from whether it has a corona. Defaults to
+/// `false` (an old `.fmstyle.ron` predating this field, or one that never bothered to set it,
+/// gets pure glow with no visible bar) — the additive corona, not the flat opaque bar, is the look
+/// this format is designed around; a style that actually wants the bar has to opt in explicitly.
+/// A note has no equivalent field since a note without its own fill isn't a sensible look.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BarrierLayer {
     pub color: ColorBinding,
@@ -444,7 +443,7 @@ pub struct BarrierLayer {
     pub pulse: Option<Pulse>,
     #[serde(default)]
     pub wavy: Option<WavySpec>,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub show_bar: bool,
 }
 
@@ -456,7 +455,7 @@ impl Default for BarrierLayer {
             glow: None,
             pulse: None,
             wavy: None,
-            show_bar: true,
+            show_bar: false,
         }
     }
 }

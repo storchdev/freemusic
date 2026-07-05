@@ -873,3 +873,92 @@ existing "Import style…" button.
   Also worth confirming a project *without* an imported style still looks exactly like before this
   phase (the pixel-parity claim above).
 
+### Phase M: additive multi-layer corona (glowstick redesign, follow-up to Phase K/L)
+
+Full plan: `~/.claude/plans/yes-i-really-like-composed-hearth.md`. Phase K/L's `brightness` knob
+(desaturate-toward-white `hot_color`, alpha-blended at one spatial scale) tested as "a lighter and
+more desaturated color", not a glowstick — real bloom is additive (light from multiple scales adds
+onto the background, clamping to white only where the sum saturates). Replaced entirely (no
+back-compat shim, pre-1.0 format) with `light = color * Σ(layer[i].amplitude *
+exp(-d/layer[i].sigma_px)) * brightness`, additive-blended (`ONE`/`ONE`), for barrier glow, note
+glow, and particles/flashes. `GlowLayer { amplitude, sigma_px }` (3-tuple `layers` field, default
+tight/mid/wide `[(2.6, 5px), (1.1, 16px), (0.38, 48px)]`) replaces `Glow::radius_px` everywhere;
+`FlashSpec`/`ParticleSpec` each gained their own `layers` (reusing `GlowLayer`, additive schema
+change). `BarrierLayer` gained an independent `show_bar: bool` (default `true`) — whether the flat
+opaque bar renders at all, separate from `glow`.
+
+Barrier and notes each need **two render pipelines** (glow pass, additive, drawn first; core pass,
+alpha-blended, drawn second so it occludes the glow directly beneath it) — an opaque core and an
+additive halo can't share one `wgpu::BlendState`. Particles/flashes didn't need the split (nothing
+stacks on top of them the way video/notes do under barrier/notes, so "hard dot + additive halo"
+can share one draw). All 8 shipped `examples/styles/*.fmstyle.ron` and
+`crates/project/examples/dump_sample_styles.rs` migrated off `radius_px` to `layers`, sigmas seeded
+by scaling the default layer set proportionally to each sample's old radius (not load-bearing,
+starting points for hand-tuning). Note: RON serializes a fixed-size `[T; 3]` array with **tuple
+parens `(...)`, not brackets `[...]`** — confirmed empirically (`ron`'s parser rejects
+`layers: [...]`, only `layers: (...)` round-trips), easy to get wrong hand-editing a sample file.
+`GlowLayer` needed adding to `project`'s crate-root re-export list (`crates/project/src/lib.rs`) —
+missed in the initial schema pass, only surfaced once something outside `style.rs` needed to
+construct one.
+
+**Three bugs found after this landed, from actually looking at the result (not caught by
+`cargo build`/`clippy`/tests, since none of them are type errors):**
+
+1. **Note glow washed out the entire note interior, not just its edge.** `notes/shader.wgsl`'s
+   `fs_core` applied `hot_color(fill_color, brightness)` unconditionally to every interior pixel
+   once glow was enabled, not scoped by distance from the edge at all — a `brightness > 1` style
+   (typical; `gradient-glow.fmstyle.ron` uses `2.0`) made the *whole note* a flat near-white blob,
+   not a colored note with a hot rim.
+2. **That same bug read as an unwanted hard "border" ring.** Because the whitened interior met the
+   unwhitened, differently-colored corona (`fs_glow`, drawn separately) at a single ~1px
+   antialiasing seam (`dist`'s `smoothstep(radius-0.5, radius+0.5, d)` band), the transition was
+   abrupt rather than smooth — read as a distinct outline stuck to each note's edge, easily
+   mistaken for the separate (still schema-only, unimplemented) `Border` field kicking in even when
+   `border: None`. Same root cause as (1), one fix: `fs_core` now computes `inward_dist = max(radius
+   - d, 0.0)` (distance from the note's true edge, exact within the `radius`-px band `dist`
+   actually resolves, clamped — not extrapolated — beyond it, per that function's existing
+   doc-commented limitation) and mixes toward `hot_color` with weight `exp(-inward_dist /
+   glow_layers_ab.y)` (the corona's own tightest-layer sigma) instead of applying it flat. Deep
+   interior pixels (more than a few px from the edge) now keep their true fill color unchanged at
+   any brightness; the hot rim's peak (weight 1 at the true edge) hands off continuously into
+   `fs_glow`'s corona (also strength-1 at `d_past_edge = 0`), so there's no seam anymore.
+3. **`show_bar: false` didn't actually hide anything.** The opaque core pipeline *was* correctly
+   skipped (`barrier.rs::render` only draws `core_pipeline` when `self.show_bar`), but
+   `barrier.wgsl`'s `fs_glow` still zeroed its own additive output under the bar's full thickness
+   footprint via `(1.0 - shape.core_alpha)` — `edge_shape`'s `edge_dist` saturates at 0 for the
+   *entire* bar interior, not just its literal edge (same "unsigned distance, 0 well inside"
+   convention `notes/shader.wgsl`'s `dist` uses), so that occlusion term was zeroing the corona
+   across the whole bar-width band regardless of whether the (now-invisible) opaque core was
+   actually there to justify it. Net effect: `show_bar: false` swapped "a flat colored bar" for "an
+   equally visible flat gap showing whatever's behind it" — never actually producing a single solid
+   glowing blade. Fixed by threading `show_bar` into the shader too (repurposed
+   `glow_layers_c.w`, previously unused) and only applying the occlusion when it's `1.0`; with
+   `show_bar: false` the corona now shines at full (edge) strength straight across the bar's
+   footprint, reading as one continuous glowing column with no seam — the actual "hide the ugly
+   flat patch, keep only the light" look `show_bar` was added for.
+
+**Also this session**: a refresh button (⟳) next to "Import style…" in the Project tab
+(`app/src/ui.rs`/`app/src/main.rs`) — `UiState` gained `style_path: Option<PathBuf>` (mirrored
+whenever `load_style` succeeds, cleared on New Project / loading a `.fmproj.ron` project, since an
+embedded project style has no external file to reload from) and `reload_style_requested: bool`,
+so a `.fmstyle.ron` can be hand-edited externally and reloaded without reopening the file picker
+each time. The button is disabled until a style has actually been imported from a file.
+
+**`show_bar` now defaults to `false`** (`#[serde(default)]` on the field, `BarrierLayer::default()`
+follows suit) — once the (3) fix above made `show_bar: false` actually produce a clean single-blade
+glow with no gap, the flat opaque bar stopped being a look worth defaulting to at all; a
+`.fmstyle.ron` predating this field, or one that just never set it, now gets pure corona with no
+bar unless it opts in with `show_bar: true`. Doesn't affect the no-imported-style (legacy slider)
+look at all — `Style::from_legacy` builds its `BarrierLayer` with an explicit `show_bar: true`
+literal, not the `Default` impl or serde's field default, so a project with no imported style still
+shows its plain bar exactly as before. All 8 shipped sample styles already set `show_bar` (mostly
+`true`) explicitly per Phase M's own sample migration above, so none of them changed look from this.
+
+**Not yet manually run** (per the "never run the app yourself" rule): re-import
+`barrier-pulse.fmstyle.ron` and `gradient-glow.fmstyle.ron` and confirm the glow now reads as a
+genuine white-hot core radiating outward rather than a flat lighter color, with note interiors
+keeping their true color; confirm `show_bar: false` on a glowing barrier now renders a single solid
+glowing column with no visible gap or seam down the middle; confirm `sparks.fmstyle.ron`'s
+particles/flash still look right; a rough performance glance during scrubbing (barrier/notes now
+issue 2 draw calls instead of 1).
+

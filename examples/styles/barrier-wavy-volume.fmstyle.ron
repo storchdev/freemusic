@@ -28,7 +28,7 @@
             speed: 18.0,
             mode: FullWave,
         )),
-        show_bar: true,
+        // show_bar: true,
     )),
     transition: Static((
         kind: r#None,

@@ -62,8 +62,10 @@ struct Uniforms {
     /// z = layer[1].amplitude, w = layer[1].sigma_px.
     glow_layers_ab: [f32; 4],
     /// x = layer[2].amplitude, y = layer[2].sigma_px, z = precomputed glow margin in pixels
-    /// (`max(sigma) * GLOW_CUTOFF_SIGMAS`, computed once on the CPU rather than per-vertex), w
-    /// unused.
+    /// (`max(sigma) * GLOW_CUTOFF_SIGMAS`, computed once on the CPU rather than per-vertex), w =
+    /// `show_bar` as 1.0/0.0 — `fs_glow` reads this to decide whether to zero its output under the
+    /// opaque core's footprint (only correct when that core is actually drawn) or shine straight
+    /// through instead (`show_bar: false`, see `fs_glow`'s doc comment).
     glow_layers_c: [f32; 4],
 }
 
@@ -268,6 +270,7 @@ impl BarrierRenderer {
                 self.data.glow_layers_c = [0.0; 4];
             }
         }
+        self.data.glow_layers_c[3] = if barrier_layer.show_bar { 1.0 } else { 0.0 };
         // No pulse configured: peak == resting, so `mix(resting, peak, pulse_curve)` in the
         // shader is an exact no-op regardless of what `pulse_curve` computes to.
         self.data.glow_brightness_pulse[1] = barrier_layer

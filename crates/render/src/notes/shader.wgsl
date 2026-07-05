@@ -197,9 +197,19 @@ fn fill_color(in: VertexOutput) -> vec3<f32> {
     return color;
 }
 
-// Opaque core: the note's own fill (solid/gradient + optional sheen), going white-hot as glow
-// brightness climbs (unchanged from pre-Phase-M when glow is disabled — `hot_color` at
-// `brightness == 1.0` is a no-op).
+// Opaque core: the note's own fill (solid/gradient + optional sheen), going white-hot only in a
+// thin rim near the note's edge as glow brightness climbs — deep interior pixels keep their true
+// fill color untouched (unchanged from pre-Phase-M when glow is disabled — `rim_weight` is 0 there
+// regardless, and `hot_color` at `brightness == 1.0` is a no-op anyway).
+//
+// `dist` saturates at 0 for the whole interior more than `in.radius` px from the note's true edge
+// (see its doc comment), so `in.radius - d` is a distance-from-edge measure that's exact within
+// that `radius`-px band and clamped (not extrapolated) beyond it — good enough for a rim that's
+// meant to be a few pixels wide. Falling off over the corona's own tightest layer sigma
+// (`glow_layers_ab.y`) makes the rim's brightest point (right at the edge, weight 1) hand off
+// continuously into `fs_glow`'s corona (also weight/strength 1 there) instead of the pre-fix look
+// of a flat whitened interior meeting a sharply different-colored halo at a 1px seam, which read
+// as an unwanted hard "border" ring rather than smooth radiance.
 @fragment
 fn fs_core(in: VertexOutput) -> @location(0) vec4<f32> {
     let d: f32 = dist(in.position.xy, in.note_pos, in.size, in.radius);
@@ -207,7 +217,10 @@ fn fs_core(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var out_color = fill_color(in);
     if style_uniform.fill_and_flags.z > 0.5 {
-        out_color = hot_color(out_color, style_uniform.glow_params.x);
+        let inward_dist = max(in.radius - d, 0.0);
+        let rim_sigma = max(style_uniform.glow_layers_ab.y, 0.5);
+        let rim_weight = exp(-inward_dist / rim_sigma);
+        out_color = mix(out_color, hot_color(out_color, style_uniform.glow_params.x), rim_weight);
     }
 
     return vec4<f32>(clamp(out_color, vec3<f32>(0.0), vec3<f32>(1.0)), base_alpha);
