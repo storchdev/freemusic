@@ -1397,7 +1397,54 @@ before I because I's spawn code touches the same `EffectInstance`/spawn helpers 
   rather than clipping against a flat edge; and that an exported clip's ripple is deterministic
   frame-to-frame at a given timestamp versus interactive playback at the same timestamp.
 
-**Phases H-J are not yet started.**
+**Phase H — Elliptical, radiating-glow flash — DONE.** Plan:
+`~/.claude/plans/the-most-recent-changes-delightful-rabbit.md`. **Phases I-J are not yet started.**
+
+- **Schema** (`crates/project/src/style.rs`): `FlashSpec.radius_px: f32` → `radius_x_px: f32,
+  radius_y_px: f32` — a clean breaking rename (pre-1.0 format, no back-compat shim), confirmed with
+  the user beforehand.
+- **Renderer** (`crates/render/src/effects.rs`): `EffectInstance.radius: f32` → `radius: [f32; 2]`,
+  shared by particles (circular: `[size_px, size_px]`) and flashes (elliptical: `[radius_x_px,
+  radius_y_px]`); its `wgpu::vertex_attr_array!` entry moved from `Float32` to `Float32x2` (shader
+  locations shifted: `color` is now location 4, and a new `softness` field occupies location 5 —
+  see below). `Flash` gained `radius_x_px`/`radius_y_px` (was one `radius_px`); `spawn_flash` sets
+  both from the spec.
+- **Ellipse shape** (`crates/render/src/effects.wgsl`): `Instance.radius` became `vec2<f32>` with
+  **no other shader-math change needed** — WGSL's `*` between two `vec2<f32>` is already
+  component-wise, so `pixel = center + local * radius` was already correct once `radius` was
+  retyped. Verified rather than assumed: `out.local` is the pre-scale unit-quad coordinate, and
+  since that expression is affine in `local`, the interpolated `in.local` at any fragment already
+  equals `(pixel - center) / radius` component-wise, so `length(in.local)` is already the correct
+  elliptical-normalized radius once `radius.x != radius.y` — no special-casing needed in `fs_main`
+  for the ellipse itself.
+- **Glow/radiate shape fix**: the old falloff (`1 - smoothstep(0.6, 1.0, d)`) was solid/opaque out
+  to 60% of the radius and only softened in the outer 40%, which read as a flat disc rather than
+  light radiating outward — true for both particles and flashes previously, but only flashes needed
+  fixing (particles' hard-edged-dot look is correct and was preserved exactly). Added
+  `EffectInstance.softness: f32` (0.0 = today's hard-edged dot, particles; 1.0 = full-radius
+  radiating glow, flashes) as an interpolation knob rather than a bool, so a future style axis could
+  expose partial values without another shader change. `fs_main` now blends
+  `hard_edge = 1 - smoothstep(0.6, 1.0, d)` (unchanged) with `soft_glow = pow(clamp(1-d, 0, 1),
+  1.6)` via `mix(hard_edge, soft_glow, softness)` — `softness == 0.0` makes `mix` select
+  `hard_edge` exactly, so particle rendering is pixel-identical to before this phase; only flashes
+  (`softness == 1.0`) move to the new soft-glow curve. The `1.6` exponent is a tune-by-eye starting
+  point, not derived from anything — flag as the first thing to adjust if the glow looks too
+  soft/sharp once seen rendered.
+- **Samples**: `crates/project/examples/dump_sample_styles.rs`'s `sparks` example updated to
+  `radius_x_px: 40.0, radius_y_px: 40.0` (kept equal, pixel-identical look), regenerated and the
+  `radius_px` line in `examples/styles/sparks.fmstyle.ron` hand-edited to the two new fields
+  (targeted edit, not a wholesale regenerate-and-overwrite — same convention Phases F/G already
+  used, since the generator's current output has drifted from the checked-in files on unrelated
+  fields). New `examples/styles/ellipse-flash.fmstyle.ron` (`TransitionKind::Flash`, `radius_x_px:
+  70.0, radius_y_px: 20.0`) ships alongside it so there's a genuinely elliptical example to
+  visually confirm, per the plan's suggestion.
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean (`shipped_sample_styles_parse` now finds 5 sample files). **Not yet manually run** (per the
+  "never run the app yourself" rule) — worth confirming, next time someone has hands on the app:
+  re-importing `sparks.fmstyle.ron` looks pixel-identical to before (particles unchanged, flash now
+  visibly glows/radiates rather than reading as a flat disc); importing `ellipse-flash.fmstyle.ron`
+  shows a visibly stretched (non-circular) flash that still reads as a soft radiating glow, not a
+  solid ellipse; and if the `1.6` falloff exponent looks off, that's the value to tune first.
 
 ### Vendored note pipeline, pixel-parity (Phase B of the `.fmstyle.ron` milestone)
 

@@ -22,16 +22,18 @@ struct Vertex {
 
 struct Instance {
     @location(1) center: vec2<f32>, // pixel-space center
-    @location(2) radius: f32,       // pixel-space half-extent
+    @location(2) radius: vec2<f32>, // pixel-space half-extent, per axis (ellipse when x != y)
     @location(3) alpha: f32,        // 0..1, already carries lifetime/decay fade
     @location(4) color: vec3<f32>,  // linear
+    @location(5) softness: f32,     // 0.0 = hard-edged dot (particles), 1.0 = radiating glow (flashes)
 }
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) local: vec2<f32>, // -1..1, center-relative
+    @location(0) local: vec2<f32>, // -1..1, center-relative (pre-scale unit-quad coordinate)
     @location(1) alpha: f32,
     @location(2) color: vec3<f32>,
+    @location(3) softness: f32,
 }
 
 @vertex
@@ -44,15 +46,24 @@ fn vs_main(vertex: Vertex, instance: Instance) -> VertexOutput {
     out.local = local;
     out.alpha = instance.alpha;
     out.color = instance.color;
+    out.softness = instance.softness;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // `pixel = center + local * radius` is affine in `local`, so the interpolated `in.local` at
+    // any fragment already equals `(pixel - center) / radius` component-wise — `length(in.local)`
+    // is therefore already the correct elliptical-normalized radius when radius.x != radius.y, no
+    // extra per-axis handling needed here.
     let d = length(in.local);
-    // Soft circular falloff: solid core out to 60% of the radius, fading to fully transparent at
-    // the edge — a cheap procedural sprite standing in for a texture asset.
-    let shape = 1.0 - smoothstep(0.6, 1.0, d);
+    // Hard-edged dot (today's particle look, unchanged): solid core out to 60% of the radius,
+    // fading to fully transparent at the edge.
+    let hard_edge = 1.0 - smoothstep(0.6, 1.0, d);
+    // Soft radiating glow (flashes): bright core fading smoothly across the whole radius rather
+    // than staying solid until a thin outer band.
+    let soft_glow = pow(clamp(1.0 - d, 0.0, 1.0), 1.6);
+    let shape = mix(hard_edge, soft_glow, in.softness);
     let a = clamp(in.alpha, 0.0, 1.0) * shape;
     return vec4<f32>(in.color * a, a);
 }

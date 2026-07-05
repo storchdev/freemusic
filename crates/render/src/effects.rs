@@ -54,18 +54,20 @@ impl Default for ViewUniform {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct EffectInstance {
     center: [f32; 2],
-    radius: f32,
+    radius: [f32; 2],
     alpha: f32,
     color: [f32; 3],
+    softness: f32,
 }
 
 impl EffectInstance {
-    fn attributes() -> [wgpu::VertexAttribute; 4] {
+    fn attributes() -> [wgpu::VertexAttribute; 5] {
         wgpu::vertex_attr_array![
             1 => Float32x2,
-            2 => Float32,
+            2 => Float32x2,
             3 => Float32,
             4 => Float32x3,
+            5 => Float32,
         ]
     }
 
@@ -113,7 +115,8 @@ struct Flash {
     pos: [f32; 2],
     age_seconds: f32,
     decay_seconds: f32,
-    radius_px: f32,
+    radius_x_px: f32,
+    radius_y_px: f32,
     intensity: f32,
     color: [f32; 3],
 }
@@ -469,7 +472,8 @@ impl EffectsRenderer {
             pos: [x_px, y_px],
             age_seconds: 0.0,
             decay_seconds: spec.decay_seconds.max(0.01),
-            radius_px: spec.radius_px.max(1.0),
+            radius_x_px: spec.radius_x_px.max(1.0),
+            radius_y_px: spec.radius_y_px.max(1.0),
             intensity: spec.intensity,
             color,
         });
@@ -489,9 +493,10 @@ impl EffectsRenderer {
             let t = 1.0 - (flash.age_seconds / flash.decay_seconds).clamp(0.0, 1.0);
             self.additive_instances.push(EffectInstance {
                 center: flash.pos,
-                radius: flash.radius_px,
+                radius: [flash.radius_x_px, flash.radius_y_px],
                 alpha: flash.intensity * t,
                 color: flash.color,
+                softness: 1.0,
             });
         }
 
@@ -504,9 +509,10 @@ impl EffectsRenderer {
             let t = (particle.life_seconds / particle.lifetime_seconds).clamp(0.0, 1.0);
             target.push(EffectInstance {
                 center: particle.pos,
-                radius: particle.size_px,
+                radius: [particle.size_px, particle.size_px],
                 alpha: t,
                 color: particle.color,
+                softness: 0.0,
             });
         }
     }

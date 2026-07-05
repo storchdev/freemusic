@@ -97,10 +97,28 @@ fn main() {
                 additive: true,
             }),
             flash: Some(FlashSpec {
-                radius_px: 40.0,
+                radius_x_px: 40.0,
+                radius_y_px: 40.0,
                 intensity: 0.9,
                 color: ColorBinding::Constant([255, 255, 255]),
                 decay_seconds: 0.15,
+            }),
+        }),
+    };
+
+    let ellipse_flash = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer::default()),
+        barrier: Timed::Static(BarrierLayer::default()),
+        transition: Timed::Static(TransitionLayer {
+            kind: TransitionKind::Flash,
+            particles: None,
+            flash: Some(FlashSpec {
+                radius_x_px: 70.0,
+                radius_y_px: 20.0,
+                intensity: 0.9,
+                color: ColorBinding::Constant([255, 255, 255]),
+                decay_seconds: 0.2,
             }),
         }),
     };
@@ -109,4 +127,5 @@ fn main() {
     print_style("barrier-pulse", &barrier_pulse);
     print_style("barrier-wavy", &barrier_wavy);
     print_style("sparks", &sparks);
+    print_style("ellipse-flash", &ellipse_flash);
 }

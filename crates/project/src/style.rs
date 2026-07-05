@@ -405,7 +405,8 @@ pub struct ParticleSpec {
 /// Decaying radial flash spawned on note arrival.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlashSpec {
-    pub radius_px: f32,
+    pub radius_x_px: f32,
+    pub radius_y_px: f32,
     pub intensity: f32,
     pub color: ColorBinding,
     pub decay_seconds: f32,
