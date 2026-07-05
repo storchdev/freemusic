@@ -115,19 +115,30 @@ the note wide, blended in at `intensity`.
 ### `Glow`
 
 ```rust
-struct Glow { color: ColorBinding, radius_px: f32, brightness: f32 }
+struct Glow { color: ColorBinding, brightness: f32, layers: [GlowLayer; 3] }
+struct GlowLayer { amplitude: f32, sigma_px: f32 }
 ```
 
-Halo color/radius/heat. The rendered quad is inflated by `radius_px` (times a small
-brightness-driven reach multiplier — see below) on every side so there are pixels to paint the
-corona onto (an exact no-op when `glow` is `None` — the inflation margin is `0.0`). Shared by
+Halo color/heat, plus (since Phase M) a 3-layer additive corona shape. The rendered quad is
+inflated by `max(layer sigmas) * 5.0` pixels on every side so there are pixels to paint the corona
+onto (an exact no-op when `glow` is `None` — the inflation margin is `0.0`). Shared by
 `NoteLayer::glow` and `BarrierLayer::glow` — the same struct drives both.
 
-`brightness` (default `1.0`) is the single knob for the whole "white-hot core + radiating corona"
-look — see [Brightness/overexposure](#brightnessoverexposure) below. There used to be a separate
-`intensity` (halo opacity) field alongside `brightness` (**removed in Phase L** — see the
-changelog); `radius_px` alone now controls how far the corona reaches, `brightness` how hot/white
-it looks.
+`brightness` (default `1.0`) is the single knob for how much light the corona adds (and, on the
+glowing surface's own opaque fill, still drives the `hot_color` whitening mix) — see
+[Brightness/overexposure](#brightnessoverexposure) below. There used to be a separate `intensity`
+(halo opacity) field alongside `brightness` (**removed in Phase L**); a single `radius_px` field
+that controlled reach (**replaced by `layers` in Phase M** — see the changelog).
+
+`layers` (default: tight/mid/wide — `[(amplitude: 2.6, sigma_px: 5.0), (1.1, 16.0), (0.38, 48.0)]`)
+is three `amplitude * exp(-d / sigma_px)` exponential falloff terms, `d` = distance outside the
+glowing surface's opaque edge, summed additively into a single light value — this is what makes
+the corona read as light genuinely radiating from a white-hot core rather than a single flat
+(possibly whitened) color at one spatial scale. `sigma_px` sets how far each layer reaches (bigger
+= softer/wider spread), `amplitude` sets how bright that layer is. Unlike Phase K/L's `radius_px`,
+`brightness` no longer widens reach at all — reach is purely `layers[i].sigma_px`-driven now.
+**RON serializes a fixed-size `[GlowLayer; 3]` array with tuple parens `layers: (...)`, not
+brackets `layers: [...]`** — confirmed empirically, easy to get wrong hand-editing a file.
 
 ## Barrier layer (`BarrierLayer`)
 
@@ -140,6 +151,7 @@ The horizontal line/bar where falling notes stop.
 | `glow` | `Option<Glow>` | `None` | Soft radiating halo around the bar; presence *is* the on/off switch (**replaced `kind: BarrierKind` + `glow_radius_px: f32` in Phase K** — see the changelog). |
 | `pulse` | `Option<Pulse>` | `None` | Brief brighten-then-decay on each note arrival. |
 | `wavy` | `Option<WavySpec>` | `None` | Rippling "calm ocean" edge instead of a flat line. Drives off deterministic transport time (`time_seconds` after subtracting sync offset) — so it's frame-reproducible in export and freezes exactly on pause/scrub, not wall-clock/frame-count based. |
+| `show_bar` | `bool` | `false` (Phase M) | Whether the flat/opaque bar itself renders at all, independent of `glow` — a style with `glow: Some(..)` and `show_bar: false` renders pure additive corona with no visible opaque bar shape (a single glowing blade, not a colored line with a halo around it). Defaults to `false` since the corona, not the flat bar, is the look this format is designed around; opt in explicitly with `show_bar: true` for the older "visible line" look. Not present on `NoteLayer` — a note without its own fill isn't a sensible look. |
 
 ```ron
 barrier: Static((
@@ -147,11 +159,16 @@ barrier: Static((
     thickness: 6.0,
     glow: Some((
         color: Constant((255, 220, 120)),
-        radius_px: 24.0,
         brightness: 1.0,
+        layers: (
+            (amplitude: 2.6, sigma_px: 5.0),
+            (amplitude: 1.1, sigma_px: 16.0),
+            (amplitude: 0.38, sigma_px: 48.0),
+        ),
     )),
     pulse: Some((decay_seconds: 0.35, brightness: 1.6)),
     wavy: Some((amplitude_px: 6.0, wavelength_px: 220.0, speed: 18.0, mode: Edge)),
+    show_bar: true,
 )),
 ```
 
@@ -215,10 +232,20 @@ transition: Static((
         count: 24, lifetime_seconds: 0.4, size_px: 4.0, speed_px: 180.0,
         spread_degrees: 60.0, gravity_px: 300.0, color: Constant((255, 240, 200)),
         additive: true, emission: Burst, brightness: 1.0,
+        layers: (
+            (amplitude: 2.6, sigma_px: 5.0),
+            (amplitude: 1.1, sigma_px: 16.0),
+            (amplitude: 0.38, sigma_px: 48.0),
+        ),
     )),
     flash: Some((
         radius_x_px: 40.0, radius_y_px: 40.0,
         color: Constant((255, 255, 255)), decay_seconds: 0.15, mode: Instant, brightness: 1.0,
+        layers: (
+            (amplitude: 2.6, sigma_px: 5.0),
+            (amplitude: 1.1, sigma_px: 16.0),
+            (amplitude: 0.38, sigma_px: 48.0),
+        ),
     )),
 )),
 ```
@@ -239,7 +266,8 @@ this is what the RON serializer emits automatically; write it the same way by ha
 | `color` | `ColorBinding` | Particle color. |
 | `additive` | `bool` | Additive blending (bright, overlapping particles glow) vs. premultiplied-alpha (opaque-ish). Decided once per `update()` call from the layer's currently-resolved value — a particle spawned under one style doesn't retroactively update if a *different* style is imported while it's still alive. |
 | `emission` | `EmissionMode` | `Burst` (default) or `Continuous { rate_per_second }`. |
-| `brightness` | `f32` | Default `1.0`. Applied at spawn time via `hot_color` — see [Brightness/overexposure](#brightnessoverexposure). `1.0` is a no-op. |
+| `brightness` | `f32` | Default `1.0`. Baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `1.0` is a no-op. |
+| `layers` | `[GlowLayer; 3]` | Default tight/mid/wide (same as `Glow`, Phase M). **Only read when `additive: true`** — non-additive "puff" particles ignore this field entirely and render as a plain hard-edged dot, unaffected by any value here. |
 
 `EmissionMode::Continuous { rate_per_second }`: particles spawn every frame a note is held,
 spread across the *width* of its key (not its center point) — reads as the key being "ground
@@ -253,7 +281,8 @@ down" rather than sparking once. `count` has no effect in this mode.
 | `color` | `ColorBinding` | Flash color. |
 | `decay_seconds` | `f32` | How long the fade-out takes (see `mode` for when the fade *starts*). |
 | `mode` | `FlashMode` | `Instant` (default) or `Sustained`. |
-| `brightness` | `f32` | Default `1.0`. Applied at spawn time via `hot_color` — see [Brightness/overexposure](#brightnessoverexposure). `1.0` is a no-op. |
+| `brightness` | `f32` | Default `1.0`. Baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `1.0` is a no-op. |
+| `layers` | `[GlowLayer; 3]` | Default tight/mid/wide (same as `Glow`, Phase M). A flash is always additive, so this is always read (unlike `ParticleSpec::layers`, which non-additive particles ignore). |
 
 A flash always renders additively, so its old separate `intensity` (peak alpha, 0..1) had the
 exact same visual effect as `brightness` (both just scale the additive contribution) — **removed
@@ -294,7 +323,7 @@ per-note property) follows the identical shape and fallback rule (`ByVelocity.hi
 ## Brightness/overexposure
 
 Every "glow" effect in this schema (note glow, barrier glow, barrier pulse, flash, particles) has a
-`brightness: f32` knob (default `1.0`). It went through two designs:
+`brightness: f32` knob (default `1.0`). It went through three designs:
 
 **Phase K** (superseded, kept here for history): `brightness` was a plain multiply
 (`color * brightness`) applied only to a glow's *halo*, alongside a separate `intensity` knob that
@@ -305,10 +334,9 @@ color's channels up doesn't converge to *white* unless they already share the sa
 halo was the only thing that changed — a bright glow read as a colored ring stuck to the object's
 edge, not the object itself heating up.
 
-**Phase L (current)**: `brightness` is the single knob, `intensity` is gone everywhere it used to
-coexist with `brightness` (`Glow`, `Pulse`, `FlashSpec` — `ParticleSpec` never had one, and
-`Sheen::intensity` is an unrelated axis with no `brightness` counterpart, left as-is). One
-mechanism, applied consistently to every glowing surface's *own* color, not just its halo:
+**Phase L** (superseded, kept here for history): `brightness` was the single knob, `intensity` gone
+everywhere it used to coexist with `brightness`. One mechanism, applied consistently to every
+glowing surface's *own* color, not just its halo:
 
 > Desaturate the color toward pure white as `brightness` climbs past `1.0`
 > (`hot_color(base, brightness) = mix(base, white, 1 - 1/brightness)` for `brightness > 1`,
@@ -316,28 +344,51 @@ mechanism, applied consistently to every glowing surface's *own* color, not just
 > modestly with the same brightness (`corona_reach_scale(brightness) = 1 + 0.5*(1 - 1/brightness)`,
 > saturating at `1.5x` the configured `radius_px`).
 
-This is what makes the *core* of a glowing note or the barrier bar itself look white-hot ("a white
-hot pipe") rather than only the halo around it changing — `hot_color` is applied to the note's own
-fill / the barrier's own core color, not just to `Glow::color`. The halo's falloff is also a
-natural radiating curve (`pow(1 - distance/reach, 1.6)`, the same shape `effects.wgsl` already used
-for flashes) instead of a flat-opacity smoothstep band, so it reads as light radiating outward
-rather than an opaque ring. `brightness = 1.0` is an exact no-op in every case: `hot_color` reduces
-to `base * 1.0 == base`, and `corona_reach_scale` reduces to `1.0`.
+This made the *core* of a glowing note or the barrier bar itself look white-hot rather than only
+the halo around it changing, but the halo itself was still a single flat (possibly whitened) color
+alpha-blended at one spatial scale — testing it next to a real reference, this "just looks like a
+lighter and more desaturated color," not a glowstick/lightsaber corona.
+
+**Phase M (current)**: real bloom is additive — light from multiple spatial scales *adds* onto the
+background and only clamps to white where the sum saturates, rather than one flat color painted
+over it. Split into two parts, applied consistently across barrier glow, note glow, particles, and
+flashes:
+
+- **Opaque surfaces** (a note's own fill, the barrier's own flat bar) keep Phase L's `hot_color`
+  whitening mix exactly as described above — this part was already right, just scoped down to
+  *only* opaque geometry, no longer also standing in for the halo.
+- **Light/corona** (the halo around a note or barrier, particle sparks, flashes) is additive:
+  `light = color * Σ_{i=1..3}(layers[i].amplitude * exp(-d / layers[i].sigma_px)) * brightness`,
+  blended with `wgpu::BlendState { src: ONE, dst: ONE }` (`ONE`/`ONE`, additive) instead of alpha
+  blending. `d` is always "distance outside the opaque core's edge, 0 inside" — the same distance
+  field each renderer already computed for the old smoothstep-based halo. Whitening happens for
+  free via additive saturation — no explicit mix-toward-white needed for the corona.
+  `brightness = 1.0` is an exact no-op (as before), but `brightness` **no longer widens reach** —
+  Phase L's `corona_reach_scale` is gone; reach is purely `layers[i].sigma_px`-driven now, a
+  deliberate simplification.
+
+Because an opaque core (alpha-blended, occludes what's behind it) and an additive halo (adds to
+what's behind it) can't share one `wgpu::BlendState`, the barrier and notes renderers each run
+**two render pipelines** — an additive glow pass drawn first, then the existing alpha-blended core
+pass drawn second so the opaque core correctly occludes the glow directly beneath it. Particles/
+flashes don't need this split: nothing stacks on top of them the way video/notes stack on top of
+the barrier/note glow, so "hard dot + additive halo" can share one draw — no dual-pipeline
+plumbing there, just the formula.
 
 Where it lives per effect:
 
-- **Note glow / barrier glow** (`Glow::brightness`): whitens both the note's own fill / the
-  barrier's own core color *and* the halo's color, and widens the halo's reach —
-  `notes/shader.wgsl`/`barrier.wgsl`'s `hot_color`/`corona_reach_scale`.
-- **Barrier pulse** (`Pulse::brightness`): the peak brightness fed into the same `hot_color` mix at
-  `pulse = 1.0`, decaying back to the bar's resting brightness (its `Glow::brightness`, or `1.0`)
-  as the pulse settles.
-- **Flash / particles** (`FlashSpec::brightness` / `ParticleSpec::brightness`): both already bake
-  their final linear color into a GPU instance before upload, so `hot_color` runs as a pure
-  CPU-side computation once at spawn time (`crates/render/src/effects.rs`'s own copy of
-  `hot_color`) — no shader change for either. Their existing pow-based radiating falloff
-  (`softness = 1.0` for flashes) was already the shape the other two effects were changed to match,
-  so neither needed a falloff change, only the `intensity`-removal on `FlashSpec`.
+- **Note glow / barrier glow** (`Glow::layers`/`Glow::brightness`): drives both the new
+  `fs_glow` additive pass (halo) and the existing `hot_color` mix on the surface's own opaque fill
+  (`notes/shader.wgsl`/`barrier.wgsl`).
+- **Barrier pulse** (`Pulse::brightness`): unchanged in mechanism — the peak brightness fed into
+  the same `hot_color` mix at `pulse = 1.0`, decaying back to the bar's resting brightness (its
+  `Glow::brightness`, or `1.0`) as the pulse settles; this value also feeds the corona's brightness
+  multiplier during the pulse.
+- **Flash / particles** (`FlashSpec::layers` / `ParticleSpec::layers`, both additive-only paths):
+  bake `layers[i].amplitude * brightness` into a GPU instance before upload (a plain multiply, not
+  a `hot_color` mix — there's no separate opaque core to whiten here), then run the identical
+  additive layered-sum formula in `effects.wgsl`'s `fs_glow`. Non-additive "puff" particles are
+  unaffected — `layers` is simply not read on that path.
 
 ## Known schema-only/no-op fields
 
@@ -361,7 +412,8 @@ One place to check "why doesn't this do anything" before assuming it's a bug:
 | J | Documentation only (this file) — no schema change. |
 | K | **Breaking**: `BarrierLayer` dropped `kind: BarrierKind` + `glow_radius_px: f32`, gained `glow: Option<Glow>` (the same `Glow` struct `NoteLayer` already used) — presence of `Some(Glow{..})` now *is* the on/off switch, replacing the enum. An old file with `kind`/`glow_radius_px` needs manual editing: `kind: Line` → `glow: None`; `kind: Glow, glow_radius_px: R` → `glow: Some((color: <old barrier color>, radius_px: R, intensity: 1.0, brightness: 1.0))` (reproduces the pre-Phase-K look exactly — Phase K's own `intensity` field was subsequently removed in Phase L, see below). Additive, not breaking: `Glow` gained `brightness: f32` (default `1.0`); `Pulse` gained `brightness: f32` (default `1.6`); `FlashSpec`/`ParticleSpec` each gained `brightness: f32` (default `1.0`) — old files without these fields still parse via `serde(default)`. |
 | L | **Breaking**: `intensity: f32` removed from `Glow`, `Pulse`, and `FlashSpec` (redundant once `brightness` alone drives the whole look — see [Brightness/overexposure](#brightnessoverexposure)). An old file needs manual editing: drop the `intensity` line from any `Glow`/`FlashSpec` literal; for `Pulse`, fold `intensity`/`brightness` into a single `brightness` equal to their product (e.g. `intensity: 0.8, brightness: 1.6` → `brightness: 1.28`, adjust to taste). Also, not schema-visible: `Glow`/`Pulse`/barrier's and notes' own core/fill color now go through a shared `hot_color` whitening function and the halo falloff changed from a flat-opacity smoothstep band to a natural radiating `pow` curve — see [Brightness/overexposure](#brightnessoverexposure) for the full mechanism. |
+| M | **Breaking**: `Glow.radius_px: f32` removed, replaced by `layers: [GlowLayer; 3]` (new struct `GlowLayer { amplitude: f32, sigma_px: f32 }`) — the halo is now an additive multi-layer corona instead of a single alpha-blended ring, see [Brightness/overexposure](#brightnessoverexposure). An old file needs manual editing: drop the `radius_px` line from any `Glow` literal and add a `layers: (...)` tuple (the default tight/mid/wide set — `(amplitude: 2.6, sigma_px: 5.0), (amplitude: 1.1, sigma_px: 16.0), (amplitude: 0.38, sigma_px: 48.0)` — is a reasonable starting point; scale sigmas roughly proportional to the old `radius_px` for a similar reach). Additive, not breaking: `FlashSpec`/`ParticleSpec` each gained the same `layers: [GlowLayer; 3]` field (default as above; ignored on non-additive particles); `BarrierLayer` gained `show_bar: bool` (default `false` — an old file with no `show_bar` now renders pure corona with no visible opaque bar unless it opts in with `show_bar: true`). |
 
 If a previously-working `.fmstyle.ron` file fails to load after an upgrade, check this table first
-— Phase H's rename, Phase K's `BarrierLayer` rework, and Phase L's `intensity` removal are the
-schema-breaking changes so far.
+— Phase H's rename, Phase K's `BarrierLayer` rework, Phase L's `intensity` removal, and Phase M's
+`radius_px` → `layers` rework are the schema-breaking changes so far.

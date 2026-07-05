@@ -719,6 +719,50 @@ mod tests {
         assert_eq!(pulse.brightness, 1.6);
     }
 
+    /// Confirms RON actually round-trips a fixed-size `[GlowLayer; 3]` array with non-default
+    /// values (not just the shared `default_glow_layers()` every other test above happens to use)
+    /// — `ron` serializes fixed-size arrays with tuple parens `layers: (...)`, not brackets
+    /// `layers: [...]`, easy to get wrong hand-editing a sample file, so this is worth checking
+    /// empirically rather than assuming.
+    #[test]
+    fn glow_layers_array_with_explicit_values_round_trips() {
+        let glow = Glow {
+            color: ColorBinding::Constant([10, 20, 30]),
+            brightness: 2.5,
+            layers: [
+                GlowLayer {
+                    amplitude: 1.0,
+                    sigma_px: 2.0,
+                },
+                GlowLayer {
+                    amplitude: 3.0,
+                    sigma_px: 4.0,
+                },
+                GlowLayer {
+                    amplitude: 5.0,
+                    sigma_px: 6.0,
+                },
+            ],
+        };
+        let text = ron::ser::to_string_pretty(&glow, ron::ser::PrettyConfig::new()).unwrap();
+        assert!(
+            text.contains("layers: ("),
+            "expected tuple-paren array syntax, got: {text}"
+        );
+        let parsed: Glow = ron::from_str(&text).unwrap();
+        assert_eq!(glow, parsed);
+    }
+
+    /// `show_bar` (Phase M) is a plain `#[serde(default)]` `bool`, so it defaults to `false` when
+    /// a `.fmstyle.ron` predates the field or just never sets it explicitly — an old/simple style
+    /// gets pure corona with no visible opaque bar unless it opts in with `show_bar: true`.
+    #[test]
+    fn barrier_layer_show_bar_defaults_to_false_when_omitted() {
+        let text = "(color: Constant((1, 2, 3)), thickness: 4.0)";
+        let barrier: BarrierLayer = ron::from_str(text).unwrap();
+        assert!(!barrier.show_bar);
+    }
+
     /// Guards the shipped `examples/styles/*.fmstyle.ron` samples against drifting out of sync
     /// with the schema — each one should still parse as a `Style` via the same `Style::load` path
     /// the "Import style…" button uses.

@@ -962,6 +962,36 @@ glowing column with no visible gap or seam down the middle; confirm `sparks.fmst
 particles/flash still look right; a rough performance glance during scrubbing (barrier/notes now
 issue 2 draw calls instead of 1).
 
+**Closed-out gaps from the original Phase M plan** (`~/.claude/plans/yes-i-really-like-composed-hearth.md`
+§6/§7 — the implementation itself was already complete, but two tests and the format-doc rewrite
+the plan called for hadn't actually landed):
+
+- **Tests** (`crates/project/src/style.rs`): added
+  `glow_layers_array_with_explicit_values_round_trips` (non-default `[GlowLayer; 3]` values, plus
+  an explicit assertion that the serialized RON uses tuple-paren `layers: (...)` syntax, not
+  `layers: [...]` — the existing round-trip tests all happened to only ever exercise
+  `default_glow_layers()`, which wouldn't have caught a serialization-shape regression) and
+  `barrier_layer_show_bar_defaults_to_false_when_omitted` (the plan's draft named this test
+  "defaults_to_true", written before the later "`show_bar` now defaults to `false`" decision
+  earlier in this doc — the test asserts the *current* `false` default, not the plan's original
+  wording).
+- **`docs/fmstyle-format.md`**: this file had never actually been updated for Phase M at all (still
+  documented `Glow { color, radius_px, brightness }` and the Phase L reach-scaling mechanism as
+  current) despite the plan explicitly requiring it. Rewrote the `Glow` section and RON examples
+  around `layers: [GlowLayer; 3]`, added a `GlowLayer` reference under the section, added `layers`
+  rows to the `ParticleSpec`/`FlashSpec` tables and a `show_bar` row to `BarrierLayer`'s, rewrote
+  "Brightness/overexposure" with Phase M as the current mechanism (Phase L relabeled superseded,
+  same convention already used for Phase K there), and added the Phase M row to the
+  breaking-change log.
+- **Found along the way, left alone**: `examples/styles/barrier-wavy-volume.fmstyle.ron` currently
+  has an uncommitted local edit that breaks RON parsing — `glow: Some(Edge(` (an extra, invalid
+  `Edge(...)` wrapper around the `Glow` literal, apparently a stray edit from hand-tuning the wavy
+  barrier look) — which fails `shipped_sample_styles_parse`. This predates and is unrelated to the
+  Phase M documentation/test work in this section; confirmed by stashing the working-tree diff and
+  re-running the test, which passes on the last-committed version of that file. Not fixed here
+  since it looked like in-progress hand-editing rather than a regression this session caused —
+  worth a look before the next commit.
+
 ### Wavy barrier redesign: noise-based ripples instead of traveling sines (follow-up to the wavy work above)
 
 The original `wavy_offset(x)` (introduced earlier in this doc, "three incommensurate-frequency
