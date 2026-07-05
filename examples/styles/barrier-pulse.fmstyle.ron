@@ -14,14 +14,19 @@
         thickness: 6.0,
         glow: Some((
             color: Constant((255, 220, 120)),
-            radius_px: 24.0,
             brightness: 3.0,
+            layers: (
+                (amplitude: 2.6, sigma_px: 2.5),
+                (amplitude: 1.1, sigma_px: 8.0),
+                (amplitude: 0.38, sigma_px: 24.0),
+            ),
         )),
         pulse: Some((
             decay_seconds: 0.35,
             brightness: 1.6,
         )),
         wavy: None,
+        show_bar: true,
     )),
     transition: Static((
         kind: r#None,

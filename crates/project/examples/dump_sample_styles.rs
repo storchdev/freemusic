@@ -5,9 +5,27 @@
 //! corresponding files if the schema ever changes.
 
 use project::{
-    BarrierLayer, ColorBinding, Fill, FlashSpec, Glow, NoteLayer, ParticleSpec, Pulse, Sheen,
-    Style, Timed, TransitionKind, TransitionLayer, WavySpec,
+    BarrierLayer, ColorBinding, Fill, FlashSpec, Glow, GlowLayer, NoteLayer, ParticleSpec, Pulse,
+    Sheen, Style, Timed, TransitionKind, TransitionLayer, WavySpec,
 };
+
+fn scaled_layers(old_radius_px: f32) -> [GlowLayer; 3] {
+    let scale = old_radius_px / 48.0;
+    [
+        GlowLayer {
+            amplitude: 2.6,
+            sigma_px: 5.0 * scale,
+        },
+        GlowLayer {
+            amplitude: 1.1,
+            sigma_px: 16.0 * scale,
+        },
+        GlowLayer {
+            amplitude: 0.38,
+            sigma_px: 48.0 * scale,
+        },
+    ]
+}
 
 fn print_style(name: &str, style: &Style) {
     println!("=== {name} ===");
@@ -32,8 +50,8 @@ fn main() {
             }),
             glow: Some(Glow {
                 color: ColorBinding::Constant([120, 200, 255]),
-                radius_px: 12.0,
                 brightness: 1.0,
+                layers: scaled_layers(12.0),
             }),
             roundedness: 1.0,
             fall_speed: 400.0,
@@ -52,14 +70,15 @@ fn main() {
             thickness: 6.0,
             glow: Some(Glow {
                 color: ColorBinding::Constant([255, 220, 120]),
-                radius_px: 24.0,
                 brightness: 1.0,
+                layers: scaled_layers(24.0),
             }),
             pulse: Some(Pulse {
                 decay_seconds: 0.35,
                 brightness: 1.6,
             }),
             wavy: None,
+            show_bar: true,
         }),
         transition: Timed::Static(TransitionLayer::default()),
     };
@@ -72,8 +91,8 @@ fn main() {
             thickness: 5.0,
             glow: Some(Glow {
                 color: ColorBinding::Constant([120, 200, 255]),
-                radius_px: 18.0,
                 brightness: 1.0,
+                layers: scaled_layers(18.0),
             }),
             pulse: None,
             wavy: Some(WavySpec {
@@ -82,6 +101,7 @@ fn main() {
                 speed: 18.0,
                 mode: project::WavyMode::FullWave,
             }),
+            show_bar: true,
         }),
         transition: Timed::Static(TransitionLayer::default()),
     };
@@ -103,6 +123,7 @@ fn main() {
                 additive: true,
                 emission: project::EmissionMode::Burst,
                 brightness: 1.0,
+                layers: scaled_layers(4.0),
             }),
             flash: Some(FlashSpec {
                 radius_x_px: 40.0,
@@ -111,6 +132,7 @@ fn main() {
                 decay_seconds: 0.15,
                 mode: project::FlashMode::Instant,
                 brightness: 1.0,
+                layers: scaled_layers(40.0),
             }),
         }),
     };
@@ -129,6 +151,7 @@ fn main() {
                 decay_seconds: 0.2,
                 mode: project::FlashMode::Instant,
                 brightness: 1.0,
+                layers: scaled_layers(45.0),
             }),
         }),
     };
@@ -152,6 +175,7 @@ fn main() {
                     rate_per_second: 30.0,
                 },
                 brightness: 1.0,
+                layers: scaled_layers(6.0),
             }),
             flash: None,
         }),
@@ -171,6 +195,7 @@ fn main() {
                 decay_seconds: 0.6,
                 mode: project::FlashMode::Sustained,
                 brightness: 1.0,
+                layers: scaled_layers(40.0),
             }),
         }),
     };

@@ -55,6 +55,15 @@ pub struct UiState {
     /// Set by the "Import style…" button; the app loop consumes and clears it each redraw,
     /// popping a native `rfd` file picker and loading whatever the user chose into `style`.
     pub import_style_requested: bool,
+    /// Filesystem path of the last-imported `.fmstyle.ron`, mirrored alongside `style` whenever
+    /// it's loaded from a file (`None` for a style embedded directly in a loaded project, since
+    /// there's no external file to reload from in that case). Backs the refresh button next to
+    /// "Import style…", which reloads from this path so the user can edit the file externally and
+    /// re-apply it without reopening the file picker each time.
+    pub style_path: Option<std::path::PathBuf>,
+    /// Set by the refresh button next to "Import style…"; the app loop consumes and clears it
+    /// each redraw, re-loading `style` from `style_path`.
+    pub reload_style_requested: bool,
     pub status_message: Option<String>,
     /// Path typed into the Export text field; defaulted from the video path on first load.
     pub export_path_text: String,
@@ -403,9 +412,18 @@ fn draw_project_tab(ui: &mut egui::Ui, state: &mut UiState) {
 
     ui.separator();
     ui.heading("Style");
-    if ui.button("Import style…").clicked() {
-        state.import_style_requested = true;
-    }
+    ui.horizontal(|ui| {
+        if ui.button("Import style…").clicked() {
+            state.import_style_requested = true;
+        }
+        if ui
+            .add_enabled(state.style_path.is_some(), egui::Button::new("⟳"))
+            .on_hover_text("Reload the imported style from its file")
+            .clicked()
+        {
+            state.reload_style_requested = true;
+        }
+    });
     ui.label(if state.style.is_some() {
         "Custom style imported (overrides note/barrier sliders)"
     } else {

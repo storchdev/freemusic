@@ -15,6 +15,7 @@
         glow: None,
         pulse: None,
         wavy: None,
+        show_bar: true,
     )),
     transition: Static((
         kind: Particles,
@@ -31,6 +32,11 @@
                 rate_per_second: 30.0,
             ),
             brightness: 1.0,
+            layers: (
+                (amplitude: 2.6, sigma_px: 0.63),
+                (amplitude: 1.1, sigma_px: 2.0),
+                (amplitude: 0.38, sigma_px: 6.0),
+            ),
         )),
         flash: None,
     )),

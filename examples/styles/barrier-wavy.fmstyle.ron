@@ -14,8 +14,12 @@
         thickness: 5.0,
         glow: Some((
             color: Constant((120, 200, 255)),
-            radius_px: 10.0,
             brightness: 2.0,
+            layers: (
+                (amplitude: 2.6, sigma_px: 1.04),
+                (amplitude: 1.1, sigma_px: 3.33),
+                (amplitude: 0.38, sigma_px: 10.0),
+            ),
         )),
         pulse: None,
         wavy: Some((
@@ -24,6 +28,7 @@
             speed: 2.0,
             mode: Edge,
         )),
+        // show_bar: true,
     )),
     transition: Static((
         kind: r#None,
