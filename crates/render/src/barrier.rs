@@ -9,7 +9,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use project::{BarrierKind, BarrierLayer, Pulse};
+use project::{BarrierKind, BarrierLayer, Pulse, WavySpec};
 
 /// All-vec4 layout, same reasoning as `notes::pipeline::StyleUniform` — every field is already
 /// vec4-aligned so there's no std140 column-padding mismatch (the `mat3x3<f32>` uniform CLAUDE.md
@@ -21,8 +21,11 @@ struct Uniforms {
     geometry: [f32; 4],
     /// xyz = barrier color (linear), w = glow radius (pixels).
     color_glow_radius: [f32; 4],
-    /// x = glow enabled (0/1), y = pulse intensity (0..1, decaying), zw unused.
+    /// x = glow enabled (0/1), y = pulse intensity (0..1, decaying), z = wavy enabled (0/1),
+    /// w = wavy both_edges (0/1, only meaningful when z is set).
     flags: [f32; 4],
+    /// x = wave amplitude (px), y = wavelength (px), z = speed, w = transport time (seconds).
+    wave: [f32; 4],
 }
 
 impl Default for Uniforms {
@@ -31,6 +34,7 @@ impl Default for Uniforms {
             geometry: [1.0, 1.0, 0.0, 4.0],
             color_glow_radius: [1.0, 1.0, 1.0, 0.0],
             flags: [0.0, 0.0, 0.0, 0.0],
+            wave: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -160,6 +164,27 @@ impl BarrierRenderer {
         self.data.geometry = [width, height, barrier_y, barrier_layer.thickness.max(0.0)];
         self.data.color_glow_radius = [r, g, b, barrier_layer.glow_radius_px.max(0.0)];
         self.data.flags[0] = glow_enabled;
+        match &barrier_layer.wavy {
+            Some(WavySpec {
+                amplitude_px,
+                wavelength_px,
+                speed,
+                both_edges,
+            }) => {
+                self.data.flags[2] = 1.0;
+                self.data.flags[3] = *both_edges as u8 as f32;
+                self.data.wave[0] = amplitude_px.max(0.0);
+                self.data.wave[1] = *wavelength_px;
+                self.data.wave[2] = *speed;
+            }
+            None => {
+                self.data.flags[2] = 0.0;
+                self.data.flags[3] = 0.0;
+                self.data.wave[0] = 0.0;
+                self.data.wave[1] = 0.0;
+                self.data.wave[2] = 0.0;
+            }
+        }
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.data]));
     }
 
@@ -195,6 +220,7 @@ impl BarrierRenderer {
     /// them together.
     pub fn update_pulse(&mut self, queue: &wgpu::Queue, time_seconds: f32, note_starts: &[f32]) {
         self.data.flags[1] = self.pulse_intensity(time_seconds, note_starts);
+        self.data.wave[3] = time_seconds;
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.data]));
     }
 

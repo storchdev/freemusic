@@ -6,7 +6,7 @@
 
 use project::{
     BarrierKind, BarrierLayer, ColorBinding, Fill, FlashSpec, Glow, NoteLayer, ParticleSpec, Pulse,
-    Sheen, Style, Timed, TransitionKind, TransitionLayer,
+    Sheen, Style, Timed, TransitionKind, TransitionLayer, WavySpec,
 };
 
 fn print_style(name: &str, style: &Style) {
@@ -56,6 +56,26 @@ fn main() {
                 intensity: 0.8,
                 decay_seconds: 0.35,
             }),
+            wavy: None,
+        }),
+        transition: Timed::Static(TransitionLayer::default()),
+    };
+
+    let barrier_wavy = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer::default()),
+        barrier: Timed::Static(BarrierLayer {
+            kind: BarrierKind::Glow,
+            color: ColorBinding::Constant([120, 200, 255]),
+            thickness: 5.0,
+            glow_radius_px: 18.0,
+            pulse: None,
+            wavy: Some(WavySpec {
+                amplitude_px: 6.0,
+                wavelength_px: 220.0,
+                speed: 18.0,
+                both_edges: true,
+            }),
         }),
         transition: Timed::Static(TransitionLayer::default()),
     };
@@ -87,5 +107,6 @@ fn main() {
 
     print_style("gradient-glow", &gradient_glow);
     print_style("barrier-pulse", &barrier_pulse);
+    print_style("barrier-wavy", &barrier_wavy);
     print_style("sparks", &sparks);
 }

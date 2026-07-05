@@ -81,6 +81,7 @@ impl Style {
                 thickness: barrier_style.thickness,
                 glow_radius_px: 0.0,
                 pulse: None,
+                wavy: None,
             }),
             transition: Timed::Static(TransitionLayer::default()),
         }
@@ -315,6 +316,26 @@ pub struct Pulse {
     pub decay_seconds: f32,
 }
 
+/// A calm, stochastic-looking (not a single literal sine) wavy top edge for the barrier — three
+/// incommensurate-frequency sine terms summed with weights 0.6/0.3/0.1 (see `barrier.wgsl`'s
+/// `wavy_offset`), so `|offset| <= amplitude_px` always holds exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WavySpec {
+    /// Peak vertical displacement in canvas pixels.
+    pub amplitude_px: f32,
+    /// Pixels per cycle of the slowest (dominant) term.
+    pub wavelength_px: f32,
+    /// How fast the wave crawls sideways over transport time; 0 = frozen shape (still
+    /// x-varying), not flat.
+    pub speed: f32,
+    /// When `false` (default), only the top edge ripples and the bottom stays flat, so the bar's
+    /// thickness varies across its width. When `true`, the identical offset is also applied to the
+    /// bottom edge, so the whole bar rides the wave rigidly (constant thickness) instead of just
+    /// its top surface bulging.
+    #[serde(default)]
+    pub both_edges: bool,
+}
+
 /// The horizontal barrier where falling notes stop.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BarrierLayer {
@@ -324,6 +345,8 @@ pub struct BarrierLayer {
     pub glow_radius_px: f32,
     #[serde(default)]
     pub pulse: Option<Pulse>,
+    #[serde(default)]
+    pub wavy: Option<WavySpec>,
 }
 
 impl Default for BarrierLayer {
@@ -334,6 +357,7 @@ impl Default for BarrierLayer {
             thickness: 4.0,
             glow_radius_px: 0.0,
             pulse: None,
+            wavy: None,
         }
     }
 }

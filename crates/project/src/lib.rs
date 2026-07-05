@@ -9,7 +9,7 @@ mod style;
 pub use style::{
     BarrierKind, BarrierLayer, BlackKeyFill, Border, ColorBinding, Fill, FlashSpec, Glow,
     NoteLayer, ParticleSpec, Pulse, Ramp, ScalarBinding, Sheen, Style, Timed, TransitionKind,
-    TransitionLayer,
+    TransitionLayer, WavySpec,
 };
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

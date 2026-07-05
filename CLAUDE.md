@@ -1284,7 +1284,83 @@ before I because I's spawn code touches the same `EffectInstance`/spawn helpers 
   style with an explicit `black_key_fill: Custom(...)` overrides the Keyboard tab's quick control,
   same as every other imported field already does.
 
-**Phases G-J are not yet started.**
+**Phase G — Barrier wavy "calm ocean" edge — DONE.**
+- **Schema** (`crates/project/src/style.rs`): new `WavySpec { amplitude_px, wavelength_px, speed }`
+  (re-exported from `crates/project/src/lib.rs` alongside the other `style` types).
+  `BarrierLayer` gained `#[serde(default)] pub wavy: Option<WavySpec>` (`None` = flat edge, the
+  only look before this phase). `Style::from_legacy`'s `BarrierLayer` literal sets `wavy: None`,
+  keeping the legacy-slider look unchanged.
+- **Uniform layout** (`crates/render/src/barrier.rs`): `Uniforms` gained a 4th all-vec4 field,
+  `wave: [f32; 4]` (`x`=amplitude_px, `y`=wavelength_px, `z`=speed, `w`=transport time seconds),
+  keeping the same "every field already vec4-aligned, no std140 column-padding to get wrong"
+  convention `StyleUniform`/this struct's existing fields already followed. `flags.z` is the new
+  wavy-enabled flag (`flags.x`/`flags.y` unchanged: glow-enabled/pulse-intensity). `set_style`
+  writes `flags[2]`/`wave[0..2]` from `barrier_layer.wavy` (`None` zeroes all three, an exact
+  disable). `update_pulse` gained one line, `self.data.wave[3] = time_seconds` — reuses the exact
+  same sync-offset-subtracted, deterministic/export-reproducible clock every other animated
+  element (note fall, barrier pulse) already reads, so the ripple freezes exactly on pause/scrub
+  and is frame-reproducible in export. **No public method signature changed** — both
+  `Compositor::update_barrier` call sites (`app/src/main.rs`, `crates/export/src/lib.rs`) needed
+  no edits.
+- **Shader** (`crates/render/src/barrier.wgsl`): `wavy_offset(x)` sums three
+  incommensurate-frequency sine terms weighted 0.6/0.3/0.1 (sum to 1.0, so `|offset| <=
+  amplitude_px` always holds exactly — not one literal sine, per the user's explicit "calm ocean
+  cross-section, stochastic-looking but calm" ask) and returns `0.0` outright when `flags.z < 0.5`
+  (wavy disabled) — an exact, not just visual, no-op. The vertex shader's rasterized-quad inflation
+  (`half_extent`) gained a third additive margin, `wavy_margin = select(0.0, wave.x, flags.z >
+  0.5)`, alongside the existing glow margin — extends the quad symmetrically top/bottom (simpler
+  than an asymmetric top-only margin; the harmless extra overdraw below the always-flat bottom edge
+  was an explicit tradeoff in the plan) so there are pixels to paint the rippling top edge onto.
+- **By default only the top edge waves, the bottom stays flat** (a rippling surface over a flat
+  floor, not a wobbling slab): the fragment shader computes `top_edge = barrier_y - half_thickness +
+  wavy_offset(in.position.x)` and `bottom_edge = barrier_y + half_thickness` (unchanged), and
+  `core_alpha` is now `alpha_top * alpha_bottom` (independent smoothsteps around each edge) instead
+  of the old single symmetric `1 - smoothstep(half_thickness±1, |y - barrier_y|)`. **Re-derived by
+  hand, not assumed** (per this codebase's standing rule for shader math changes, after the
+  rotation-shear and barrier-fade-out bugs both slipped past `cargo build`/`clippy`): substituting
+  `u = y - barrier_y`, the old formula for `u >= 0` is exactly `smoothstep(top_edge-1, top_edge+1,
+  y)` after the corresponding shift, and for `u < 0` the mirror image around `bottom_edge` — so the
+  product form reproduces the old formula exactly whenever the two smoothstep transition zones
+  don't overlap (true for `thickness > 2px`), with `wave == 0` making `top_edge`/`bottom_edge`
+  collapse back to the plain symmetric case.
+- **Follow-up, same session**: after seeing this rendered, the user asked for an option to make
+  the *whole bar* ride the wave (both edges moving together) instead of only the top surface
+  bulging while the bottom stayed rigidly flat. Added `WavySpec::both_edges: bool` (`#[serde(
+  default)] false`, so existing/older files without the field keep the top-only look
+  byte-for-byte). Wired as a 4th `flags` slot (`flags.w`, alongside the existing
+  glow-enabled/pulse-intensity/wavy-enabled flags) written by `set_style`. In the shader,
+  `bottom_wave = select(0.0, wave, flags.z > 0.5 && flags.w > 0.5)` is added onto `bottom_edge` —
+  since both edges get the *identical* offset, the bar translates rigidly (constant thickness)
+  rather than breathing in thickness. This needed no vertex-shader margin change (the inflation
+  was already symmetric top/bottom by `amplitude_px` regardless of `both_edges`) and no glow
+  formula change (the glow math already read `top_edge`/`bottom_edge` as variables, not
+  hardcoded flat expressions, so it automatically hugs whichever edge shape is active). The
+  shipped `examples/styles/barrier-wavy.fmstyle.ron` now sets `both_edges: true` so it
+  demonstrates the new rigid-ripple look; `both_edges: false` (the default) reproduces the
+  original top-only look exactly.
+- **Glow now composes on edge distance, not center distance**, so the halo hugs the wavy edge
+  instead of clipping against an invisible flat line: `edge_dist = max(max(top_edge - y, y -
+  bottom_edge), 0.0)`, then `glow_alpha = 1 - smoothstep(0.0, glow_radius, edge_dist)`. Re-derived:
+  when `wave == 0`, `edge_dist` reduces algebraically to `max(vertical_dist - half_thickness, 0)` —
+  the old center-distance formula's argument — so by smoothstep's shift-invariance this is an exact
+  no-op when wavy is off (glow-alone, unaffected) and composes correctly with wavy when both are on.
+- **Sample style**: `examples/styles/barrier-wavy.fmstyle.ron` (Glow + a moderate `WavySpec`,
+  amplitude 6px/wavelength 220px/speed 18) added via the existing `dump_sample_styles.rs`
+  generator convention; the three pre-existing sample files each needed a `wavy: None,` line
+  inserted next to their existing `pulse: None,` (targeted edit, not wholesale regeneration — same
+  reasoning Phase F used: the generator's current output has drifted slightly from the checked-in
+  files on unrelated fields, so a full overwrite would pick up unrelated diffs).
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean (`shipped_sample_styles_parse` now finds 4 sample files, still `>= 3`). **Not yet manually
+  run** (per the "never run the app yourself" rule) — worth confirming, next time someone has hands
+  on the app: with no `wavy` set, the barrier looks identical to before at various
+  thickness/Line/Glow combinations; importing `barrier-wavy.fmstyle.ron` makes the top edge ripple
+  calmly (not one obvious repeating wave, not jittery), the ripple continues during playback and
+  freezes exactly on pause/scrub-stop, and the glow (Glow kind) follows the ripple continuously
+  rather than clipping against a flat edge; and that an exported clip's ripple is deterministic
+  frame-to-frame at a given timestamp versus interactive playback at the same timestamp.
+
+**Phases H-J are not yet started.**
 
 ### Vendored note pipeline, pixel-parity (Phase B of the `.fmstyle.ron` milestone)
 

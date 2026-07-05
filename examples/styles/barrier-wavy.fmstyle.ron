@@ -11,14 +11,16 @@
     )),
     barrier: Static((
         kind: Glow,
-        color: Constant((255, 220, 120)),
-        thickness: 6.0,
-        glow_radius_px: 24.0,
-        pulse: Some((
-            intensity: 0.8,
-            decay_seconds: 0.35,
+        color: Constant((120, 200, 255)),
+        thickness: 5.0,
+        glow_radius_px: 30.0,
+        pulse: None,
+        wavy: Some((
+            amplitude_px: 6.0,
+            wavelength_px: 220.0,
+            speed: 2.0,
+            both_edges: true,
         )),
-        wavy: None,
     )),
     transition: Static((
         kind: r#None,

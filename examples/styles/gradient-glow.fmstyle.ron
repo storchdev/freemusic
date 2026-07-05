@@ -26,6 +26,7 @@
         thickness: 4.0,
         glow_radius_px: 0.0,
         pulse: None,
+        wavy: None,
     )),
     transition: Static((
         kind: r#None,
