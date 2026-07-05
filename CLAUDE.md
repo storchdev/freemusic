@@ -1323,21 +1323,58 @@ before I because I's spawn code touches the same `EffectInstance`/spawn helpers 
   product form reproduces the old formula exactly whenever the two smoothstep transition zones
   don't overlap (true for `thickness > 2px`), with `wave == 0` making `top_edge`/`bottom_edge`
   collapse back to the plain symmetric case.
-- **Follow-up, same session**: after seeing this rendered, the user asked for an option to make
+- **Follow-up #1, same session**: after seeing this rendered, the user asked for an option to make
   the *whole bar* ride the wave (both edges moving together) instead of only the top surface
-  bulging while the bottom stayed rigidly flat. Added `WavySpec::both_edges: bool` (`#[serde(
-  default)] false`, so existing/older files without the field keep the top-only look
-  byte-for-byte). Wired as a 4th `flags` slot (`flags.w`, alongside the existing
-  glow-enabled/pulse-intensity/wavy-enabled flags) written by `set_style`. In the shader,
-  `bottom_wave = select(0.0, wave, flags.z > 0.5 && flags.w > 0.5)` is added onto `bottom_edge` —
-  since both edges get the *identical* offset, the bar translates rigidly (constant thickness)
-  rather than breathing in thickness. This needed no vertex-shader margin change (the inflation
-  was already symmetric top/bottom by `amplitude_px` regardless of `both_edges`) and no glow
-  formula change (the glow math already read `top_edge`/`bottom_edge` as variables, not
-  hardcoded flat expressions, so it automatically hugs whichever edge shape is active). The
-  shipped `examples/styles/barrier-wavy.fmstyle.ron` now sets `both_edges: true` so it
-  demonstrates the new rigid-ripple look; `both_edges: false` (the default) reproduces the
-  original top-only look exactly.
+  bulging while the bottom stayed rigidly flat. First cut: `WavySpec::both_edges: bool`, wired as
+  a 4th `flags` slot written by `set_style`, with `bottom_wave = select(0.0, wave, flags.z > 0.5
+  && flags.w > 0.5)` added onto `bottom_edge` in the shader — both edges get the *identical*
+  offset, so the bar translates rigidly (constant thickness).
+- **Follow-up #2, same session**: after trying it, the user liked the rigid-translation look but
+  said it wasn't what they'd actually asked for ("it just looks like a curvy line ... with even
+  less volume") — the translation reads as a thin moving line precisely because the
+  cross-section never changes shape — and asked for a genuine "double sided wave" as a **third**
+  option alongside the original top-only look and the rigid-translation look they'd grown to
+  like. Replaced the bool with a 3-state enum, since two independent booleans-worth of behavior
+  needed to coexist. First cut of the third variant made the bottom edge ripple *out of phase*
+  with the top (a `wavy_offset_bottom` with phase-shifted sine terms) — this was superseded a
+  turn later, see Follow-up #3.
+- **Follow-up #3, same session**: after trying the out-of-phase variant, the user said it
+  pinched down to (near) zero thickness at some x positions and asked for the third mode to
+  *always* have volume, swelling outward on both sides rather than ever cancelling down thin —
+  and asked for all three variants to be renamed: `TopOnly`→`TopWave`, `Mirrored`→`Edge`,
+  `BothEdges`→`FullWave`. Final shape:
+  ```rust
+  pub enum WavyMode { #[default] TopWave, Edge, FullWave }
+  ```
+  (`crates/project/src/style.rs`, re-exported from `crates/project/src/lib.rs` like every other
+  `style` type). `TopWave` is the original default look (only the top ripples, can pinch thin —
+  unchanged, this was never the complaint). `Edge` is the rigid-translation look the user liked.
+  `FullWave` replaces the out-of-phase pairing: **both edges bulge outward together, correlated
+  with the same underlying wave rather than an independent/decorrelated one** —
+  `swell = 0.5 * (amplitude_px + wave)`, which is always in `[0, amplitude_px]` since `wave`
+  itself is bounded to `[-amplitude_px, amplitude_px]`, then `top_offset = -swell` and
+  `bottom_offset = +swell`. This guarantees thickness is always `base_thickness + 2*swell >=
+  base_thickness` — never pinching below the configured thickness — while both edges still bulge
+  most at the same x where the underlying wave peaks (rather than independently, which is what
+  let the two edges cancel each other down to near-zero gap before this fix).
+  - **Renderer** (`crates/render/src/barrier.rs`): `flags.w` holds the mode as a float (0/1/2),
+    unchanged shape from Follow-up #2, just remapped to the new variant order/names.
+  - **Shader** (`crates/render/src/barrier.wgsl`): the separate `wavy_offset_bottom` function was
+    deleted — `FullWave` no longer needs its own trig pass, it derives `swell` directly from the
+    same `wave` value `TopWave`/`Edge` already compute. `fs_main` now computes `top_offset`/
+    `bottom_offset` per mode (`flags.w > 1.5` → `FullWave`'s swell pair; `> 0.5` → `Edge`'s
+    identical `wave` on both; else `TopWave`'s `wave` on top only, `0.0` on bottom) — `TopWave`'s
+    code path is byte-for-byte what it was before any of these follow-ups existed.
+  - **No vertex-margin or glow-formula changes needed for any of these follow-ups**: the
+    inflation margin was already symmetric top/bottom by `amplitude_px` regardless of mode (every
+    mode's per-edge offset stays within `[-amplitude_px, amplitude_px]`, including `FullWave`'s
+    `swell`), and the glow math already read `top_edge`/`bottom_edge` as variables (not hardcoded
+    flat expressions), so both automatically extend correctly with no further changes.
+  - **Samples**: `examples/styles/barrier-wavy.fmstyle.ron` (which the user had been
+    hand-editing/tuning throughout this exploration) now reads `mode: Edge` — preserving exactly
+    the look they said they liked, not reverting their tuning (only the field name/variant
+    changed to track the rename). `examples/styles/barrier-wavy-volume.fmstyle.ron` now reads
+    `mode: FullWave`, demonstrating the corrected always-has-volume look.
 - **Glow now composes on edge distance, not center distance**, so the halo hugs the wavy edge
   instead of clipping against an invisible flat line: `edge_dist = max(max(top_edge - y, y -
   bottom_edge), 0.0)`, then `glow_alpha = 1 - smoothstep(0.0, glow_radius, edge_dist)`. Re-derived:

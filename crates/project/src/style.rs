@@ -316,7 +316,26 @@ pub struct Pulse {
     pub decay_seconds: f32,
 }
 
-/// A calm, stochastic-looking (not a single literal sine) wavy top edge for the barrier — three
+/// Which edges of the barrier ripple, and how the bottom edge (if it ripples at all) relates to
+/// the top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum WavyMode {
+    /// Only the top edge ripples; the bottom stays perfectly flat, so the bar's thickness varies
+    /// across its width (the original "calm ocean cross-section" look).
+    #[default]
+    TopWave,
+    /// The identical offset is applied to both edges, so the whole bar rides the wave rigidly —
+    /// constant thickness, the bar translates as a unit. Reads as a thin curvy line rather than a
+    /// bar with volume, since nothing about the bar's cross-section actually changes shape.
+    Edge,
+    /// Both edges bulge outward together (never inward past the base thickness), so the bar
+    /// always has at least its configured thickness and swells further at wave crests on both
+    /// sides at once — real, always-present volume with no pinch-to-nothing points, unlike an
+    /// out-of-phase pairing that can cancel down to (near) zero thickness.
+    FullWave,
+}
+
+/// A calm, stochastic-looking (not a single literal sine) wavy edge for the barrier — three
 /// incommensurate-frequency sine terms summed with weights 0.6/0.3/0.1 (see `barrier.wgsl`'s
 /// `wavy_offset`), so `|offset| <= amplitude_px` always holds exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -328,12 +347,9 @@ pub struct WavySpec {
     /// How fast the wave crawls sideways over transport time; 0 = frozen shape (still
     /// x-varying), not flat.
     pub speed: f32,
-    /// When `false` (default), only the top edge ripples and the bottom stays flat, so the bar's
-    /// thickness varies across its width. When `true`, the identical offset is also applied to the
-    /// bottom edge, so the whole bar rides the wave rigidly (constant thickness) instead of just
-    /// its top surface bulging.
+    /// Which edges ripple and how. See `WavyMode`'s own doc comments.
     #[serde(default)]
-    pub both_edges: bool,
+    pub mode: WavyMode,
 }
 
 /// The horizontal barrier where falling notes stop.

@@ -74,7 +74,7 @@ fn main() {
                 amplitude_px: 6.0,
                 wavelength_px: 220.0,
                 speed: 18.0,
-                both_edges: true,
+                mode: project::WavyMode::FullWave,
             }),
         }),
         transition: Timed::Static(TransitionLayer::default()),

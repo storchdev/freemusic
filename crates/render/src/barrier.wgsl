@@ -10,7 +10,7 @@ struct Uniforms {
     // xyz = barrier color (linear), w = glow radius (pixels).
     color_glow_radius: vec4<f32>,
     // x = glow enabled (0/1), y = pulse intensity (0..1, decaying), z = wavy enabled (0/1),
-    // w = wavy both_edges (0/1, only meaningful when z is set).
+    // w = wavy mode (0=TopWave, 1=Edge, 2=FullWave; only meaningful when z is set).
     flags: vec4<f32>,
     // x = wave amplitude (px), y = wavelength (px), z = speed, w = transport time (seconds).
     wave: vec4<f32>,
@@ -60,9 +60,10 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     // Extend the rasterized quad past the core thickness when glow is enabled, same "inflate so
     // there are pixels to paint the halo onto" trick `notes/shader.wgsl` uses for note glow — a
     // zero margin when disabled makes this an exact no-op, not just visually close. Also inflate
-    // symmetrically top/bottom by the wave amplitude when wavy is enabled (simpler than an
-    // asymmetric top-only margin; the extra overdraw below the always-flat bottom edge is
-    // harmless) — zero margin when disabled, same exact-no-op guarantee.
+    // symmetrically top/bottom by the wave amplitude when wavy is enabled — every `WavyMode`'s
+    // per-edge offset is bounded to `[-amplitude_px, amplitude_px]` (see `fs_main`), so a single
+    // symmetric margin covers `TopWave`/`Edge`/`FullWave` alike — zero margin when disabled, same
+    // exact-no-op guarantee.
     let glow_margin = select(0.0, uniforms.color_glow_radius.w, uniforms.flags.x > 0.5);
     let wavy_margin = select(0.0, uniforms.wave.x, uniforms.flags.z > 0.5);
     let half_extent = thickness * 0.5 + glow_margin + wavy_margin;
@@ -86,17 +87,39 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let barrier_y = uniforms.geometry.z;
     let half_thickness = uniforms.geometry.w * 0.5;
 
-    // By default only the top edge waves and the bottom stays flat (a rippling surface over a
-    // flat floor, thickness varies across the bar's width) — matching the original "calm ocean
-    // cross-section" look. When `both_edges` is set, the identical offset is also applied to the
-    // bottom edge, so the whole bar rides the wave rigidly instead of just its top surface
-    // bulging (thickness stays constant). `bottom_wave` is exactly `0.0` unless both flags.z
-    // (wavy enabled) and flags.w (both_edges) are set, so this is a pure additive extension: the
-    // top-only case below is completely unaffected.
+    // `WavyMode::TopWave` (default): only the top edge waves, bottom stays flat (a rippling
+    // surface over a flat floor, thickness varies across the bar's width, and can pinch thin
+    // where the wave dips inward) — the original "calm ocean cross-section" look.
+    // `Edge`: the identical (signed) offset is also applied to the bottom edge, so the whole bar
+    // rides the wave rigidly (constant thickness, reads as a thin translating line rather than a
+    // bar with volume).
+    // `FullWave`: both edges bulge *outward* together, `swell = 0.5 * (amplitude_px + wave)`,
+    // which is always in `[0, amplitude_px]` since `wave` is itself bounded to
+    // `[-amplitude_px, amplitude_px]` — so thickness is always `base + 2*swell >= base`, never
+    // pinching to (near) zero the way an independently-signed pairing could, while still varying
+    // continuously with the same calm underlying pattern as the other two modes (both edges bulge
+    // most at the same x where `wave` itself peaks).
+    // All three offsets are exactly `0.0` when wavy is disabled (flags.z < 0.5), and `TopWave`'s
+    // `bottom_offset` is always `0.0`, so `TopWave` is byte-for-byte identical to how this shader
+    // worked before `Edge`/`FullWave` existed.
     let wave = wavy_offset(in.position.x);
-    let bottom_wave = select(0.0, wave, uniforms.flags.z > 0.5 && uniforms.flags.w > 0.5);
-    let top_edge = barrier_y - half_thickness + wave;
-    let bottom_edge = barrier_y + half_thickness + bottom_wave;
+    var top_offset = 0.0;
+    var bottom_offset = 0.0;
+    if (uniforms.flags.z > 0.5) {
+        if (uniforms.flags.w > 1.5) {
+            let amp = uniforms.wave.x;
+            let swell = 0.5 * (amp + wave);
+            top_offset = -swell;
+            bottom_offset = swell;
+        } else if (uniforms.flags.w > 0.5) {
+            top_offset = wave;
+            bottom_offset = wave;
+        } else {
+            top_offset = wave;
+        }
+    }
+    let top_edge = barrier_y - half_thickness + top_offset;
+    let bottom_edge = barrier_y + half_thickness + bottom_offset;
     let alpha_top = smoothstep(top_edge - 1.0, top_edge + 1.0, in.position.y);
     let alpha_bottom = 1.0 - smoothstep(bottom_edge - 1.0, bottom_edge + 1.0, in.position.y);
     // When wave == 0 this is algebraically identical to the old single symmetric

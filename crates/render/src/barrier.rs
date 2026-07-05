@@ -9,7 +9,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use project::{BarrierKind, BarrierLayer, Pulse, WavySpec};
+use project::{BarrierKind, BarrierLayer, Pulse, WavyMode, WavySpec};
 
 /// All-vec4 layout, same reasoning as `notes::pipeline::StyleUniform` — every field is already
 /// vec4-aligned so there's no std140 column-padding mismatch (the `mat3x3<f32>` uniform CLAUDE.md
@@ -22,7 +22,7 @@ struct Uniforms {
     /// xyz = barrier color (linear), w = glow radius (pixels).
     color_glow_radius: [f32; 4],
     /// x = glow enabled (0/1), y = pulse intensity (0..1, decaying), z = wavy enabled (0/1),
-    /// w = wavy both_edges (0/1, only meaningful when z is set).
+    /// w = wavy mode (0=TopOnly, 1=Mirrored, 2=BothEdges; only meaningful when z is set).
     flags: [f32; 4],
     /// x = wave amplitude (px), y = wavelength (px), z = speed, w = transport time (seconds).
     wave: [f32; 4],
@@ -169,10 +169,14 @@ impl BarrierRenderer {
                 amplitude_px,
                 wavelength_px,
                 speed,
-                both_edges,
+                mode,
             }) => {
                 self.data.flags[2] = 1.0;
-                self.data.flags[3] = *both_edges as u8 as f32;
+                self.data.flags[3] = match mode {
+                    WavyMode::TopWave => 0.0,
+                    WavyMode::Edge => 1.0,
+                    WavyMode::FullWave => 2.0,
+                };
                 self.data.wave[0] = amplitude_px.max(0.0);
                 self.data.wave[1] = *wavelength_px;
                 self.data.wave[2] = *speed;
