@@ -2,6 +2,9 @@
 //! to be extended without breaking older files (every field is `#[serde(default)]`-compatible via
 //! the wrapper types below). This module only defines the schema and its resolution helpers —
 //! nothing here renders anything yet; see `CLAUDE.md` for which renderer phase consumes it.
+//!
+//! For the field-by-field contract (defaults, meaning, RON snippets, breaking-change log), see
+//! `docs/fmstyle-format.md` — keep it in sync whenever this module's schema changes.
 
 use std::path::Path;
 

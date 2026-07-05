@@ -1158,6 +1158,11 @@ authored as data, not just via the existing color/roundedness/thickness sliders.
 + plumbing, no visual change) is done; Phases B-F (vendoring the note renderer, actually drawing
 any of this, sample-style screenshots) are not started.**
 
+**For the field-by-field `.fmstyle.ron` contract (defaults, meaning, RON snippets, breaking-change
+log), see `docs/fmstyle-format.md`** — the phase write-ups throughout this section (here and
+below) stay as historical narrative of what was built and why, not rewritten to match; the doc is
+the living spec, kept in sync whenever the schema changes.
+
 - **New module `crates/project/src/style.rs`** (re-exported flat from `crates/project/src/lib.rs`,
   same pattern as the other `project` types): `Style { version, notes: Timed<NoteLayer>, barrier:
   Timed<BarrierLayer>, transition: Timed<TransitionLayer> }`, with `Style::load`/`save` mirroring
@@ -1447,8 +1452,8 @@ before I because I's spawn code touches the same `EffectInstance`/spawn helpers 
   solid ellipse; and if the `1.6` falloff exponent looks off, that's the value to tune first.
 
 **Phase I — Continuous "grinding" particles + sustained flash-as-glow — DONE.** Plan:
-`~/.claude/plans/the-most-recent-changes-delightful-rabbit.md`. **Phase J (docs) is not yet
-started.**
+`~/.claude/plans/the-most-recent-changes-delightful-rabbit.md`. **Phase J (docs) is now done** —
+see `docs/fmstyle-format.md` for the field-by-field spec.
 
 - **Unified `HitEvent` into a richer `NoteInterval`** (`crates/render/src/notes/mod.rs`): the old
   `HitEvent { time_seconds, x_px }` (attack instant + lane-center x) only had enough information
