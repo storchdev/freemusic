@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use audio_playback::AudioPlayback;
 use export::Progress as ExportProgress;
 use gpu::Gpu;
-use project::{KeyboardCalibration, Project};
+use project::{KeyboardCalibration, Project, Style};
 use render::Compositor;
 use ui::UiState;
 use video_pipeline::VideoPipeline;
@@ -347,6 +347,8 @@ impl AppState {
                 open_project_requested: false,
                 save_project_as_requested: false,
                 exit_requested: false,
+                style: None,
+                import_style_requested: false,
                 status_message: None,
                 export_path_text: String::new(),
                 export_fps: 30,
@@ -504,6 +506,7 @@ impl AppState {
             transform: self.ui_state.transform,
             barrier_style: self.ui_state.barrier_style,
             note_style: self.ui_state.note_style,
+            style: self.ui_state.style.clone(),
         }
     }
 
@@ -589,6 +592,7 @@ impl AppState {
         self.ui_state.transform = project::VideoTransform::default();
         self.ui_state.barrier_style = project::BarrierStyle::default();
         self.ui_state.note_style = project::NoteStyle::default();
+        self.ui_state.style = None;
         self.ui_state.project_path_text = String::new();
         self.ui_state.export_path_text = String::new();
         self.ui_state.canvas_size = self.canvas_size;
@@ -615,6 +619,7 @@ impl AppState {
                 self.ui_state.transform = project.transform;
                 self.ui_state.barrier_style = project.barrier_style;
                 self.ui_state.note_style = project.note_style;
+                self.ui_state.style = project.style.clone();
                 if let Some(video_path) = project.video_path.clone() {
                     self.load_video(&video_path);
                 }
@@ -973,6 +978,22 @@ impl AppState {
                 .pick_file()
             {
                 self.load_midi(&path);
+            }
+        }
+        if self.ui_state.import_style_requested {
+            self.ui_state.import_style_requested = false;
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Style", &["ron"])
+                .pick_file()
+            {
+                match Style::load(&path) {
+                    Ok(style) => {
+                        self.ui_state.style = Some(style);
+                        self.ui_state.status_message =
+                            Some(format!("Imported style from {}", path.display()));
+                    }
+                    Err(err) => self.ui_state.status_message = Some(err),
+                }
             }
         }
         if self.ui_state.new_project_requested {

@@ -5,6 +5,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+mod style;
+pub use style::{
+    BarrierKind, BarrierLayer, Border, ColorBinding, Fill, FlashSpec, Glow, NoteLayer,
+    ParticleSpec, Pulse, Ramp, ScalarBinding, Sheen, Style, Timed, TransitionKind, TransitionLayer,
+};
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Project {
     pub video_path: Option<PathBuf>,
@@ -16,6 +22,13 @@ pub struct Project {
     pub transform: VideoTransform,
     pub barrier_style: BarrierStyle,
     pub note_style: NoteStyle,
+    /// A full imported `.fmstyle.ron` look, if one has been imported (see `style::Style`);
+    /// `None` for a project that has never had one imported, including every project saved
+    /// before this field existed (`serde(default)` makes old `.fmproj.ron` files load as
+    /// `None`). When present, this is the *effective* style the renderer should use instead of
+    /// one synthesized from `barrier_style`/`note_style` — see `Style::from_legacy`.
+    #[serde(default)]
+    pub style: Option<Style>,
 }
 
 /// Horizontal bounds of the real keyboard visible in the footage (fractions of window width,
@@ -139,5 +152,26 @@ impl Project {
         let text = std::fs::read_to_string(path)
             .map_err(|err| format!("failed to read {path:?}: {err}"))?;
         ron::from_str(&text).map_err(|err| format!("failed to parse {path:?}: {err}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `.fmproj.ron` file saved before the `style` field existed has no `style` key at all;
+    /// `serde(default)` should load it as `None` rather than failing to parse.
+    #[test]
+    fn project_without_style_field_loads_with_none() {
+        let text =
+            ron::ser::to_string_pretty(&Project::default(), ron::ser::PrettyConfig::new()).unwrap();
+        let without_style_field: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("style"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let parsed: Project = ron::from_str(&without_style_field).unwrap();
+        assert_eq!(parsed.style, None);
     }
 }

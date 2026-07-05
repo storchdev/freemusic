@@ -1139,6 +1139,87 @@ no effect).
   confirming visually the results look like an upside-down rotation and a fully rounded/pill note
   shape respectively, next time someone has hands on the running app.
 
+### Extensible visual style format (Phase A of the `.fmstyle.ron` milestone)
+
+Full plan: `~/.claude/plans/potentially-very-big-milestone-vectorized-seal.md`. This milestone's
+goal is a data-driven `.fmstyle.ron` format that can describe note fills (gradient/sheen/glow),
+barrier looks (glow/pulse), and barrier-hit transitions (particles/flash) — proving visuals can be
+authored as data, not just via the existing color/roundedness/thickness sliders. **Phase A (format
++ plumbing, no visual change) is done; Phases B-F (vendoring the note renderer, actually drawing
+any of this, sample-style screenshots) are not started.**
+
+- **New module `crates/project/src/style.rs`** (re-exported flat from `crates/project/src/lib.rs`,
+  same pattern as the other `project` types): `Style { version, notes: Timed<NoteLayer>, barrier:
+  Timed<BarrierLayer>, transition: Timed<TransitionLayer> }`, with `Style::load`/`save` mirroring
+  `Project::load`/`save` exactly (`Result<_, String>`, same RON pretty-printer). Every field is
+  `#[serde(default)]`-compatible so older/partial files still load — verified by a unit test that
+  strips the whole `style` line out of a serialized `Project` and confirms it still parses with
+  `style: None`.
+  - `Timed<T> = enum { Static(T), Keyed(Vec<(f64, T)>) }` is the time-keying spine:
+    `resolve(t)` returns the last key `<= t`, clamped to the first key if `t` precedes all of
+    them. **v1 never actually re-resolves during playback** — nothing calls `resolve` at any time
+    other than a one-time `resolve(0.0)` once real rendering consumes a `Style` (Phase B+); the
+    type and its boundary behavior are tested now so the spine is provably correct before
+    anything is built on top of it.
+  - `ColorBinding`/`ScalarBinding` are the per-note property-binding spine: `Constant` resolves
+    exactly; `ByVelocity`/`ByPitchClass`/`ByTrack` parse and round-trip but aren't wired to real
+    per-note data yet — `resolve_constant()` falls back to a representative constant (ramp's high
+    end / first pitch-class entry / first track entry, warned once via a `std::sync::Once` guard
+    so a style using these doesn't spam stderr once Phase B+ actually calls this per-note). This
+    is intentionally the smallest possible extension point: the enum shape exists so a future
+    session can wire real velocity/pitch/track data through without a format break, but nothing
+    downstream depends on that data existing yet.
+  - `NoteLayer`/`BarrierLayer`/`TransitionLayer` (plus `Fill`, `Sheen`, `Glow`, `Border`,
+    `BarrierKind`, `Pulse`, `TransitionKind`, `ParticleSpec`, `FlashSpec`) are the effect-layer
+    schema exactly as scoped in the plan. `Border` is schema-only (parses, round-trips, nothing
+    reads it) — a deliberately documented no-op, not a bug.
+  - `Style::from_legacy(&NoteStyle, &BarrierStyle) -> Style` produces the exact look the existing
+    sliders already draw (`Fill::Solid`, no sheen/glow, `BarrierKind::Line`,
+    `TransitionKind::None`) — the intended single rendering path once Phase B lands: the renderer
+    always consumes a `Style`, either imported or synthesized from the legacy fields. **Nothing
+    calls `from_legacy` yet outside tests** — Phase A stops at having it exist and be correct;
+    wiring it into `AppState::redraw` has no purpose until Phase B's renderer actually accepts a
+    `Style` argument, so that wiring was deliberately left out rather than adding a call site with
+    no consumer (would just be dead-looking plumbing).
+- **`Project` gained `pub style: Option<Style>`** (`#[serde(default)]`), alongside the existing
+  `barrier_style`/`note_style` "quick controls." `snapshot_project`/`load_project_from_path`/
+  `new_project` in `app/src/main.rs` all thread it through, same one-line-per-field pattern every
+  other `Project` field already uses.
+- **"Import style…" button** (Project tab, `app/src/ui.rs::draw_project_tab`) is the only UI
+  surface: `UiState.import_style_requested` follows the exact `open_project_requested` template
+  (flag set by the button, consumed same-redraw in `main.rs`'s `apply_post_ui_updates` via an
+  `rfd::FileDialog` `.ron`-filtered picker, `Style::load`, set into `ui_state.style`). A one-line
+  label under the button ("Custom style imported…" / "Using note/barrier sliders…") is the only
+  feedback — not in the original plan's UI list verbatim, but cheap and necessary so importing a
+  style (which currently changes nothing visible, since Phase B hasn't landed) doesn't look like
+  the button silently did nothing.
+- **Sample styles shipped early, ahead of the plan's Phase F**: `examples/styles/{gradient-glow,
+  barrier-pulse,sparks}.fmstyle.ron` (repo root, not under `crates/`) exercise gradient+sheen+glow,
+  barrier glow+pulse, and particles+flash respectively. Generated via a throwaway example binary
+  (`crates/project/examples/dump_sample_styles.rs`, run once with `cargo run -p project --example
+  dump_sample_styles` and its stdout copied into the three files) rather than hand-typed RON —
+  guarantees the checked-in files exactly match what this `ron` version actually serializes
+  (notably: unit enum variant `None` serializes as the raw identifier `r#None`, since `None` is a
+  reserved word; easy to get wrong by hand). A unit test (`shipped_sample_styles_parse`) reads
+  every `.ron` file in that directory and calls `Style::load` on it, so the checked-in samples
+  can't silently drift out of sync with the schema as it evolves. They're already importable via
+  the button and parse correctly, but **importing one currently changes nothing on screen** —
+  Phase B (vendoring the note pipeline so the renderer actually accepts a `Style`) hasn't started,
+  so only the legacy sliders draw anything yet.
+- **Verified so far**: `cargo build`/`scripts/check.sh` (fmt+clippy) clean; `cargo test --workspace`
+  passes, including 8 new tests in `crates/project` (`Timed::resolve` boundaries — static, keyed
+  mid-range, keyed before-first-key clamp, keyed past-last-key — `ColorBinding::Constant`/
+  non-`Constant`-fallback resolution, `Style`/`Project` RON round-trips, old-`Project`-without-
+  `style` loading, and the shipped-sample-styles parse check). **Not yet manually exercised in the
+  running app** — worth clicking "Import style…", picking one of the three samples, and
+  confirming the label under the button flips to "Custom style imported…" and a project save/load
+  round-trips `style` correctly (nothing else to check visually until Phase B).
+- **Not started**: Phase B (vendor the note pipeline in `crates/render/src/notes/`, own the
+  shader, drop `midi_overlay.rs`'s `virtual_canvas_height` barrier-viewport hack for a real
+  `barrier_fraction` uniform — flagged in the plan as the highest-risk phase), Phase C (note fill
+  effects actually rendered), Phase D (barrier promoted from egui overlay to a real glow/pulse
+  render pass), Phase E (particle/flash transition pass + hit-event precompute).
+
 ## Verifying changes to `app` or `video-pipeline`
 
 > Per the "never run the app yourself" rule above: don't execute the commands in this section

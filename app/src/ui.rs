@@ -45,6 +45,16 @@ pub struct UiState {
     pub open_project_requested: bool,
     pub save_project_as_requested: bool,
     pub exit_requested: bool,
+    /// A fully imported `.fmstyle.ron` look, set by the Project tab's "Import style…" button.
+    /// When `Some`, this is the effective style the renderer should use instead of one
+    /// synthesized from `barrier_style`/`note_style` (see `project::Style::from_legacy`) — the
+    /// Keyboard tab's sliders still edit those legacy fields, but they're overridden while a
+    /// style is imported. `None` means "use the legacy sliders", the only state before this
+    /// milestone existed.
+    pub style: Option<project::Style>,
+    /// Set by the "Import style…" button; the app loop consumes and clears it each redraw,
+    /// popping a native `rfd` file picker and loading whatever the user chose into `style`.
+    pub import_style_requested: bool,
     pub status_message: Option<String>,
     /// Path typed into the Export text field; defaulted from the video path on first load.
     pub export_path_text: String,
@@ -344,6 +354,17 @@ fn draw_project_tab(ui: &mut egui::Ui, state: &mut UiState) {
     ui.horizontal(|ui| {
         ui.label("Sync offset (s):");
         ui.add(egui::DragValue::new(&mut state.sync_offset_seconds).speed(0.01));
+    });
+
+    ui.separator();
+    ui.heading("Style");
+    if ui.button("Import style…").clicked() {
+        state.import_style_requested = true;
+    }
+    ui.label(if state.style.is_some() {
+        "Custom style imported (overrides note/barrier sliders)"
+    } else {
+        "Using note/barrier sliders (no style imported)"
     });
 
     ui.separator();

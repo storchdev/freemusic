@@ -1,0 +1,34 @@
+(
+    version: 1,
+    notes: Static((
+        fill: VerticalGradient(
+            top: Constant((120, 220, 255)),
+            bottom: Constant((30, 90, 200)),
+        ),
+        sheen: Some((
+            intensity: 0.6,
+            width: 0.25,
+            angle_degrees: 35.0,
+        )),
+        glow: Some((
+            color: Constant((120, 200, 255)),
+            radius_px: 12.0,
+            intensity: 0.5,
+        )),
+        roundedness: 1.0,
+        fall_speed: 400.0,
+        border: None,
+    )),
+    barrier: Static((
+        kind: Line,
+        color: Constant((255, 255, 255)),
+        thickness: 4.0,
+        glow_radius_px: 0.0,
+        pulse: None,
+    )),
+    transition: Static((
+        kind: r#None,
+        particles: None,
+        flash: None,
+    )),
+)

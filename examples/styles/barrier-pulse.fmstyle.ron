@@ -1,0 +1,26 @@
+(
+    version: 1,
+    notes: Static((
+        fill: Solid(Constant((255, 255, 255))),
+        sheen: None,
+        glow: None,
+        roundedness: 1.0,
+        fall_speed: 400.0,
+        border: None,
+    )),
+    barrier: Static((
+        kind: Glow,
+        color: Constant((255, 220, 120)),
+        thickness: 6.0,
+        glow_radius_px: 24.0,
+        pulse: Some((
+            intensity: 0.8,
+            decay_seconds: 0.35,
+        )),
+    )),
+    transition: Static((
+        kind: r#None,
+        particles: None,
+        flash: None,
+    )),
+)
