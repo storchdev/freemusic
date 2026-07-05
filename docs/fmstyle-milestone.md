@@ -1,0 +1,875 @@
+# The `.fmstyle.ron` extensible visual style milestone
+
+Full phase-by-phase narrative (Phases A–L) of the extensible style format work, split out of
+CLAUDE.md. For the field-by-field format spec see `docs/fmstyle-format.md`.
+
+### Extensible visual style format (Phase A of the `.fmstyle.ron` milestone)
+
+Full plan: `~/.claude/plans/potentially-very-big-milestone-vectorized-seal.md`. This milestone's
+goal is a data-driven `.fmstyle.ron` format that can describe note fills (gradient/sheen/glow),
+barrier looks (glow/pulse), and barrier-hit transitions (particles/flash) — proving visuals can be
+authored as data, not just via the existing color/roundedness/thickness sliders. **Phase A (format
++ plumbing, no visual change) is done; Phases B-F (vendoring the note renderer, actually drawing
+any of this, sample-style screenshots) are not started.**
+
+**For the field-by-field `.fmstyle.ron` contract (defaults, meaning, RON snippets, breaking-change
+log), see `docs/fmstyle-format.md`** — the phase write-ups throughout this section (here and
+below) stay as historical narrative of what was built and why, not rewritten to match; the doc is
+the living spec, kept in sync whenever the schema changes.
+
+- **New module `crates/project/src/style.rs`** (re-exported flat from `crates/project/src/lib.rs`,
+  same pattern as the other `project` types): `Style { version, notes: Timed<NoteLayer>, barrier:
+  Timed<BarrierLayer>, transition: Timed<TransitionLayer> }`, with `Style::load`/`save` mirroring
+  `Project::load`/`save` exactly (`Result<_, String>`, same RON pretty-printer). Every field is
+  `#[serde(default)]`-compatible so older/partial files still load — verified by a unit test that
+  strips the whole `style` line out of a serialized `Project` and confirms it still parses with
+  `style: None`.
+  - `Timed<T> = enum { Static(T), Keyed(Vec<(f64, T)>) }` is the time-keying spine:
+    `resolve(t)` returns the last key `<= t`, clamped to the first key if `t` precedes all of
+    them. **v1 never actually re-resolves during playback** — nothing calls `resolve` at any time
+    other than a one-time `resolve(0.0)` once real rendering consumes a `Style` (Phase B+); the
+    type and its boundary behavior are tested now so the spine is provably correct before
+    anything is built on top of it.
+  - `ColorBinding`/`ScalarBinding` are the per-note property-binding spine: `Constant` resolves
+    exactly; `ByVelocity`/`ByPitchClass`/`ByTrack` parse and round-trip but aren't wired to real
+    per-note data yet — `resolve_constant()` falls back to a representative constant (ramp's high
+    end / first pitch-class entry / first track entry, warned once via a `std::sync::Once` guard
+    so a style using these doesn't spam stderr once Phase B+ actually calls this per-note). This
+    is intentionally the smallest possible extension point: the enum shape exists so a future
+    session can wire real velocity/pitch/track data through without a format break, but nothing
+    downstream depends on that data existing yet.
+  - `NoteLayer`/`BarrierLayer`/`TransitionLayer` (plus `Fill`, `Sheen`, `Glow`, `Border`,
+    `BarrierKind`, `Pulse`, `TransitionKind`, `ParticleSpec`, `FlashSpec`) are the effect-layer
+    schema exactly as scoped in the plan. `Border` is schema-only (parses, round-trips, nothing
+    reads it) — a deliberately documented no-op, not a bug.
+  - `Style::from_legacy(&NoteStyle, &BarrierStyle) -> Style` produces the exact look the existing
+    sliders already draw (`Fill::Solid`, no sheen/glow, `BarrierKind::Line`,
+    `TransitionKind::None`) — the intended single rendering path once Phase B lands: the renderer
+    always consumes a `Style`, either imported or synthesized from the legacy fields. **Nothing
+    calls `from_legacy` yet outside tests** — Phase A stops at having it exist and be correct;
+    wiring it into `AppState::redraw` has no purpose until Phase B's renderer actually accepts a
+    `Style` argument, so that wiring was deliberately left out rather than adding a call site with
+    no consumer (would just be dead-looking plumbing).
+- **`Project` gained `pub style: Option<Style>`** (`#[serde(default)]`), alongside the existing
+  `barrier_style`/`note_style` "quick controls." `snapshot_project`/`load_project_from_path`/
+  `new_project` in `app/src/main.rs` all thread it through, same one-line-per-field pattern every
+  other `Project` field already uses.
+- **"Import style…" button** (Project tab, `app/src/ui.rs::draw_project_tab`) is the only UI
+  surface: `UiState.import_style_requested` follows the exact `open_project_requested` template
+  (flag set by the button, consumed same-redraw in `main.rs`'s `apply_post_ui_updates` via an
+  `rfd::FileDialog` `.ron`-filtered picker, `Style::load`, set into `ui_state.style`). A one-line
+  label under the button ("Custom style imported…" / "Using note/barrier sliders…") is the only
+  feedback — not in the original plan's UI list verbatim, but cheap and necessary so importing a
+  style (which currently changes nothing visible, since Phase B hasn't landed) doesn't look like
+  the button silently did nothing.
+- **Sample styles shipped early, ahead of the plan's Phase F**: `examples/styles/{gradient-glow,
+  barrier-pulse,sparks}.fmstyle.ron` (repo root, not under `crates/`) exercise gradient+sheen+glow,
+  barrier glow+pulse, and particles+flash respectively. Generated via a throwaway example binary
+  (`crates/project/examples/dump_sample_styles.rs`, run once with `cargo run -p project --example
+  dump_sample_styles` and its stdout copied into the three files) rather than hand-typed RON —
+  guarantees the checked-in files exactly match what this `ron` version actually serializes
+  (notably: unit enum variant `None` serializes as the raw identifier `r#None`, since `None` is a
+  reserved word; easy to get wrong by hand). A unit test (`shipped_sample_styles_parse`) reads
+  every `.ron` file in that directory and calls `Style::load` on it, so the checked-in samples
+  can't silently drift out of sync with the schema as it evolves. They're already importable via
+  the button and parse correctly, but **importing one still changes nothing on screen** — the
+  note pipeline (see Phase B below) doesn't read `project::style::Style` yet, only the
+  `NoteStyle`/`BarrierStyle` "quick controls"; that wiring is Phase C+.
+- **Verified so far**: `cargo build`/`scripts/check.sh` (fmt+clippy) clean; `cargo test --workspace`
+  passes, including 8 new tests in `crates/project` (`Timed::resolve` boundaries — static, keyed
+  mid-range, keyed before-first-key clamp, keyed past-last-key — `ColorBinding::Constant`/
+  non-`Constant`-fallback resolution, `Style`/`Project` RON round-trips, old-`Project`-without-
+  `style` loading, and the shipped-sample-styles parse check). **Not yet manually exercised in the
+  running app** — worth clicking "Import style…", picking one of the three samples, and
+  confirming the label under the button flips to "Custom style imported…" and a project save/load
+  round-trips `style` correctly (nothing else to check visually until Phase C).
+- **Phase C (note fill effects actually rendered) is now done** — see "Note fill effects: gradient,
+  sheen, glow" further below. **Phase D (barrier promoted from egui overlay to a real glow/pulse
+  render pass) is now done** — see "Barrier glow/pulse pass" further below. **Phase E (barrier-hit
+  particle/flash transition pass) is now done** — see "Transition particles + flash pass" further
+  below. **Not started**: the doc/screenshot cleanup this section originally called "Phase F" —
+  superseded by the lettered-phase continuation below, which reuses letters F-J for a distinct set
+  of features (see disambiguation note).
+
+### Style extensibility continuation: Phases F-J (separate plan, new letter scheme)
+
+Full plan: `~/.claude/plans/the-most-recent-changes-delightful-rabbit.md`. **Disambiguation**: this
+plan reuses letters F-J for a *different* set of features than the "Phase F" mentioned just above
+(which only ever meant "ship sample-style screenshots/docs" and was never built out under that
+name) — don't confuse the two. This continuation closes four concrete gaps found while testing
+Phases A-E, plus adds a real field-by-field spec doc: **F** separate white/black key colors, **G**
+wavy "calm ocean" barrier edge, **H** elliptical/radiating flash (breaking rename), **I** continuous
+"grinding" particles + sustained flash-as-glow, **J** `docs/fmstyle-format.md`. Order matters: H
+before I because I's spawn code touches the same `EffectInstance`/spawn helpers H's rename touches.
+
+**Phase F — separate white/black key colors — DONE.**
+- **Schema** (`crates/project/src/style.rs`): `NoteLayer` gained `#[serde(default)]
+  pub black_key_fill: BlackKeyFill`, a new enum `{ Auto (default, today's darken-by-0.6
+  behavior), Same (no darkening), Custom(Fill) (independently resolved solid/gradient fill) }`.
+- **Legacy quick control** (`crates/project/src/lib.rs`): `NoteStyle` gained
+  `#[serde(default)] pub black_key_color: BlackKeyColorMode` (`Auto`/`Same`/`Custom([u8; 3])` —
+  solid-only, mirroring `BlackKeyFill` minus gradient support). `Style::from_legacy` maps
+  `Auto→Auto`, `Same→Same`, `Custom(c)→Custom(Fill::Solid(ColorBinding::Constant(c)))`.
+- **Renderer** (`crates/render/src/notes/mod.rs`): extracted `resolve_fill_base(&Fill) -> ([u8;
+  3], [u8; 3])` out of the inline match `rebuild_instances` used to do, shared by both the
+  white-key fill resolution and (new) `BlackKeyFill::Custom`'s independent fill resolution.
+  `BlackKeyFill::Auto`'s code path calls the exact same `darken(_, 0.6)` on the exact same base
+  colors as before — verified byte-identical, the required no-regression guarantee for projects
+  with no imported style and no touched black-key UI. Per-note sharp/white key color selection
+  (`if key.kind().is_sharp() { dark } else { light }`) is unchanged.
+- **UI** (`app/src/ui.rs::draw_keyboard_tab`): a `Auto`/`Same`/`Custom` `egui::ComboBox` next to
+  the existing note "Color:" row, plus a second `color_edit_button_srgb` shown only when
+  `Custom` is selected. Picking `Custom` for the first time seeds it with `darken(color, 0.6)`
+  (new `ui.rs::darken_color` helper, matching the renderer's own darkening) rather than jumping
+  to an arbitrary color. "Reset note style" already resets the whole `NoteStyle`, so it resets
+  this new field too with no extra code.
+- **Tests**: `crates/project/src/style.rs` gained `black_key_fill_custom_gradient_round_trips`,
+  round-tripping a `BlackKeyFill::Custom(Fill::VerticalGradient{..})` through RON.
+- **Sample styles**: `crates/project/examples/dump_sample_styles.rs`'s `NoteLayer` literal needed
+  an explicit `black_key_fill: project::BlackKeyFill::Auto` (required even though the field is
+  `#[serde(default)]`, since Rust struct literals don't get that leniency — only deserialization
+  does). The three checked-in `examples/styles/*.fmstyle.ron` files were **not** regenerated
+  wholesale (the generator's current output has since drifted slightly from the checked-in files
+  on unrelated fields — e.g. `gradient-glow`'s sheen intensity/width/angle — so overwriting would
+  have picked up unrelated changes); instead `black_key_fill: Auto,` was inserted directly into
+  each file right after its existing `border: None,` line via a targeted `sed`, keeping every
+  other value untouched. Confirmed by `shipped_sample_styles_parse` (still passes) that this
+  hand-edit didn't break parsing.
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), `cargo test --workspace` all clean.
+  **Not yet manually run** (per the "never run the app yourself" rule) — worth confirming, next
+  time someone has hands on the app: with no imported style, black keys still look exactly as
+  before (Auto); switching the new combo box to `Same` makes black-key notes match white-key
+  notes exactly; `Custom` + picking a distinct color changes only black-key notes; and importing a
+  style with an explicit `black_key_fill: Custom(...)` overrides the Keyboard tab's quick control,
+  same as every other imported field already does.
+
+**Phase G — Barrier wavy "calm ocean" edge — DONE.**
+- **Schema** (`crates/project/src/style.rs`): new `WavySpec { amplitude_px, wavelength_px, speed }`
+  (re-exported from `crates/project/src/lib.rs` alongside the other `style` types).
+  `BarrierLayer` gained `#[serde(default)] pub wavy: Option<WavySpec>` (`None` = flat edge, the
+  only look before this phase). `Style::from_legacy`'s `BarrierLayer` literal sets `wavy: None`,
+  keeping the legacy-slider look unchanged.
+- **Uniform layout** (`crates/render/src/barrier.rs`): `Uniforms` gained a 4th all-vec4 field,
+  `wave: [f32; 4]` (`x`=amplitude_px, `y`=wavelength_px, `z`=speed, `w`=transport time seconds),
+  keeping the same "every field already vec4-aligned, no std140 column-padding to get wrong"
+  convention `StyleUniform`/this struct's existing fields already followed. `flags.z` is the new
+  wavy-enabled flag (`flags.x`/`flags.y` unchanged: glow-enabled/pulse-intensity). `set_style`
+  writes `flags[2]`/`wave[0..2]` from `barrier_layer.wavy` (`None` zeroes all three, an exact
+  disable). `update_pulse` gained one line, `self.data.wave[3] = time_seconds` — reuses the exact
+  same sync-offset-subtracted, deterministic/export-reproducible clock every other animated
+  element (note fall, barrier pulse) already reads, so the ripple freezes exactly on pause/scrub
+  and is frame-reproducible in export. **No public method signature changed** — both
+  `Compositor::update_barrier` call sites (`app/src/main.rs`, `crates/export/src/lib.rs`) needed
+  no edits.
+- **Shader** (`crates/render/src/barrier.wgsl`): `wavy_offset(x)` sums three
+  incommensurate-frequency sine terms weighted 0.6/0.3/0.1 (sum to 1.0, so `|offset| <=
+  amplitude_px` always holds exactly — not one literal sine, per the user's explicit "calm ocean
+  cross-section, stochastic-looking but calm" ask) and returns `0.0` outright when `flags.z < 0.5`
+  (wavy disabled) — an exact, not just visual, no-op. The vertex shader's rasterized-quad inflation
+  (`half_extent`) gained a third additive margin, `wavy_margin = select(0.0, wave.x, flags.z >
+  0.5)`, alongside the existing glow margin — extends the quad symmetrically top/bottom (simpler
+  than an asymmetric top-only margin; the harmless extra overdraw below the always-flat bottom edge
+  was an explicit tradeoff in the plan) so there are pixels to paint the rippling top edge onto.
+- **By default only the top edge waves, the bottom stays flat** (a rippling surface over a flat
+  floor, not a wobbling slab): the fragment shader computes `top_edge = barrier_y - half_thickness +
+  wavy_offset(in.position.x)` and `bottom_edge = barrier_y + half_thickness` (unchanged), and
+  `core_alpha` is now `alpha_top * alpha_bottom` (independent smoothsteps around each edge) instead
+  of the old single symmetric `1 - smoothstep(half_thickness±1, |y - barrier_y|)`. **Re-derived by
+  hand, not assumed** (per this codebase's standing rule for shader math changes, after the
+  rotation-shear and barrier-fade-out bugs both slipped past `cargo build`/`clippy`): substituting
+  `u = y - barrier_y`, the old formula for `u >= 0` is exactly `smoothstep(top_edge-1, top_edge+1,
+  y)` after the corresponding shift, and for `u < 0` the mirror image around `bottom_edge` — so the
+  product form reproduces the old formula exactly whenever the two smoothstep transition zones
+  don't overlap (true for `thickness > 2px`), with `wave == 0` making `top_edge`/`bottom_edge`
+  collapse back to the plain symmetric case.
+- **Follow-up #1, same session**: after seeing this rendered, the user asked for an option to make
+  the *whole bar* ride the wave (both edges moving together) instead of only the top surface
+  bulging while the bottom stayed rigidly flat. First cut: `WavySpec::both_edges: bool`, wired as
+  a 4th `flags` slot written by `set_style`, with `bottom_wave = select(0.0, wave, flags.z > 0.5
+  && flags.w > 0.5)` added onto `bottom_edge` in the shader — both edges get the *identical*
+  offset, so the bar translates rigidly (constant thickness).
+- **Follow-up #2, same session**: after trying it, the user liked the rigid-translation look but
+  said it wasn't what they'd actually asked for ("it just looks like a curvy line ... with even
+  less volume") — the translation reads as a thin moving line precisely because the
+  cross-section never changes shape — and asked for a genuine "double sided wave" as a **third**
+  option alongside the original top-only look and the rigid-translation look they'd grown to
+  like. Replaced the bool with a 3-state enum, since two independent booleans-worth of behavior
+  needed to coexist. First cut of the third variant made the bottom edge ripple *out of phase*
+  with the top (a `wavy_offset_bottom` with phase-shifted sine terms) — this was superseded a
+  turn later, see Follow-up #3.
+- **Follow-up #3, same session**: after trying the out-of-phase variant, the user said it
+  pinched down to (near) zero thickness at some x positions and asked for the third mode to
+  *always* have volume, swelling outward on both sides rather than ever cancelling down thin —
+  and asked for all three variants to be renamed: `TopOnly`→`TopWave`, `Mirrored`→`Edge`,
+  `BothEdges`→`FullWave`. Final shape:
+  ```rust
+  pub enum WavyMode { #[default] TopWave, Edge, FullWave }
+  ```
+  (`crates/project/src/style.rs`, re-exported from `crates/project/src/lib.rs` like every other
+  `style` type). `TopWave` is the original default look (only the top ripples, can pinch thin —
+  unchanged, this was never the complaint). `Edge` is the rigid-translation look the user liked.
+  `FullWave` replaces the out-of-phase pairing: **both edges bulge outward together, correlated
+  with the same underlying wave rather than an independent/decorrelated one** —
+  `swell = 0.5 * (amplitude_px + wave)`, which is always in `[0, amplitude_px]` since `wave`
+  itself is bounded to `[-amplitude_px, amplitude_px]`, then `top_offset = -swell` and
+  `bottom_offset = +swell`. This guarantees thickness is always `base_thickness + 2*swell >=
+  base_thickness` — never pinching below the configured thickness — while both edges still bulge
+  most at the same x where the underlying wave peaks (rather than independently, which is what
+  let the two edges cancel each other down to near-zero gap before this fix).
+  - **Renderer** (`crates/render/src/barrier.rs`): `flags.w` holds the mode as a float (0/1/2),
+    unchanged shape from Follow-up #2, just remapped to the new variant order/names.
+  - **Shader** (`crates/render/src/barrier.wgsl`): the separate `wavy_offset_bottom` function was
+    deleted — `FullWave` no longer needs its own trig pass, it derives `swell` directly from the
+    same `wave` value `TopWave`/`Edge` already compute. `fs_main` now computes `top_offset`/
+    `bottom_offset` per mode (`flags.w > 1.5` → `FullWave`'s swell pair; `> 0.5` → `Edge`'s
+    identical `wave` on both; else `TopWave`'s `wave` on top only, `0.0` on bottom) — `TopWave`'s
+    code path is byte-for-byte what it was before any of these follow-ups existed.
+  - **No vertex-margin or glow-formula changes needed for any of these follow-ups**: the
+    inflation margin was already symmetric top/bottom by `amplitude_px` regardless of mode (every
+    mode's per-edge offset stays within `[-amplitude_px, amplitude_px]`, including `FullWave`'s
+    `swell`), and the glow math already read `top_edge`/`bottom_edge` as variables (not hardcoded
+    flat expressions), so both automatically extend correctly with no further changes.
+  - **Samples**: `examples/styles/barrier-wavy.fmstyle.ron` (which the user had been
+    hand-editing/tuning throughout this exploration) now reads `mode: Edge` — preserving exactly
+    the look they said they liked, not reverting their tuning (only the field name/variant
+    changed to track the rename). `examples/styles/barrier-wavy-volume.fmstyle.ron` now reads
+    `mode: FullWave`, demonstrating the corrected always-has-volume look.
+- **Glow now composes on edge distance, not center distance**, so the halo hugs the wavy edge
+  instead of clipping against an invisible flat line: `edge_dist = max(max(top_edge - y, y -
+  bottom_edge), 0.0)`, then `glow_alpha = 1 - smoothstep(0.0, glow_radius, edge_dist)`. Re-derived:
+  when `wave == 0`, `edge_dist` reduces algebraically to `max(vertical_dist - half_thickness, 0)` —
+  the old center-distance formula's argument — so by smoothstep's shift-invariance this is an exact
+  no-op when wavy is off (glow-alone, unaffected) and composes correctly with wavy when both are on.
+- **Sample style**: `examples/styles/barrier-wavy.fmstyle.ron` (Glow + a moderate `WavySpec`,
+  amplitude 6px/wavelength 220px/speed 18) added via the existing `dump_sample_styles.rs`
+  generator convention; the three pre-existing sample files each needed a `wavy: None,` line
+  inserted next to their existing `pulse: None,` (targeted edit, not wholesale regeneration — same
+  reasoning Phase F used: the generator's current output has drifted slightly from the checked-in
+  files on unrelated fields, so a full overwrite would pick up unrelated diffs).
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean (`shipped_sample_styles_parse` now finds 4 sample files, still `>= 3`). **Not yet manually
+  run** (per the "never run the app yourself" rule) — worth confirming, next time someone has hands
+  on the app: with no `wavy` set, the barrier looks identical to before at various
+  thickness/Line/Glow combinations; importing `barrier-wavy.fmstyle.ron` makes the top edge ripple
+  calmly (not one obvious repeating wave, not jittery), the ripple continues during playback and
+  freezes exactly on pause/scrub-stop, and the glow (Glow kind) follows the ripple continuously
+  rather than clipping against a flat edge; and that an exported clip's ripple is deterministic
+  frame-to-frame at a given timestamp versus interactive playback at the same timestamp.
+
+**Phase H — Elliptical, radiating-glow flash — DONE.** Plan:
+`~/.claude/plans/the-most-recent-changes-delightful-rabbit.md`.
+
+- **Schema** (`crates/project/src/style.rs`): `FlashSpec.radius_px: f32` → `radius_x_px: f32,
+  radius_y_px: f32` — a clean breaking rename (pre-1.0 format, no back-compat shim), confirmed with
+  the user beforehand.
+- **Renderer** (`crates/render/src/effects.rs`): `EffectInstance.radius: f32` → `radius: [f32; 2]`,
+  shared by particles (circular: `[size_px, size_px]`) and flashes (elliptical: `[radius_x_px,
+  radius_y_px]`); its `wgpu::vertex_attr_array!` entry moved from `Float32` to `Float32x2` (shader
+  locations shifted: `color` is now location 4, and a new `softness` field occupies location 5 —
+  see below). `Flash` gained `radius_x_px`/`radius_y_px` (was one `radius_px`); `spawn_flash` sets
+  both from the spec.
+- **Ellipse shape** (`crates/render/src/effects.wgsl`): `Instance.radius` became `vec2<f32>` with
+  **no other shader-math change needed** — WGSL's `*` between two `vec2<f32>` is already
+  component-wise, so `pixel = center + local * radius` was already correct once `radius` was
+  retyped. Verified rather than assumed: `out.local` is the pre-scale unit-quad coordinate, and
+  since that expression is affine in `local`, the interpolated `in.local` at any fragment already
+  equals `(pixel - center) / radius` component-wise, so `length(in.local)` is already the correct
+  elliptical-normalized radius once `radius.x != radius.y` — no special-casing needed in `fs_main`
+  for the ellipse itself.
+- **Glow/radiate shape fix**: the old falloff (`1 - smoothstep(0.6, 1.0, d)`) was solid/opaque out
+  to 60% of the radius and only softened in the outer 40%, which read as a flat disc rather than
+  light radiating outward — true for both particles and flashes previously, but only flashes needed
+  fixing (particles' hard-edged-dot look is correct and was preserved exactly). Added
+  `EffectInstance.softness: f32` (0.0 = today's hard-edged dot, particles; 1.0 = full-radius
+  radiating glow, flashes) as an interpolation knob rather than a bool, so a future style axis could
+  expose partial values without another shader change. `fs_main` now blends
+  `hard_edge = 1 - smoothstep(0.6, 1.0, d)` (unchanged) with `soft_glow = pow(clamp(1-d, 0, 1),
+  1.6)` via `mix(hard_edge, soft_glow, softness)` — `softness == 0.0` makes `mix` select
+  `hard_edge` exactly, so particle rendering is pixel-identical to before this phase; only flashes
+  (`softness == 1.0`) move to the new soft-glow curve. The `1.6` exponent is a tune-by-eye starting
+  point, not derived from anything — flag as the first thing to adjust if the glow looks too
+  soft/sharp once seen rendered.
+- **Samples**: `crates/project/examples/dump_sample_styles.rs`'s `sparks` example updated to
+  `radius_x_px: 40.0, radius_y_px: 40.0` (kept equal, pixel-identical look), regenerated and the
+  `radius_px` line in `examples/styles/sparks.fmstyle.ron` hand-edited to the two new fields
+  (targeted edit, not a wholesale regenerate-and-overwrite — same convention Phases F/G already
+  used, since the generator's current output has drifted from the checked-in files on unrelated
+  fields). New `examples/styles/ellipse-flash.fmstyle.ron` (`TransitionKind::Flash`, `radius_x_px:
+  70.0, radius_y_px: 20.0`) ships alongside it so there's a genuinely elliptical example to
+  visually confirm, per the plan's suggestion.
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean (`shipped_sample_styles_parse` now finds 5 sample files). **Not yet manually run** (per the
+  "never run the app yourself" rule) — worth confirming, next time someone has hands on the app:
+  re-importing `sparks.fmstyle.ron` looks pixel-identical to before (particles unchanged, flash now
+  visibly glows/radiates rather than reading as a flat disc); importing `ellipse-flash.fmstyle.ron`
+  shows a visibly stretched (non-circular) flash that still reads as a soft radiating glow, not a
+  solid ellipse; and if the `1.6` falloff exponent looks off, that's the value to tune first.
+
+**Phase I — Continuous "grinding" particles + sustained flash-as-glow — DONE.** Plan:
+`~/.claude/plans/the-most-recent-changes-delightful-rabbit.md`. **Phase J (docs) is now done** —
+see `docs/fmstyle-format.md` for the field-by-field spec.
+
+- **Unified `HitEvent` into a richer `NoteInterval`** (`crates/render/src/notes/mod.rs`): the old
+  `HitEvent { time_seconds, x_px }` (attack instant + lane-center x) only had enough information
+  for one-shot spawns. Replaced with `NoteInterval { start_seconds, end_seconds, x_left, x_right }`
+  (plus an `x_center()` helper) built in the same `rebuild_instances` loop that already computed
+  `note_x`/`key.width()`/`duration` for the note instances — `Loaded.note_intervals` replaces
+  `Loaded.hit_events`, and `NotesRenderer::note_intervals()` replaces `hit_events()` 1:1.
+  `Compositor::update_transition` (`crates/render/src/lib.rs`) needed only its one internal call
+  site updated (`self.notes.hit_events()` → `self.notes.note_intervals()`) — its own public
+  signature, and both its callers in `app/src/main.rs`/`crates/export/src/lib.rs`, are unchanged.
+  `barrier::BarrierRenderer`'s separate `note_start_times()`-based pulse (Phase D) is a different,
+  untouched accessor.
+- **Continuous particle emission** (`project::EmissionMode`, new enum on `ParticleSpec`):
+  `Burst` (default, today's one-burst-per-arrival behavior, unchanged) or
+  `Continuous { rate_per_second }` (particles spawned every frame a note is held, spread across
+  the note's *key width* rather than its center point). `crates/render/src/effects.rs` extracted
+  the existing per-burst spawn loop into a shared `spawn_one_particle` helper (`spawn_particles`,
+  the burst entry point, is now a thin loop calling it `count` times — behavior-preserving
+  refactor) so continuous emission's per-frame spawn calls (a Poisson-style fractional-count draw,
+  `expected = rate_per_second * dt`, floor + a random round-up for the fractional remainder) can
+  reuse the identical spawn math. Continuous emission uses **a plain point-in-time containment
+  check** (`interval.start_seconds <= time_seconds <= interval.end_seconds`), scanning the whole
+  `note_intervals` slice every ordinary step — deliberately not the crossing/binary-search check
+  the burst spawn uses, since burst is a one-shot cue that must not be missed while continuous
+  emission is a per-frame density sample where a note too short to visibly register as "held"
+  needs no special-casing anyway. `O(n)` per step, same "fine for MIDI-file-sized data, not worth
+  amortizing" tradeoff already made elsewhere in this codebase (e.g. the barrier pulse's own
+  linear-scan alternatives).
+- **Sustained flash** (`project::FlashMode`, new enum on `FlashSpec`): `Instant` (default, today's
+  behavior — decays over `decay_seconds` starting immediately at note-on) or `Sustained` (holds at
+  full intensity for as long as the note is held, decaying only after the note ends) — the "glow
+  triggered by a key press" look the user called out as central to the seemusic/Synthesia
+  aesthetic. **No repeated per-frame spawning needed, unlike continuous particles**: `Flash` was
+  reworked from an incrementally-aged `age_seconds` counter to an absolute
+  `decay_start_seconds` threshold, chosen once at spawn time (`time_seconds` for `Instant`, the
+  note's already-known `interval.end_seconds` for `Sustained`) and never touched again. Alpha
+  became a pure function of current transport time:
+  `elapsed = (time_seconds - flash.decay_start_seconds).max(0.0); t = 1.0 - (elapsed /
+  decay_seconds).clamp(0.0, 1.0)` — for `Instant` this is identical to the old curve (elapsed
+  grows immediately from spawn); for `Sustained`, `decay_start_seconds` sits in the future at
+  spawn time, so `elapsed` stays clamped to `0` (full intensity) for the note's whole held
+  duration and only starts counting up once the note actually ends, at which point it decays
+  along the exact same curve `Instant` always used. Expiry (`retain`) became
+  `time_seconds - flash.decay_start_seconds < flash.decay_seconds` — correctly keeps a
+  still-held `Sustained` flash alive (LHS negative/clamped) with no extra branching. This
+  parameterize-not-special-case shape mirrors `BlackKeyFill::Auto`/`Fill::Solid` elsewhere in this
+  codebase. `rebuild_instances` (which builds the per-frame instance list from the pool) needed
+  `time_seconds` threaded in as a new parameter, since flash alpha is no longer computed from a
+  value already stored per-flash.
+- **Wiring**: no changes needed in `app/src/main.rs`/`crates/export/src/lib.rs` — both new knobs
+  are read entirely inside `effects::EffectsRenderer::update`/`rebuild_instances` from data
+  (`ParticleSpec`/`FlashSpec`/`NoteInterval`) those call sites already pass through unchanged.
+- **Examples**: `dump_sample_styles.rs`'s `sparks` example needed explicit
+  `emission: EmissionMode::Burst`/`mode: FlashMode::Instant` added to its literals (required even
+  though both fields are `#[serde(default)]`, since Rust struct literals don't get deserialization
+  leniency) — `sparks.fmstyle.ron`/`ellipse-flash.fmstyle.ron` got the same two lines hand-inserted
+  (targeted edit, not a wholesale regenerate — same convention every prior phase in this milestone
+  used, since the generator's current output has drifted from the checked-in files on unrelated
+  fields in some of them; these two files happened to still match exactly, but the edit was still
+  done as a targeted insert for consistency). Two new samples ship to concretely demo each new
+  look: `examples/styles/grinding-particles.fmstyle.ron` (`TransitionKind::Particles`,
+  `Continuous{rate_per_second: 40.0}`, small/short `size_px`/`lifetime_seconds` so it reads as
+  streaming grit rather than sparks) and `examples/styles/key-glow.fmstyle.ron`
+  (`TransitionKind::Flash`, `FlashMode::Sustained`, a soft elliptical shape with a gentle 0.6s
+  release decay, no particles) — the latter is the one that most directly demonstrates the
+  "glow triggered by the key press" look.
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean (`shipped_sample_styles_parse` now finds 8 sample files). **Not yet manually run** (per the
+  "never run the app yourself" rule) — worth confirming, next time someone has hands on the app:
+  `Burst`/`Instant` (no fields set) still looks identical to before (one burst, one quick decaying
+  flash per arrival); importing `grinding-particles.fmstyle.ron` shows particles streaming across
+  the *width* of each held key, stopping exactly when the note ends, with a longer-held note
+  visibly producing more particles than a short one at the same rate; importing `key-glow.fmstyle.ron`
+  shows the glow appearing at note-on, holding at full brightness for the entire held duration (not
+  a quick pulse), and only fading over `decay_seconds` after release — confirm a long-held note
+  stays glowing throughout and a short note's glow barely shows before decaying, i.e. glow duration
+  genuinely tracks note length rather than being a fixed-length flash; and that scrubbing
+  (forward/backward, including mid-burst/mid-glow) doesn't leave stuck particles or a frozen glow,
+  relying on the existing scrub-clears-the-pool behavior unchanged by this phase.
+
+### Phase K: Glow brightness/overexposure knob (separate plan, continues the lettered-phase scheme)
+
+Full plan: `~/.claude/plans/for-the-current-plan-abstract-liskov.md`. Testing Phases A-J, the user
+noticed every "glow" effect (note glow, barrier glow, barrier pulse, flash, particles) only ever
+had a **radius** and an alpha-only **intensity** — turning intensity up made a halo more opaque,
+never more *overexposed* like a real light source blowing out to white. Phase K adds a
+`brightness: f32` knob to all of them (default `1.0`, exact no-op), unified via one mechanism: the
+effect's linear color is multiplied by `brightness` *before* it's blended in. The preview/export
+render target is non-HDR 8-bit (`Rgba8Unorm`), so a channel pushed past `1.0` clamps to white on
+write — a physically-motivated "blown out highlight" look with no bloom pass, no tone-mapping, no
+new render target format. This is documented in full, field-by-field, in
+`docs/fmstyle-format.md`'s new "Brightness/overexposure" section — this CLAUDE.md section is the
+narrative of what changed and why, not a duplicate spec.
+
+- **`BarrierLayer` unified onto the shared `Glow` struct, a breaking schema change** (same
+  precedent as Phase H's `FlashSpec` rename): dropped `kind: BarrierKind` + `glow_radius_px: f32`,
+  gained `glow: Option<Glow>` — presence of a `Glow` *is* the on/off switch now, matching
+  `NoteLayer::glow`'s existing pattern exactly. `BarrierKind` was deleted entirely (its only
+  consumer, `barrier.rs`'s `matches!(kind, BarrierKind::Glow)`, became `glow.is_some()`).
+  `Style::from_legacy`'s `BarrierLayer` literal sets `glow: None` — barrier glow was never
+  reachable from the legacy quick-control sliders (`BarrierStyle` only has `color`/`thickness`),
+  so this is an exact no-op for every project without an imported style.
+- **`Glow` gained `brightness: f32`** (`#[serde(default = "default_brightness")]`, `1.0`) — shared
+  by `NoteLayer::glow` and (new) `BarrierLayer::glow`. `Glow::default()` sets `intensity: 1.0` too
+  (it had no `Default` impl before this phase) so a migrated `kind: Glow` barrier style that
+  doesn't set `intensity` explicitly keeps the same resting/peak brightness the old hardcoded
+  `0.35`/`0.65` shader constants gave.
+- **`Pulse` gained `brightness: f32`** (`#[serde(default = "default_pulse_brightness")]`, `1.6` —
+  a documented tune-by-eye default, same convention as `effects.wgsl`'s existing `1.6` soft-glow
+  exponent), and its shader composition changed from `mix(color, white, pulse * 0.5)` (capped at a
+  50% blend) to `color * mix(1.0, brightness, pulse)` (genuine overexposure, unbounded). This is an
+  **intentional visual change** to `Pulse`'s look, not required to stay pixel-identical — `Pulse`
+  is only reachable via an imported style, never the legacy sliders, so there's no default-project
+  regression risk.
+- **`FlashSpec`/`ParticleSpec` each gained a flat `brightness: f32`** (default `1.0`) — no nested
+  `Glow` struct, since neither's existing `color`/`radius`/`decay` shape matches `Glow`'s. Both
+  already bake their final linear color into a GPU instance (`EffectInstance`) at spawn time
+  (`crates/render/src/effects.rs`), so `brightness` is a pure CPU-side multiply applied once at
+  spawn (`spawn_flash`/`spawn_one_particle`) — no `effects.wgsl` change needed for either.
+- **Note glow** (`crates/render/src/notes/pipeline.rs`/`shader.wgsl`): `StyleUniform.glow_intensity`
+  already had unused `y/z/w` slots (`[intensity, 0.0, 0.0, 0.0]`) — `brightness` now lives in `.y`,
+  no new uniform field needed. `shader.wgsl`'s glow composition changed from
+  `mix(style_uniform.glow_color_radius.xyz, fill_color, base_alpha)` to
+  `mix(glow_color_radius.xyz * glow_intensity.y, fill_color, base_alpha)` — re-derived by hand (per
+  this codebase's standing rule for shader-math changes) that `brightness = 1.0` reproduces the old
+  line exactly, since multiplying by `1.0` is the identity.
+- **Barrier glow** (`crates/render/src/barrier.rs`/`barrier.wgsl`): the glow halo previously always
+  reused the bar's own core color (`uniforms.color_glow_radius.rgb`) with hardcoded `0.35 + 0.65 *
+  pulse` resting/peak alpha and no intensity knob at all. `Uniforms` gained two new all-vec4 fields
+  (`glow_style`: glow color xyz + intensity w; `glow_brightness_pulse`: x = glow brightness, y =
+  pulse brightness) — same std140-safe all-vec4 convention every uniform in this codebase already
+  follows, so there's no column-padding mismatch to get wrong. The glow's color, intensity, and
+  brightness are now all independent of the bar's own color — `set_style` writes them from
+  `barrier_layer.glow`, defaulting every glow field to a neutral value (`flags[0] = 0`, `glow_style
+  = [0;4]`, `glow_brightness_pulse[0] = 1.0`) when `glow` is `None`. Re-derived by hand that
+  `glow.intensity = 1.0`, `glow.brightness = 1.0`, and `glow.color == bar color` reproduces the
+  pre-Phase-K look exactly: `glow_intensity` multiplies the same `0.35 + 0.65 * pulse` curve the
+  shader always used, and `brightness = 1.0` leaves the glow color unmultiplied.
+- **Sample styles**: `crates/project/examples/dump_sample_styles.rs`'s `barrier_pulse`/
+  `barrier_wavy`/`barrier_wavy_volume` literals reworked from `kind: BarrierKind::Glow,
+  glow_radius_px: R` to `glow: Some(Glow { color: <same as bar color>, radius_px: R, intensity:
+  1.0, brightness: 1.0 })` (an exact-no-op migration), plus `brightness: 1.0`/`1.6` added to every
+  `Glow`/`Pulse`/`FlashSpec`/`ParticleSpec` literal in the generator (required in Rust struct
+  literals even though every field is `#[serde(default)]` for RON parsing — same gotcha every
+  prior phase in this milestone hit). The eight checked-in `examples/styles/*.fmstyle.ron` files
+  were hand-edited with the same targeted-insert convention prior phases used (not a wholesale
+  regenerate-and-overwrite, since the generator's output has drifted from some checked-in files on
+  unrelated fields) — `barrier-pulse.fmstyle.ron`/`barrier-wavy.fmstyle.ron`/
+  `barrier-wavy-volume.fmstyle.ron` got the full `kind`/`glow_radius_px` → `glow: Some(...)`
+  migration plus `barrier-pulse`'s `pulse.brightness: 1.6`; every other file's `barrier: (kind:
+  Line, ...)` block became `barrier: (glow: None, ...)`; every `Glow`/`FlashSpec`/`ParticleSpec`
+  literal gained its `brightness: 1.0` line.
+- **Tests**: `crates/project/src/style.rs` gained `barrier_layer_with_glow_and_pulse_brightness_
+  round_trips`, `barrier_layer_without_glow_round_trips`, `transition_layer_brightness_fields_
+  round_trip` (RON round-trips covering the new `BarrierLayer` shape and every new `brightness`
+  field), and `glow_without_brightness_field_loads_with_default`/`pulse_without_brightness_field_
+  loads_with_tuned_default` (confirm `serde(default)` backfills `1.0`/`1.6` when an older-schema
+  `Glow`/`Pulse` RON fragment omits the field entirely).
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean (`shipped_sample_styles_parse` still finds all 8 sample files, now migrated to the new
+  `BarrierLayer` shape). **Not yet manually run** (per the "never run the app yourself" rule) —
+  worth confirming, next time someone has hands on the app: every existing sample style (after the
+  mechanical `brightness: 1.0` migration) looks pixel-identical to before this phase; bumping a
+  `Glow.brightness` (note and/or barrier) well past `1.0` (e.g. `3.0`-`8.0`) visibly washes the
+  glow's core toward solid white while its outer falloff stays tinted; bumping `FlashSpec.
+  brightness`/`ParticleSpec.brightness` on `key-glow.fmstyle.ron`/`grinding-particles.fmstyle.ron`
+  shows the same overexposure look; and re-importing `barrier-pulse.fmstyle.ron` shows pulses
+  flashing visibly whiter/brighter than before (previously capped at a 50% blend) — tune the
+  sample's `Pulse.brightness` if the shipped `1.6` looks off, it's an explicitly flagged "tune by
+  eye" constant.
+
+### Phase L: white-hot core + natural corona redesign, `intensity` removed (follow-up to Phase K)
+
+User feedback after Phase K landed: high `brightness` didn't read as "very white, radiant, like
+looking at something white-hot" with a natural corona — it only ever brightened/recolored the
+*halo*, never the glowing surface's own core, so it looked like an afterthought stuck to the
+edges rather than the object itself heating up. Also flagged: `Glow`/`Pulse`/`FlashSpec` each had
+both an `intensity` and a `brightness` knob doing overlapping jobs. Full plan: no separate doc,
+implemented directly per user request in one session.
+
+- **`intensity: f32` removed from `Glow`, `Pulse`, and `FlashSpec`** (`ParticleSpec` never had
+  one; `Sheen::intensity` is a distinct, unrelated axis — left alone). Redundant once brightness
+  is the sole "how strong" knob: `Glow::intensity` only ever scaled halo opacity (folded into the
+  new radiating-falloff shape below); `Pulse::intensity` was a 0..1 peak-amplitude multiplier into
+  `brightness` (removed — `brightness` alone is now the peak, so `intensity: 0.8, brightness: 1.6`
+  becomes `brightness: 1.28`, or whatever peak is wanted); `FlashSpec::intensity` was peak alpha,
+  which for an always-additive flash has the *exact same visual effect* as `brightness` (both just
+  scale the additive contribution) — a flash is now always fully "on" at spawn/hold-start, fading
+  to 0 over `decay_seconds` as before, with `brightness` alone controlling how hot it looks.
+- **New shared mechanism, `hot_color(base, brightness)`**: at `brightness <= 1.0`, a plain dimmer
+  (`base * brightness`); above `1.0`, desaturates toward pure white via
+  `mix(base, vec3(1.0), 1.0 - 1.0/brightness)` — chosen specifically because multiplying a color's
+  channels up (Phase K's approach) does **not** converge to white unless the channels already
+  share the same magnitude (e.g. `[1.0, 0.3, 0.1] * 3.0` clips to `[1.0, 0.9, 0.3]`, a more
+  saturated orange, not white); mixing toward white does, unconditionally. `brightness == 1.0` is
+  an exact no-op on both branches (`base*1.0 == base`, `mix(base, white, 0.0) == base`), verified
+  algebraically rather than assumed, same standing rule this file has held every prior shader-math
+  change to. Implemented three times — verbatim WGSL in `barrier.wgsl` and `notes/shader.wgsl`
+  (each a separate shader module, same "duplicate the small helper" convention `srgb_to_linear`
+  already used three times in this codebase), and as a CPU-side equivalent `hot_color` in
+  `crates/render/src/effects.rs` for particles/flashes (which bake their final color into a GPU
+  instance at spawn time rather than reading a shader uniform per-fragment).
+- **`corona_reach_scale(brightness) = 1.0 + 0.5 * (1.0 - 1.0/max(brightness, 1.0))`**: the halo's
+  effective reach grows up to 1.5x the configured `radius_px` as brightness increases without
+  bound — a real light source radiates further as it intensifies, not just a static-radius ring.
+  `brightness <= 1.0` gives an exact `1.0` (no-op reach). Only applies to `barrier.wgsl`/
+  `notes/shader.wgsl` (flash/particle radii are already explicit, user-set values with no
+  brightness-driven reach — flashes were called out as "mostly fine" and left alone here).
+- **Halo falloff changed from a flat-opacity smoothstep band to the natural radiating `pow` curve
+  `effects.wgsl` already used for flashes** (`pow(1.0 - normalized_distance, 1.6)`), in both
+  `barrier.wgsl` and `notes/shader.wgsl` — this is the "use the same concept everywhere" part of
+  the ask: flashes already looked like light radiating outward (their `softness = 1.0` path), so
+  the note/barrier halos were changed to match that shape instead of inventing a fourth one.
+  Barrier's old resting/peak opacity blend (`0.35 + 0.65 * pulse`, from Phase D) is gone entirely —
+  superseded by `hot_color`/`corona_reach_scale` both already being driven by the same
+  pulse-blended `effective_brightness`, so the corona's "pulse response" now comes from getting
+  whiter and reaching further, not from a separate opacity ramp.
+- **The core itself now goes white-hot, not just the halo** — the actual fix for "looks like an
+  afterthought stuck to the sides": `barrier.wgsl`'s `fs_main` now computes
+  `color = hot_color(uniforms.color_glow_radius.rgb, effective_brightness())` for the bar's own
+  fill (previously the core only ever got the old `mix(1.0, pulse_brightness, pulse)` — pulse
+  could brighten it, but a resting `Glow::brightness` never touched the core at all, only the
+  halo). Symmetrically, `notes/shader.wgsl`'s `fs_main` now computes
+  `hot_fill = hot_color(fill_color, brightness)` and blends `hot_fill` (not the plain `fill_color`)
+  under the halo — satisfying the "this idea should be applied for the notes too" ask. Both quads'
+  vertex-shader inflation margins were widened from a flat `radius_px` to
+  `radius_px * corona_reach_scale(brightness)`, computed identically in both stages (a shared
+  `effective_brightness()`/`corona_reach_scale()` WGSL function per module) so the rasterized quad
+  is always exactly large enough for the corona's current reach, no more and no less.
+- **`Uniforms`/`StyleUniform` field renames, no layout/size change**: `barrier.rs`'s
+  `glow_style.w` (used to carry `Glow::intensity`) is now unused/zeroed; `glow_brightness_pulse`
+  keeps its `[resting_brightness, peak_brightness, 0, 0]` shape but `peak_brightness` now defaults
+  to *equal* `resting_brightness` when no `Pulse` is configured (previously defaulted to `1.0`
+  flat) — needed so `mix(resting, peak, 0)` degenerates to `resting` exactly rather than
+  potentially un-doing a nonzero `Glow::brightness` when there's no pulse to drive `peak` away
+  from `1.0`. `notes/pipeline.rs`'s `StyleUniform.glow_intensity: [f32;4]` (`[intensity,
+  brightness, 0, 0]`) renamed to `glow_params: [f32;4]` (`[brightness, 0, 0, 0]`) — same all-vec4
+  layout convention, one fewer meaningful slot.
+- **Samples/tests**: every shipped `examples/styles/*.fmstyle.ron` file and
+  `crates/project/examples/dump_sample_styles.rs`'s generator had their `intensity:` lines removed
+  (targeted deletion, not regeneration — same convention every prior phase in this milestone used,
+  since the generator's output has drifted from some checked-in files on unrelated fields);
+  `Sheen::intensity` lines were left untouched (different field, still exists). `style.rs`'s tests
+  updated to drop `intensity` from every `Glow`/`Pulse`/`FlashSpec` literal and RON fragment.
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean. **Not yet manually run** (per the "never run the app yourself" rule) — worth confirming,
+  next time someone has hands on the app: every sample style still looks reasonable at its shipped
+  `brightness` values (no longer required to be pixel-identical to pre-Phase-L, since the halo
+  falloff shape itself changed); pushing `Glow.brightness`/`Pulse.brightness` on `barrier-pulse.
+  fmstyle.ron` or `gradient-glow.fmstyle.ron` well past `1.0` (e.g. `3.0`-`6.0`) now visibly turns
+  the *core* of the bar/note white-hot (not just the halo around it) with a soft corona that
+  reaches a bit further than at `brightness = 1.0`; and that `brightness <= 1.0` still behaves as a
+  plain dimmer with no whitening, matching the documented no-op/dimmer boundary.
+
+### Vendored note pipeline, pixel-parity (Phase B of the `.fmstyle.ron` milestone)
+
+Phase B replaces the `neothesia_core`-backed `MidiOverlay` with an in-tree note-highway renderer,
+per the plan's call to vendor it the same way `mp4-encoder` was forked from `ffmpeg-encoder` —
+done specifically so `barrier_fraction` could become a real shader uniform instead of the fragile
+viewport-remapping hack documented (and now deleted) above. **No visual change from before** —
+this phase is pixel-parity, proven by re-deriving the math (not just eyeballing), same as every
+prior barrier-related change in this file.
+
+- **New module `crates/render/src/notes/`** (`mod.rs`/`pipeline.rs`/`instance.rs`/`shader.wgsl`)
+  replaces `crates/render/src/midi_overlay.rs` entirely. `NotesRenderer` (was `MidiOverlay`) keeps
+  the exact same public surface `Compositor` already called (`new`/`loaded_name`/
+  `note_start_times`/`load`/`resize`/`render`), so `crates/render/src/lib.rs` only needed
+  `mod midi_overlay` → `mod notes` and field renames — `app/src/main.rs`'s call sites are
+  untouched except `update_midi`, which now needs a `&wgpu::Queue` argument (see below). Exported
+  `GpuHandles` (same shape: borrowed `instance`/`adapter`/`device`/`queue`/`texture_format`) moved
+  from `midi_overlay` to `notes` but is otherwise unchanged, so `app::gpu_handles` and
+  `export::run_inner` (the two places that build one) needed no changes at all.
+- **`crates/render/Cargo.toml` dropped the `neothesia-core` git dependency entirely** and added
+  `piano-layout` (same pinned rev) as a *direct* dependency — exactly the situation CLAUDE.md's
+  Neothesia-reuse section flagged as the trigger for doing this ("add direct wgpu-jumpstart/
+  piano-layout deps... only when a future crate needs them without going through
+  neothesia_core"). `midi-file` stays a direct dependency, unchanged. Verified via `Cargo.lock`:
+  zero `neothesia-core` entries, one `wgpu` entry (no duplicate-version risk), one `piano-layout`
+  entry, one `midi-file` entry.
+- **Own render pipeline, hand-rolled rather than reusing `wgpu_jumpstart`'s generic `Uniform`/
+  `Instances`/`Shape` helpers** (`notes/pipeline.rs::NotesPipeline`) — same manual-wgpu-calls
+  style `video_quad.rs` already used elsewhere in this crate, now applied here too since owning
+  the shader removed the only reason to keep linking against Neothesia's renderer-side crate.
+  Two uniform bind groups (view, time — same split as upstream: view changes on
+  resize/calibration, time changes every frame) and one instance buffer that grows (doubling via
+  `create_buffer_init`-style recreate, not amortized-growth — fine, MIDI files are not
+  update-hot) whenever a MIDI file needs more instance slots than the current capacity.
+- **Own `notes/shader.wgsl`**, forked from the vendored `neothesia-core/.../waterfall/pipeline/
+  shader.wgsl` with exactly one behavioral change: `keyboard_y` is no longer hardcoded to
+  `view_uniform.size.y / 5.0` (i.e. always 80% down) — it reads a new `barrier_fraction` field on
+  `ViewUniform` directly (`keyboard_y = view_uniform.size.y * view_uniform.barrier_fraction`).
+  Because `ViewUniform.size` is now always built from the *real* canvas size (no more feeding it
+  a `virtual_height` that differs from what `set_viewport` gets), `builtin(position)` and the
+  vertex shader's `note_pos`/`size` varyings are automatically in the same coordinate system at
+  any `barrier_fraction` — the exact bug class the "notes fading out before reaching the barrier"
+  section above had to work around now can't occur, because there's no second coordinate system
+  to disagree with the first. `render::notes::NotesRenderer::render` now does only a
+  `set_scissor_rect` (real canvas pixels, no `set_viewport` override at all) to clip notes past
+  the barrier line — the whole `virtual_canvas_height`/`HARDCODED_HIT_LINE_FRACTION` apparatus
+  and its long doc-comment derivation in the old `midi_overlay.rs` are gone.
+- **`NoteInstance` gained `velocity: f32` and `track_index: f32`** (normalized 0.0-1.0 velocity,
+  raw MIDI track index as a float since vertex attributes are all floats), per the plan's explicit
+  ask to future-proof for `ColorBinding::ByVelocity`/`ByTrack` (`project::style`) — both fields
+  are populated when instances are built but **not read anywhere in the v1 shader**, matching the
+  plan's "cheap, future-proofs... even though v1 ignores them in-shader" framing.
+- **Instances are built directly in `NotesRenderer::rebuild_instances`** (was
+  `WaterfallRenderer::resize`'s internal loop) — same algorithm, ported rather than changed:
+  filter notes to the standard 88-key range and non-drum channel, sort by start time (newer notes
+  draw on top, matching Neothesia's own convention), look up each note's `piano_layout::Key` for
+  x/width/sharpness, and combine the calibrated left-offset + roundedness directly into each
+  instance's `position`/`radius` at construction time (previously a second pass,
+  `apply_note_adjustments`, mutated already-built instances after the fact — folding it into the
+  single construction loop is a minor simplification enabled by no longer needing a
+  `piano_layout`-agnostic upstream method signature to work around). The sRGB→linear color
+  conversion (`color_to_linear`) is copied verbatim from `wgpu_jumpstart::Color::into_linear_rgb`
+  (same source, credited in a doc comment) since that's the one small piece of math actually worth
+  keeping rather than re-deriving.
+- **`Compositor::update_midi` and `NotesRenderer::update` now take a `&wgpu::Queue` argument**
+  (previously the old `MidiOverlay` didn't need one at the call site, since `WaterfallRenderer`
+  cloned and kept its own `wgpu::Queue` internally). Both of this phase's two call sites
+  (`app/src/main.rs::update_midi_position`, `crates/export/src/lib.rs`'s render loop) already had
+  a `Gpu`/`gpu` in scope, so this was a one-line change at each — same pattern
+  `update_viewport`/`upload_frame` already used.
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean; the vertex-shader math (barrier line position, note fall trajectory, rounded-rect
+  distance field) was re-derived by hand against the original vendored shader line-by-line rather
+  than assumed correct from a clean build — `cargo build`/`clippy` cannot catch a
+  wrong-but-type-correct shader port, per this file's own repeated caution on shader-side bugs
+  elsewhere. **Not yet manually run** (per the "never run the app yourself" rule) — worth
+  confirming, next time someone has hands on the app, that a loaded MIDI file's notes fall,
+  clip at the barrier, and are colored exactly as before at a few different `barrier_fraction`
+  values (including far from the 0.8 default, which is what previously exposed the fade-out bug),
+  since this phase touches the same code path that bug lived in.
+
+### Barrier glow/pulse pass (Phase D of the `.fmstyle.ron` milestone) — DONE
+
+Phase D promotes the barrier from a plain `egui` overlay (milestone 6a) to a real wgpu render
+pass, so it now shows up in exported video too — and reads `project::BarrierLayer`'s
+`kind`/`color`/`thickness`/`glow_radius_px`/`pulse` fields instead of just the legacy
+`BarrierStyle`'s color/thickness.
+
+- **New module `crates/render/src/barrier.rs`** (+ `barrier.wgsl`), structured like
+  `video_quad.rs`: no vertex buffer, six hardcoded unit-quad corners positioned/sized in the
+  vertex shader from a uniform, one bind group. `Compositor` gained a `barrier:
+  barrier::BarrierRenderer` field, constructed unconditionally in `Compositor::new` (no
+  `BarrierLayer` needed at construction time, unlike `notes::NotesRenderer` — see below for why).
+  Render order is now video quad → notes → **barrier** (`Compositor::render`), so the bar draws
+  on top of falling notes, matching how the old egui overlay always painted on top of everything.
+- **Barrier params are cheap uniform writes, not a dirty-checked rebuild** — unlike
+  `NoteLayer`'s fill/sheen/glow (baked into `NoteInstance`s at build time, needing a full
+  `compositor.resize`), every `BarrierLayer` field only drives a handful of uniform floats. So
+  `Compositor::update_barrier` is called *unconditionally every redraw* (`app/src/main.rs`'s
+  `apply_post_ui_updates`, right after the existing `update_viewport` call; `crates/export`'s
+  render loop, right after its own `update_viewport`/`update_midi` calls) — the same treatment
+  `update_viewport` already gets, no `applied_barrier_layer` dirty-check field needed at all.
+- **Geometry/color** (`BarrierRenderer::set_style`): a full-canvas-width bar centered at
+  `canvas_height * barrier_fraction`, thickness in canvas pixels (not on-screen/logical UI
+  points like the old egui bar was) — so at a given `thickness`, how thick the bar reads on
+  screen now depends on how much the preview image is scaled to fit the panel, same as the
+  falling notes always did. This is an intentional consequence of the bar now living in the same
+  canvas-pixel coordinate space export renders in, not a bug.
+- **Glow** (`BarrierKind::Glow`) uses the exact same "inflate the rasterized quad by the glow
+  radius, zero margin when disabled" trick `notes/shader.wgsl`'s note glow already uses — see
+  `barrier.wgsl`'s `glow_margin`/`half_extent`. `BarrierKind::Line` (what `Style::from_legacy`
+  produces, so a project with no imported style behaves exactly as before) leaves `flags.x`
+  (glow_enabled) at 0 in the shader, matching the old flat-line look regardless of
+  `glow_radius_px`.
+- **Pulse** (`Option<Pulse>` — brightens on note arrival, decays over `decay_seconds`) is
+  **stateless by design**, computed fresh every frame from the sorted note-onset list
+  (`notes::NotesRenderer::note_start_times`, the same cached list the timeline's note-density
+  strip already uses) rather than any spawned/tracked event queue: `BarrierRenderer::
+  pulse_intensity` binary-searches (`partition_point`) for the most recent note start at or
+  before the current (sync-offset-subtracted) transport time and linearly decays from
+  `pulse.intensity` to 0 over `decay_seconds`. This works because a note's *leading edge* reaches
+  the barrier exactly at `note.start` — re-derived from `notes/shader.wgsl`'s vertex math by
+  hand: at `time == note.start` the position-offset term is exactly zero, leaving the quad's
+  bottom edge sitting precisely at `keyboard_y`. Being stateless also means scrubbing anywhere
+  (forward or backward) just recomputes correctly with no "clear on seek" bookkeeping — unlike
+  Phase E's transition pass, whose particle pool *is* inherently stateful and will need that.
+- **Scissor-rect gotcha**: `notes::NotesRenderer::render` (drawn immediately before barrier in
+  the same render pass) leaves a scissor rect clipping to everything *above* the barrier line —
+  wgpu scissor state persists across draw calls within one render pass until changed again, so
+  `BarrierRenderer::render` must reset it to the full canvas before drawing, or the bar itself
+  (which sits at/below that clip edge, and extends further below when glow is enabled) would be
+  clipped away instead of rendered. Caught by re-deriving the render-pass state machine by hand,
+  not by running the app — `cargo build`/`clippy` can't catch a wrong-but-type-correct scissor
+  rect left over from a previous draw call in the same pass.
+- **`ui::draw_barrier_handle` now only owns the drag hit-region** — the color/thickness-styled
+  rect-fill and "barrier" text label it used to paint are gone (that's the compositor's job now);
+  it keeps exactly the `Sense::drag()` + accumulated `drag_delta()` interaction that edits
+  `calibration.barrier_fraction`, same pattern `draw_calibration_handles`/`draw_crop_handles` use.
+- `Project::effective_barrier_layer()` mirrors `effective_note_layer()` exactly (imported style's
+  `barrier` layer wins, else synthesized from `barrier_style`/`note_style` via
+  `Style::from_legacy`); `app/src/main.rs` has its own free-function mirror
+  (`effective_barrier_layer(&UiState)`) for the same reason `effective_note_layer`'s mirror
+  exists (`UiState` isn't a `Project`).
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean. **Not yet manually run** (per the "never run the app yourself" rule) — worth importing
+  `examples/styles/barrier-pulse.fmstyle.ron` (kind: Glow, thickness 6px, glow_radius_px 24,
+  pulse intensity 0.8 / decay 0.35s — already shipped, exercises every new code path at once)
+  next time someone has hands on the app: confirm the bar glows continuously at rest, briefly
+  flares brighter each time a note arrives then decays back over ~0.35s, and that dragging the
+  barrier handle still moves it (now with no visible egui-drawn line under the cursor, since the
+  rendered bar itself is what moves). Also worth exporting a short clip and confirming the barrier
+  bar (previously invisible in exports) now appears baked into the output frame.
+
+### Transition particles + flash pass (Phase E of the `.fmstyle.ron` milestone) — DONE
+
+Phase E adds the last of the three visual axes from the milestone's original scope: a burst of
+particles and/or a decaying radial flash spawned when a note arrives at the barrier, reading
+`project::TransitionLayer`'s `kind`/`particles`/`flash` fields. This is the only one of the three
+axes with genuine per-frame *state* (a particle's position is the integral of its velocity/gravity
+since spawn) rather than something a `time_seconds` value alone can reproduce, unlike the barrier's
+stateless pulse (Phase D) or the note fill's per-instance-baked look (Phase C).
+
+- **Hit-event precompute lives in `render::notes`, not a new module** — `render::notes::HitEvent {
+  time_seconds, x_px }` is built in `NotesRenderer::rebuild_instances` (`crates/render/src/notes/
+  mod.rs`) in the exact same loop that builds `NoteInstance`s, since the x position needs the same
+  calibrated keyboard layout the instances are built from (`key.x() + left_x + key.width() * 0.5`,
+  the note's lane center). Stored on `Loaded` alongside the pre-existing `note_starts` (used by the
+  timeline's density strip and the barrier's pulse) and exposed via a new `NotesRenderer::
+  hit_events()` accessor — same "cached at rebuild time, sorted ascending since notes are already
+  sorted by `note.start` for draw order" shape `note_starts` already used. Events are only built for
+  the notes actually drawn (in-range, non-drum, same filter as instances) — a note that never
+  renders never spawns a transition either.
+- **New module `crates/render/src/effects.rs`** (+ `effects.wgsl`) owns `EffectsRenderer`: a CPU
+  particle pool + a flash list, simulated on the CPU and re-uploaded as instanced quads every
+  frame — structured like `notes/pipeline.rs` (own shader, own growable instance buffer(s)) but,
+  unlike every other pass added so far, genuinely stateful across calls rather than a pure function
+  of the current inputs.
+- **Spawn/simulate model**: `EffectsRenderer::update(device, queue, canvas_size, barrier_fraction,
+  transition_layer, time_seconds, hit_events)` tracks `last_time_seconds` and, on an *ordinary*
+  step (`0.0 <= time_seconds - last_time_seconds <= MAX_ORDINARY_STEP_SECONDS`, `0.35`s), binary-
+  searches `hit_events` for the slice crossed since the last call (`partition_point` twice, same
+  technique `barrier::BarrierRenderer::pulse_intensity` already uses on `note_starts`) and spawns
+  one burst per crossed event before advancing every live particle/flash by that step's `dt`.
+  A step outside that range — including the very first call (`last_time_seconds == None`) — clears
+  both pools instead of spawning every event a big jump skipped or trying to run particles
+  backward: **transient effects have no well-defined mid-scrub state to reconstruct**, so a scrub
+  (forward or backward) just starts the pool over, empty, at the new position. This is the
+  documented tradeoff the plan called out ("scrubbing backward clears the pool") extended
+  symmetrically to large forward jumps for the same reason.
+- **Particles**: spawn spread around straight up (canvas convention is y-down, so "up" is negative
+  y) within `±spread_degrees/2` of vertical, speed jittered `0.5x`-`1.0x` of `speed_px`, then
+  integrate `pos += vel * dt; vel.y += gravity_px * dt` (gravity pulls particles back down) each
+  step, fading alpha linearly over `lifetime_seconds` and expiring at zero. **Jitter uses a tiny
+  hand-rolled deterministic xorshift32 PRNG** (`effects::Rng`), not a `rand` dependency — no crate
+  in this workspace currently depends on `rand`, and a few lines of xorshift is enough for "looks
+  plausibly random" without pulling in a new dependency for it.
+- **Flashes**: a single quad per spawn at the hit position, alpha decaying linearly from
+  `intensity` to 0 over `decay_seconds`, radius fixed at `radius_px` (no growth animation) —
+  intentionally the simplest interpretation of `FlashSpec` that still reads as "a bright pop", left
+  that simple rather than adding an expansion curve the schema doesn't ask for.
+  - **No procedural texture asset**: `effects.wgsl`'s fragment shader computes a soft circular
+    falloff (`1.0 - smoothstep(0.6, 1.0, length(local))`, `local` being the quad's -1..1
+    center-relative coordinate) directly from the quad geometry, same "signed-distance math in the
+    fragment shader instead of a sampled texture" style `notes/shader.wgsl`'s rounded-rect and
+    `barrier.wgsl`'s glow falloff already use in this codebase.
+- **Two blend modes, one shader**: `effects.wgsl`'s fragment shader always outputs *premultiplied*
+  color (`rgb * alpha`, `alpha`), so `EffectsRenderer` can build two pipelines from the identical
+  shader module differing only in `BlendState` — additive (`One, One` on both channels, for
+  flashes and `ParticleSpec::additive = true` particles) and premultiplied-alpha (`One,
+  OneMinusSrcAlpha`, for `additive = false` particles). Flashes always draw additive regardless of
+  `ParticleSpec` (a flash reads as a bright pop either way; `FlashSpec` has no `additive` field of
+  its own). **Simplification, documented rather than engineered around**: which pipeline a
+  *particle* draws under is decided once per `update` call from the *currently resolved*
+  `TransitionLayer.particles.additive`, not stored per-particle at spawn time — if a running
+  project imports a different style mid-flight while particles from the old one are still alive,
+  those leftover particles finish out under the new blend mode rather than the one they spawned
+  under. Not worth the extra per-particle bookkeeping for an edge case (switching styles while
+  particles are mid-flight) this milestone doesn't otherwise need to handle.
+- **Render order**: video quad → notes → barrier → **effects** (`Compositor::render`), on top of
+  everything else, matching the plan's specified order — a spark burst should visually sit above
+  the barrier bar it's spawned from. `EffectsRenderer::render` resets the scissor rect to the full
+  canvas defensively (barrier's own `render` already does this before it runs, but re-asserting
+  costs nothing and doesn't depend on `Compositor::render`'s draw order never changing elsewhere).
+- **Wiring**: `Compositor::update_transition` (new, mirrors `update_barrier`'s shape) pulls
+  `self.notes.hit_events()` internally so callers don't need to thread them through — same pattern
+  `update_barrier` already uses for `note_start_times()`. Called unconditionally every redraw in
+  `app/src/main.rs::apply_post_ui_updates` (right after `update_barrier`, using the same
+  `midi_time` already computed there) and once per output frame in `crates/export/src/lib.rs`'s
+  render loop (right after its own `update_barrier` call) — export renders frames in strictly
+  increasing `t` order at a fixed `1/fps` step, which is always well inside
+  `MAX_ORDINARY_STEP_SECONDS`, so the sim behaves there exactly like ordinary interactive playback
+  with no special-casing needed. `Project::effective_transition_layer()`
+  (`crates/project/src/lib.rs`) and its `app/src/main.rs` free-function mirror
+  (`effective_transition_layer(&UiState)`) follow the exact same "imported style wins, else
+  synthesize via `Style::from_legacy`" shape as `effective_note_layer`/`effective_barrier_layer` —
+  `Style::from_legacy` always produces `TransitionKind::None`, so a project with no imported style
+  spawns nothing, matching the pre-Phase-E look exactly.
+- **No new UI** — per the milestone's contract, "Import style…" is still the only surface; there
+  are no sliders for particle count/speed/etc., only the `.fmstyle.ron` file format.
+  `examples/styles/sparks.fmstyle.ron` (shipped back in Phase A) already exercises
+  `TransitionKind::ParticlesAndFlash` with both a `ParticleSpec` and a `FlashSpec` populated, so no
+  new sample style was needed for this phase.
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean. **Not yet manually run** (per the "never run the app yourself" rule) — worth importing
+  `examples/styles/sparks.fmstyle.ron` next time someone has hands on the app: confirm a burst of
+  warm-colored sparks flies up and falls back down under gravity each time a note reaches the
+  barrier, alongside a quick white flash, both fading out within well under a second; confirm
+  scrubbing around (including scrubbing backward mid-burst) doesn't crash or leave stuck particles
+  hanging in place; and confirm an exported clip bakes the bursts into the output frames at the
+  right timestamps.
+
+### Note fill effects: gradient, sheen, glow (Phase C of the `.fmstyle.ron` milestone) — DONE
+
+Phase C makes the vendored note pipeline (Phase B) actually read `project::NoteLayer`'s
+`fill`/`sheen`/`glow` fields instead of only `roundedness`/`fall_speed` — a vertical gradient fill,
+a diagonal specular sheen stripe, and a soft outer glow, all driven by data, no new UI beyond the
+existing "Import style…" button.
+
+- **Effective-style wiring**: `render::Compositor::new`/`load_midi`/`resize` (and
+  `render::notes::NotesRenderer`'s equivalents) now take `&project::NoteLayer` instead of
+  `&project::NoteStyle`. Both `app` and `export` compute this the same way — added
+  `Project::effective_note_layer(&self) -> NoteLayer` (`crates/project/src/lib.rs`):
+  `self.style.clone().unwrap_or_else(|| Style::from_legacy(&self.note_style,
+  &self.barrier_style)).notes.resolve(0.0).clone()`. `app/src/main.rs` has its own
+  `effective_note_layer(&UiState) -> NoteLayer` free function doing the identical computation off
+  `UiState` fields (can't call the `Project` method directly — building a whole `Project` just to
+  resolve this would mean cloning video/MIDI paths for no reason). `AppState::applied_note_layer`
+  replaces the old `applied_note_style` dirty-check field — comparing the *resolved* `NoteLayer`
+  means a style import (which doesn't touch `note_style`/`barrier_style` at all) is caught by the
+  exact same dirty check as a slider drag, one code path instead of two.
+- **`NoteInstance` gained `color_bottom`** (`crates/render/src/notes/instance.rs`) alongside the
+  existing `color` (renamed `color_top`) — a vertical-gradient fill is baked into each instance at
+  build time as two endpoints rather than needing a second draw call or a per-fragment lookup into
+  the style layer. For `Fill::Solid`, `color_top == color_bottom`, so the shader's gradient mix is
+  unconditionally a no-op and the default (no imported style) look is pixel-identical to Phase B —
+  this is what keeps `Style::from_legacy`'s output looking exactly like the pre-Phase-C sliders.
+  `NotesRenderer::rebuild_instances` resolves `NoteLayer::fill` once per rebuild (not per note) via
+  `ColorBinding::resolve_constant()`, then applies the existing sharp-key darkening (`* 0.6`) to
+  both endpoints independently, same shape as the old single-`color` darkening.
+- **Sheen and glow are style-wide uniforms, not per-note data** — a `StyleUniform` (new bind
+  group 2 in `crates/render/src/notes/pipeline.rs`/`shader.wgsl`) carries fill kind
+  (solid/gradient), sheen intensity/width/angle, and glow color/radius/intensity, uploaded once via
+  `NotesPipeline::set_style` whenever `apply_view` runs (same call sites as `set_view`/`set_speed`).
+  **Deliberately packed as four plain `vec4<f32>`s**, not a natural Rust-shaped struct with
+  `vec3`/`f32`/`u32` fields — mirrors the milestone-4 lesson (documented above) that WGSL's
+  std140-like uniform layout silently pads odd-sized fields (there it was `mat3x3<f32>`; here it
+  would have been every `vec3<f32>` bumping to 16 bytes and every scalar needing manual trailing
+  padding). All-vec4 sidesteps needing to reason about that padding at all.
+- **Glow needs the rasterized quad to extend past the note's own box**, since the fragment shader
+  can only paint pixels the rasterizer actually covers. `shader.wgsl`'s `vs_main` computes the
+  note's true (unpadded) `position`/`size` first — fed to the fragment shader unchanged, so the
+  rounded-rect distance field and gradient math are unaffected — then, only if `glow_enabled`,
+  additionally inflates the *vertex transform's* position/size by `glow_radius_px` on all sides
+  before applying `view_uniform.transform`. When glow is disabled the inflation margin is exactly
+  `0.0`, making this an algebraic no-op (not just "visually close") — re-derived by hand rather
+  than assumed, same standard this file has held every prior shader change to (the rotation-shear
+  and barrier-fade-out bugs earlier in this file were both exactly this class of mistake slipping
+  past `cargo build`/`clippy`).
+- **Fragment shader composition order**: base fill (solid or gradient) → sheen (additive
+  brightening along a fixed diagonal band, computed from the fragment's position relative to the
+  note's true top-left, independent of any glow inflation) → glow (computed last, since it needs
+  the already-composited fill color for `mix(glow_color, fill_color, base_alpha)` — glow_alpha is
+  scaled by `(1 - base_alpha)` so it only shows outside/at the note's edge rather than washing out
+  the note's own interior).
+- **Not yet manually run** (per the "never run the app yourself" rule) — worth importing
+  `examples/styles/gradient-glow.fmstyle.ron` (exercises all three: gradient + sheen + glow
+  together) via the Project tab's "Import style…" button next time someone has hands on the app,
+  scrubbing to where notes are visible, and confirming: notes show a top-to-bottom color blend, a
+  diagonal bright stripe sweeps across each note, and a soft halo extends past each note's edges.
+  Also worth confirming a project *without* an imported style still looks exactly like before this
+  phase (the pixel-parity claim above).
+

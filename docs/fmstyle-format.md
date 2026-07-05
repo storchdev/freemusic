@@ -71,7 +71,7 @@ The falling notes themselves.
 notes: Static((
     fill: VerticalGradient(top: Constant((120, 220, 255)), bottom: Constant((30, 90, 200))),
     sheen: Some((intensity: 0.5, width: 0.8, angle_degrees: 45.0)),
-    glow: Some((color: Constant((120, 200, 255)), radius_px: 12.0, intensity: 0.5)),
+    glow: Some((color: Constant((120, 200, 255)), radius_px: 12.0, brightness: 1.0)),
     roundedness: 1.0,
     fall_speed: 400.0,
     border: None,
@@ -115,12 +115,19 @@ the note wide, blended in at `intensity`.
 ### `Glow`
 
 ```rust
-struct Glow { color: ColorBinding, radius_px: f32, intensity: f32 }
+struct Glow { color: ColorBinding, radius_px: f32, brightness: f32 }
 ```
 
-Halo color/radius/strength. The rendered quad is inflated by `radius_px` on every side so there are
-pixels to paint the halo onto (an exact no-op when `glow` is `None` — the inflation margin is
-`0.0`).
+Halo color/radius/heat. The rendered quad is inflated by `radius_px` (times a small
+brightness-driven reach multiplier — see below) on every side so there are pixels to paint the
+corona onto (an exact no-op when `glow` is `None` — the inflation margin is `0.0`). Shared by
+`NoteLayer::glow` and `BarrierLayer::glow` — the same struct drives both.
+
+`brightness` (default `1.0`) is the single knob for the whole "white-hot core + radiating corona"
+look — see [Brightness/overexposure](#brightnessoverexposure) below. There used to be a separate
+`intensity` (halo opacity) field alongside `brightness` (**removed in Phase L** — see the
+changelog); `radius_px` alone now controls how far the corona reaches, `brightness` how hot/white
+it looks.
 
 ## Barrier layer (`BarrierLayer`)
 
@@ -128,20 +135,22 @@ The horizontal line/bar where falling notes stop.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `kind` | `BarrierKind` | `Line` | `Line` = flat bar, no glow; `Glow` = same bar with a radiating halo. |
 | `color` | `ColorBinding` | `Constant([255,255,255])` | Bar color. |
 | `thickness` | `f32` | `4.0` | Bar thickness in **canvas pixels** (not on-screen/logical UI points — depends on preview scale, same coordinate space the falling notes render in). |
-| `glow_radius_px` | `f32` | `0.0` | Halo radius; only visible under `kind: Glow`. |
+| `glow` | `Option<Glow>` | `None` | Soft radiating halo around the bar; presence *is* the on/off switch (**replaced `kind: BarrierKind` + `glow_radius_px: f32` in Phase K** — see the changelog). |
 | `pulse` | `Option<Pulse>` | `None` | Brief brighten-then-decay on each note arrival. |
 | `wavy` | `Option<WavySpec>` | `None` | Rippling "calm ocean" edge instead of a flat line. Drives off deterministic transport time (`time_seconds` after subtracting sync offset) — so it's frame-reproducible in export and freezes exactly on pause/scrub, not wall-clock/frame-count based. |
 
 ```ron
 barrier: Static((
-    kind: Glow,
     color: Constant((255, 220, 120)),
     thickness: 6.0,
-    glow_radius_px: 24.0,
-    pulse: Some((intensity: 0.8, decay_seconds: 0.35)),
+    glow: Some((
+        color: Constant((255, 220, 120)),
+        radius_px: 24.0,
+        brightness: 1.0,
+    )),
+    pulse: Some((decay_seconds: 0.35, brightness: 1.6)),
     wavy: Some((amplitude_px: 6.0, wavelength_px: 220.0, speed: 18.0, mode: Edge)),
 )),
 ```
@@ -149,11 +158,21 @@ barrier: Static((
 ### `Pulse`
 
 ```rust
-struct Pulse { intensity: f32, decay_seconds: f32 }
+struct Pulse { decay_seconds: f32, brightness: f32 }
 ```
 
 Stateless: recomputed every frame from the sorted note-onset list (no spawn/tracking bookkeeping),
 so it's correct under scrubbing in either direction with no special-casing.
+
+`brightness` (default `1.6`) is the peak color multiplier applied to the bar's own color at
+`pulse = 1.0`, decaying back to the bar's resting brightness (its `Glow::brightness` if it has a
+glow, else `1.0`/no-op) as the pulse settles — see
+[Brightness/overexposure](#brightnessoverexposure). There used to be a separate `intensity` (0..1
+peak amplitude) field that scaled into `brightness` (**removed in Phase L**, redundant with
+`brightness` alone) — what used to be `intensity: 0.8, brightness: 1.6` (peak effective multiplier
+`1.48`) becomes simply `brightness: 1.48`, or whatever peak look is actually wanted. The default
+`1.6` is a tune-by-eye starting point, not derived from anything — adjust per style if it looks too
+subtle or too blown-out.
 
 ### `WavySpec`
 
@@ -195,11 +214,11 @@ transition: Static((
     particles: Some((
         count: 24, lifetime_seconds: 0.4, size_px: 4.0, speed_px: 180.0,
         spread_degrees: 60.0, gravity_px: 300.0, color: Constant((255, 240, 200)),
-        additive: true, emission: Burst,
+        additive: true, emission: Burst, brightness: 1.0,
     )),
     flash: Some((
-        radius_x_px: 40.0, radius_y_px: 40.0, intensity: 0.9,
-        color: Constant((255, 255, 255)), decay_seconds: 0.15, mode: Instant,
+        radius_x_px: 40.0, radius_y_px: 40.0,
+        color: Constant((255, 255, 255)), decay_seconds: 0.15, mode: Instant, brightness: 1.0,
     )),
 )),
 ```
@@ -220,6 +239,7 @@ this is what the RON serializer emits automatically; write it the same way by ha
 | `color` | `ColorBinding` | Particle color. |
 | `additive` | `bool` | Additive blending (bright, overlapping particles glow) vs. premultiplied-alpha (opaque-ish). Decided once per `update()` call from the layer's currently-resolved value — a particle spawned under one style doesn't retroactively update if a *different* style is imported while it's still alive. |
 | `emission` | `EmissionMode` | `Burst` (default) or `Continuous { rate_per_second }`. |
+| `brightness` | `f32` | Default `1.0`. Applied at spawn time via `hot_color` — see [Brightness/overexposure](#brightnessoverexposure). `1.0` is a no-op. |
 
 `EmissionMode::Continuous { rate_per_second }`: particles spawn every frame a note is held,
 spread across the *width* of its key (not its center point) — reads as the key being "ground
@@ -230,14 +250,19 @@ down" rather than sparking once. `count` has no effect in this mode.
 | Field | Type | Meaning |
 |---|---|---|
 | `radius_x_px` / `radius_y_px` | `f32` | Independent horizontal/vertical radii — set equal for a circular flash, unequal for an ellipse. **Renamed from a single `radius_px` in Phase H** — see the changelog. |
-| `intensity` | `f32` | Peak brightness. |
 | `color` | `ColorBinding` | Flash color. |
 | `decay_seconds` | `f32` | How long the fade-out takes (see `mode` for when the fade *starts*). |
 | `mode` | `FlashMode` | `Instant` (default) or `Sustained`. |
+| `brightness` | `f32` | Default `1.0`. Applied at spawn time via `hot_color` — see [Brightness/overexposure](#brightnessoverexposure). `1.0` is a no-op. |
+
+A flash always renders additively, so its old separate `intensity` (peak alpha, 0..1) had the
+exact same visual effect as `brightness` (both just scale the additive contribution) — **removed
+in Phase L** as a redundant axis. A flash is always fully "on" at spawn/at the start of its hold
+(see `mode`), fading to 0 over `decay_seconds`.
 
 `FlashMode`:
 - `Instant`: decays over `decay_seconds` starting immediately at note-on — a quick pulse.
-- `Sustained`: holds at full `intensity` for the note's entire held duration, only starting to
+- `Sustained`: holds at full brightness for the note's entire held duration, only starting to
   decay (over `decay_seconds`) once the note ends. This is the field most likely to be reached for
   first if you want the "glow triggered by a key press" seemusic/Synthesia look — it stops being a
   flash and becomes a sustained glow that tracks note length. A long-held note stays glowing
@@ -266,6 +291,54 @@ representative value and print a one-time stderr warning the first time this hap
 per-note property) follows the identical shape and fallback rule (`ByVelocity.high`,
 `ByPitchClass[0]`, `ByTrack.first()` or `1.0`).
 
+## Brightness/overexposure
+
+Every "glow" effect in this schema (note glow, barrier glow, barrier pulse, flash, particles) has a
+`brightness: f32` knob (default `1.0`). It went through two designs:
+
+**Phase K** (superseded, kept here for history): `brightness` was a plain multiply
+(`color * brightness`) applied only to a glow's *halo*, alongside a separate `intensity` knob that
+scaled the halo's opacity. The non-HDR `Rgba8Unorm` render target clamps per-channel values above
+`1.0` to white on write, so a channel already near saturation clipped first — but multiplying a
+color's channels up doesn't converge to *white* unless they already share the same magnitude (e.g.
+`[1.0, 0.3, 0.1] * 3.0` clips to `[1.0, 0.9, 0.3]`, a more-saturated orange, not white), and the
+halo was the only thing that changed — a bright glow read as a colored ring stuck to the object's
+edge, not the object itself heating up.
+
+**Phase L (current)**: `brightness` is the single knob, `intensity` is gone everywhere it used to
+coexist with `brightness` (`Glow`, `Pulse`, `FlashSpec` — `ParticleSpec` never had one, and
+`Sheen::intensity` is an unrelated axis with no `brightness` counterpart, left as-is). One
+mechanism, applied consistently to every glowing surface's *own* color, not just its halo:
+
+> Desaturate the color toward pure white as `brightness` climbs past `1.0`
+> (`hot_color(base, brightness) = mix(base, white, 1 - 1/brightness)` for `brightness > 1`,
+> `base * brightness` — a plain dimmer — at or below `1.0`), and let the halo's reach grow
+> modestly with the same brightness (`corona_reach_scale(brightness) = 1 + 0.5*(1 - 1/brightness)`,
+> saturating at `1.5x` the configured `radius_px`).
+
+This is what makes the *core* of a glowing note or the barrier bar itself look white-hot ("a white
+hot pipe") rather than only the halo around it changing — `hot_color` is applied to the note's own
+fill / the barrier's own core color, not just to `Glow::color`. The halo's falloff is also a
+natural radiating curve (`pow(1 - distance/reach, 1.6)`, the same shape `effects.wgsl` already used
+for flashes) instead of a flat-opacity smoothstep band, so it reads as light radiating outward
+rather than an opaque ring. `brightness = 1.0` is an exact no-op in every case: `hot_color` reduces
+to `base * 1.0 == base`, and `corona_reach_scale` reduces to `1.0`.
+
+Where it lives per effect:
+
+- **Note glow / barrier glow** (`Glow::brightness`): whitens both the note's own fill / the
+  barrier's own core color *and* the halo's color, and widens the halo's reach —
+  `notes/shader.wgsl`/`barrier.wgsl`'s `hot_color`/`corona_reach_scale`.
+- **Barrier pulse** (`Pulse::brightness`): the peak brightness fed into the same `hot_color` mix at
+  `pulse = 1.0`, decaying back to the bar's resting brightness (its `Glow::brightness`, or `1.0`)
+  as the pulse settles.
+- **Flash / particles** (`FlashSpec::brightness` / `ParticleSpec::brightness`): both already bake
+  their final linear color into a GPU instance before upload, so `hot_color` runs as a pure
+  CPU-side computation once at spawn time (`crates/render/src/effects.rs`'s own copy of
+  `hot_color`) — no shader change for either. Their existing pow-based radiating falloff
+  (`softness = 1.0` for flashes) was already the shape the other two effects were changed to match,
+  so neither needed a falloff change, only the `intensity`-removal on `FlashSpec`.
+
 ## Known schema-only/no-op fields
 
 One place to check "why doesn't this do anything" before assuming it's a bug:
@@ -286,6 +359,9 @@ One place to check "why doesn't this do anything" before assuming it's a bug:
 | H | **Breaking**: `FlashSpec.radius_px: f32` renamed to `radius_x_px: f32, radius_y_px: f32`. Pre-1.0 format, no back-compat shim — an old file with `radius_px` will fail to parse and needs manual editing to the two new fields (set both equal to the old value for an unchanged circular look). Also, internally (not schema-visible): `render::notes`'s `HitEvent` type was replaced by `NoteInterval` in Phase I, not Phase H — see below. |
 | I | `ParticleSpec` gained `emission: EmissionMode` (new enum: `Burst`/`Continuous { rate_per_second }`). `FlashSpec` gained `mode: FlashMode` (new enum: `Instant`/`Sustained`). Both additive — old files still parse, default to `Burst`/`Instant` (pixel-identical to pre-Phase-I behavior). Internal-only (not part of the RON schema): `render::notes::HitEvent { time_seconds, x_px }` was replaced by a richer `NoteInterval { start_seconds, end_seconds, x_left, x_right }` to support continuous emission's key-width spread — this only matters if you're modifying the renderer, not authoring `.fmstyle.ron` files. |
 | J | Documentation only (this file) — no schema change. |
+| K | **Breaking**: `BarrierLayer` dropped `kind: BarrierKind` + `glow_radius_px: f32`, gained `glow: Option<Glow>` (the same `Glow` struct `NoteLayer` already used) — presence of `Some(Glow{..})` now *is* the on/off switch, replacing the enum. An old file with `kind`/`glow_radius_px` needs manual editing: `kind: Line` → `glow: None`; `kind: Glow, glow_radius_px: R` → `glow: Some((color: <old barrier color>, radius_px: R, intensity: 1.0, brightness: 1.0))` (reproduces the pre-Phase-K look exactly — Phase K's own `intensity` field was subsequently removed in Phase L, see below). Additive, not breaking: `Glow` gained `brightness: f32` (default `1.0`); `Pulse` gained `brightness: f32` (default `1.6`); `FlashSpec`/`ParticleSpec` each gained `brightness: f32` (default `1.0`) — old files without these fields still parse via `serde(default)`. |
+| L | **Breaking**: `intensity: f32` removed from `Glow`, `Pulse`, and `FlashSpec` (redundant once `brightness` alone drives the whole look — see [Brightness/overexposure](#brightnessoverexposure)). An old file needs manual editing: drop the `intensity` line from any `Glow`/`FlashSpec` literal; for `Pulse`, fold `intensity`/`brightness` into a single `brightness` equal to their product (e.g. `intensity: 0.8, brightness: 1.6` → `brightness: 1.28`, adjust to taste). Also, not schema-visible: `Glow`/`Pulse`/barrier's and notes' own core/fill color now go through a shared `hot_color` whitening function and the halo falloff changed from a flat-opacity smoothstep band to a natural radiating `pow` curve — see [Brightness/overexposure](#brightnessoverexposure) for the full mechanism. |
 
 If a previously-working `.fmstyle.ron` file fails to load after an upgrade, check this table first
-— Phase H's rename is the only schema-breaking change so far.
+— Phase H's rename, Phase K's `BarrierLayer` rework, and Phase L's `intensity` removal are the
+schema-breaking changes so far.
