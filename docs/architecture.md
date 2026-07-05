@@ -172,18 +172,39 @@ to live in `app/src/`, moved out in milestone 5 — see the MP4 export section b
   layout ... Visibility flags don't include the shader stage`) — `cargo build`/`clippy` can't
   catch this, it only surfaces from actually running the app. Fixed by widening visibility to
   `ShaderStages::VERTEX | ShaderStages::FRAGMENT`.
-- **UI**: brightness/scale/rotation/tilt/translate are sliders in a new floating "Video
-  Transform" window (`ui::draw_transform_window`); crop has both sliders in that window *and*
-  four draggable edge handles directly on the video preview (`ui::draw_crop_handles`, cyan,
-  same `Sense::drag()` + accumulated `drag_delta()` pattern as the yellow keyboard-calibration
-  handles, extended to both axes) — both control the same `VideoTransform` fields, so either can
-  be used interchangeably. The keyboard calibration readout also grew matching sliders
-  (`Keyboard left`/`Keyboard right` in "Sync & Project") for the same reason: precise numeric
-  entry is awkward with only a drag handle.
+- **UI**: brightness/scale/rotation/tilt/translate/crop are all sliders in the Transform tab
+  (`ui::draw_transform_tab`) — there is deliberately no on-preview draggable overlay for crop (see
+  the removal note below); the keyboard calibration readout has its own matching sliders
+  (`Keyboard left`/`Keyboard right` in the Keyboard tab) for the same reason: precise numeric
+  entry is awkward with only a drag handle, and those *do* still have a preview overlay (yellow,
+  `ui::draw_calibration_handles`) since their geometry — a vertical strip fraction of window width
+  — doesn't depend on `VideoTransform` at all.
 - `update_viewport` (renamed in spirit, same name) is now cheap enough — one small uniform
   write — that it's called unconditionally every redraw rather than dirty-checked like
   `midi_overlay.resize`'s full note-instance rebuild; it runs *after* the egui pass specifically
   so a slider drag this frame is reflected in this same frame's render instead of lagging by one.
+- **The cyan on-preview crop-box overlay was removed entirely** (`ui::draw_crop_handles`, plus the
+  `ui::video_display_rect` helper added to try to fix it, both deleted from `app/src/ui.rs`) rather
+  than kept working. It never actually tracked the real, on-screen video: `draw_crop_handles`
+  positioned the box using only the four crop fractions against the raw `image_rect` — as if the
+  video always exactly filled it, `scale == 1.0`, and `translate_x`/`translate_y == 0`. The real
+  video quad's position also depends on `scale`, `translate_x`/`translate_y`, *and* crop's own
+  effect on the letterbox aspect (the "Crop is UV remapping" bullet above), so the box quietly
+  stopped matching the video the moment any of those moved off their defaults — reported as "the
+  top of the cyan box is much higher than the top of the video" (a `scale < 1.0` project centers a
+  shrunk video with visible margin on every side; the box, oblivious to `scale`, still hugged the
+  untransformed frame's edges). A first attempt replicated `video_quad::update_viewport`'s exact
+  letterbox-from-crop-aspect formula plus `scale`/`translate_x`/`translate_y` in a new
+  `video_display_rect` helper (an NDC → `image_rect`-pixel-space conversion) and repositioned the
+  box/handles against that instead — correct for scale/translate, but still deliberately not
+  accounting for `rotation_degrees`/`tilt_x`/`tilt_y` (a rotated/tilted quad isn't axis-aligned, so
+  it can't be represented by a plain `egui::Rect` without a polygon overlay and a rework of the
+  edge-drag hit-testing). Rather than keep that remaining rotation/tilt gap around, the whole
+  overlay was deleted — crop is edited via the Transform tab's `crop_left`/`crop_right`/
+  `crop_top`/`crop_bottom` sliders only now, same as `scale`/`rotation_degrees`/`translate_x`/
+  `translate_y`/`tilt_x`/`tilt_y` already were. `CROP_MIN_GAP` (the `crop_right - crop_left >= 0.1`
+  guard, shared with those sliders) is unaffected — only the preview-overlay draw/hit-test code
+  and its `draw()` call site were removed.
 
 ### `wgpu`/`egui-wgpu` version pinning
 

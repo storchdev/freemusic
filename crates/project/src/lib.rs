@@ -23,6 +23,11 @@ pub struct Project {
     pub transform: VideoTransform,
     pub barrier_style: BarrierStyle,
     pub note_style: NoteStyle,
+    /// Canvas clear color for the legacy (no-imported-style) path — mirrors `Style::background`,
+    /// see its doc comment. Defaults to black, matching the hardcoded clear color every renderer
+    /// used before this field existed, so old `.fmproj.ron` files load unchanged.
+    #[serde(default)]
+    pub background_color: [u8; 3],
     /// A full imported `.fmstyle.ron` look, if one has been imported (see `style::Style`);
     /// `None` for a project that has never had one imported, including every project saved
     /// before this field existed (`serde(default)` makes old `.fmproj.ron` files load as
@@ -167,7 +172,9 @@ impl Project {
     pub fn effective_note_layer(&self) -> NoteLayer {
         self.style
             .clone()
-            .unwrap_or_else(|| Style::from_legacy(&self.note_style, &self.barrier_style))
+            .unwrap_or_else(|| {
+                Style::from_legacy(&self.note_style, &self.barrier_style, self.background_color)
+            })
             .notes
             .resolve(0.0)
             .clone()
@@ -179,7 +186,9 @@ impl Project {
     pub fn effective_barrier_layer(&self) -> BarrierLayer {
         self.style
             .clone()
-            .unwrap_or_else(|| Style::from_legacy(&self.note_style, &self.barrier_style))
+            .unwrap_or_else(|| {
+                Style::from_legacy(&self.note_style, &self.barrier_style, self.background_color)
+            })
             .barrier
             .resolve(0.0)
             .clone()
@@ -192,10 +201,27 @@ impl Project {
     pub fn effective_transition_layer(&self) -> TransitionLayer {
         self.style
             .clone()
-            .unwrap_or_else(|| Style::from_legacy(&self.note_style, &self.barrier_style))
+            .unwrap_or_else(|| {
+                Style::from_legacy(&self.note_style, &self.barrier_style, self.background_color)
+            })
             .transition
             .resolve(0.0)
             .clone()
+    }
+
+    /// Same "imported style wins, otherwise synthesize from the legacy sliders" rule as
+    /// `effective_note_layer`/`effective_barrier_layer`/`effective_transition_layer`, for the
+    /// canvas background. Unlike those, there's no per-layer struct to resolve out of — a
+    /// `Style`'s `background` is a plain `ColorBinding`, not `Timed`, so this just resolves it to
+    /// a concrete color directly.
+    pub fn effective_background_color(&self) -> [u8; 3] {
+        self.style
+            .clone()
+            .unwrap_or_else(|| {
+                Style::from_legacy(&self.note_style, &self.barrier_style, self.background_color)
+            })
+            .background
+            .resolve_constant()
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {

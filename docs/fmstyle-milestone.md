@@ -1043,3 +1043,70 @@ existing envelope layers "occasionally much bigger" on top of that already-shape
 on top of the uniformly-sized raw sum. Bound is unchanged (`|n_shaped| <= 1`, same as raw `n`), so
 `WAVE_ENVELOPE_MAX` and the vertex shader's inflation margin didn't need to change.
 
+### Phase N: canvas background color (both `.fmstyle.ron` and the legacy Keyboard-tab sliders)
+
+Every render pass clearing the canvas (`app`'s interactive `preview_pass`, `export`'s
+`export_scene_pass`) hardcoded `wgpu::Color::BLACK` — there was no way to change what shows through
+behind the video (e.g. letterbox gaps from a `VideoTransform` crop/scale) or behind the note
+highway above the barrier. Added a `background` option on both axes this schema already supports
+per layer (imported `.fmstyle.ron` vs. the legacy "quick control" sliders), following the exact
+pattern `effective_note_layer`/`effective_barrier_layer`/`effective_transition_layer` already
+established:
+
+- **Schema** (`crates/project/src/style.rs`): `Style` gained `background: ColorBinding`
+  (`#[serde(default = "default_background_color")]`, black — matches the old hardcoded clear color
+  so existing files render unchanged). Deliberately **not** wrapped in `Timed<T>` like `notes`/
+  `barrier`/`transition` — those are per-layer looks that could plausibly change over a song
+  (hence the time-keying spine), but a canvas background is one global value with no per-note
+  timeline to key against; adding a `Timed<BackgroundLayer>` wrapper for a single color would be
+  ceremony with no payoff. `Style::from_legacy` gained a third parameter, `background_color: [u8;
+  3]` — background isn't note- or barrier-specific, so it doesn't belong on `NoteStyle`/
+  `BarrierStyle`, and this mirrors how `from_legacy` already takes the other two structs by
+  reference rather than bundling everything into one param.
+- **Legacy path** (`crates/project/src/lib.rs`): `Project` gained `background_color: [u8; 3]`
+  (`#[serde(default)]`, which for a `[u8; 3]` is `[0, 0, 0]` — black, no custom default fn needed,
+  unlike the `ColorBinding` field which does need one since `ColorBinding` has no `Default` impl
+  that happens to be black). `Project::effective_background_color()` added alongside the three
+  existing `effective_*` methods, same "imported style wins, otherwise synthesize via
+  `Style::from_legacy`" rule — the only difference from its siblings is there's no `Timed<T>` to
+  `.resolve(0.0)` first, since `background` is a plain `ColorBinding`; it goes straight to
+  `.resolve_constant()`.
+- **`app`**: `UiState` gained `background_color: [u8; 3]`, mirrored to/from `Project` at every site
+  `barrier_style`/`note_style` already are (new-project reset, save snapshot, load-project). A new
+  free function `effective_background_color(ui_state: &UiState)` mirrors the existing
+  `effective_note_layer`/`effective_barrier_layer`/`effective_transition_layer` free functions in
+  `main.rs` (same reason those exist as free functions instead of `Project` methods: `UiState` isn't
+  a `Project`, no paths to snapshot just to resolve one color). The Keyboard tab (`draw_keyboard_tab`
+  in `app/src/ui.rs`) gained a "Background" section (color picker + reset button) after the existing
+  Barrier/Note style sections — same tab, since that's already where the legacy quick-control
+  sliders for barrier/note visuals live, not a new tab.
+- **Wiring the clear color**: both `app/src/main.rs`'s `preview_pass` and `crates/export/src/lib.rs`'s
+  `export_scene_pass` now clear to `effective_background_color(...)`/`project.
+  effective_background_color()` instead of `wgpu::Color::BLACK`. Both render targets are meant to
+  hold **linear**-space values before any final display/encode step (every other color in this
+  codebase — note fill, barrier glow, particle color — goes through the same `srgb_to_linear`
+  formula before being written into a uniform or vertex attribute), so the resolved `[u8; 3]` is
+  converted through a **fourth, independent copy** of the identical `srgb_to_linear` formula
+  (`crates/render/src/barrier.rs`/`crates/render/src/effects.rs` each already have their own private
+  copy; `app`/`export` needed their own too, `render`'s copies are private to that crate) before
+  being passed as the `wgpu::Color` clear value — clearing to a raw sRGB byte reinterpreted as linear
+  would produce a visibly different (darker, for any non-gray color) shade than the same color drawn
+  as a fill elsewhere.
+- **Sample style**: left the 8 existing shipped `examples/styles/*.fmstyle.ron` files on the black
+  default (this is a canvas-level option orthogonal to what each of those is actually showcasing —
+  glow, wavy, particles, etc. — not worth perturbing 8 existing "known good" reference files for)
+  and added a 9th, new `examples/styles/dark-background.fmstyle.ron`, generated the same way every
+  other sample is (a `Style` literal in `crates/project/examples/dump_sample_styles.rs`, run and
+  copied into the checked-in file — not hand-typed, so it's guaranteed to match this `ron` version's
+  actual output). Deliberately minimal outside of `background` itself: a solid-fill note color and a
+  modest barrier glow (`show_bar: false`, so it doesn't just read as "a plain white line on a dark
+  background") are the only other non-default fields, so the dark-navy `background: Constant((8, 10,
+  24))` canvas color is unambiguously what the sample demonstrates.
+
+**Not yet manually run**: confirm the Keyboard tab's new "Background" color picker actually changes
+the preview's canvas color; confirm a project saved with a non-black background reloads with the
+same color; confirm an exported clip's background matches the preview (same `srgb_to_linear`
+formula, so it should, but worth a real ffprobe/frame-extraction check); confirm importing a
+`.fmstyle.ron` with a `background` field overrides the legacy picker as expected, and that removing
+the import falls back to the legacy color again, not black.
+

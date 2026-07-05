@@ -1,0 +1,39 @@
+(
+    version: 1,
+    notes: Static((
+        fill: Solid(Constant((255, 200, 90))),
+        sheen: None,
+        glow: None,
+        roundedness: 1.0,
+        fall_speed: 400.0,
+        border: None,
+        black_key_fill: Auto,
+    )),
+    barrier: Static((
+        color: Constant((120, 200, 255)),
+        thickness: 4.0,
+        glow: Some((
+            color: Constant((120, 200, 255)),
+            brightness: 1.4,
+            layers: ((
+                amplitude: 2.6,
+                sigma_px: 2.5,
+            ), (
+                amplitude: 1.1,
+                sigma_px: 8.0,
+            ), (
+                amplitude: 0.38,
+                sigma_px: 24.0,
+            )),
+        )),
+        pulse: None,
+        wavy: None,
+        show_bar: false,
+    )),
+    transition: Static((
+        kind: r#None,
+        particles: None,
+        flash: None,
+    )),
+    background: Constant((255, 255, 255)),
+)

@@ -30,8 +30,17 @@ Top level:
     notes: Static((/* NoteLayer */)),
     barrier: Static((/* BarrierLayer */)),
     transition: Static((/* TransitionLayer */)),
+    background: Constant((0, 0, 0)),
 )
 ```
+
+`background: ColorBinding` (default `Constant([0, 0, 0])`, i.e. black) is the canvas clear color —
+visible behind the video wherever it doesn't fully cover the frame (e.g. a `VideoTransform` crop/
+scale leaving letterbox gaps) and behind the note highway above the barrier. Unlike `notes`/
+`barrier`/`transition` it's a plain `ColorBinding`, not wrapped in `Timed` — a single canvas-wide
+value has no per-note timeline to key against. A project with no imported style gets this from the
+Keyboard tab's own "Background" color picker (`Project::background_color`) instead, via
+`Style::from_legacy`'s third parameter.
 
 ## `Timed<T>`
 
@@ -413,7 +422,9 @@ One place to check "why doesn't this do anything" before assuming it's a bug:
 | K | **Breaking**: `BarrierLayer` dropped `kind: BarrierKind` + `glow_radius_px: f32`, gained `glow: Option<Glow>` (the same `Glow` struct `NoteLayer` already used) — presence of `Some(Glow{..})` now *is* the on/off switch, replacing the enum. An old file with `kind`/`glow_radius_px` needs manual editing: `kind: Line` → `glow: None`; `kind: Glow, glow_radius_px: R` → `glow: Some((color: <old barrier color>, radius_px: R, intensity: 1.0, brightness: 1.0))` (reproduces the pre-Phase-K look exactly — Phase K's own `intensity` field was subsequently removed in Phase L, see below). Additive, not breaking: `Glow` gained `brightness: f32` (default `1.0`); `Pulse` gained `brightness: f32` (default `1.6`); `FlashSpec`/`ParticleSpec` each gained `brightness: f32` (default `1.0`) — old files without these fields still parse via `serde(default)`. |
 | L | **Breaking**: `intensity: f32` removed from `Glow`, `Pulse`, and `FlashSpec` (redundant once `brightness` alone drives the whole look — see [Brightness/overexposure](#brightnessoverexposure)). An old file needs manual editing: drop the `intensity` line from any `Glow`/`FlashSpec` literal; for `Pulse`, fold `intensity`/`brightness` into a single `brightness` equal to their product (e.g. `intensity: 0.8, brightness: 1.6` → `brightness: 1.28`, adjust to taste). Also, not schema-visible: `Glow`/`Pulse`/barrier's and notes' own core/fill color now go through a shared `hot_color` whitening function and the halo falloff changed from a flat-opacity smoothstep band to a natural radiating `pow` curve — see [Brightness/overexposure](#brightnessoverexposure) for the full mechanism. |
 | M | **Breaking**: `Glow.radius_px: f32` removed, replaced by `layers: [GlowLayer; 3]` (new struct `GlowLayer { amplitude: f32, sigma_px: f32 }`) — the halo is now an additive multi-layer corona instead of a single alpha-blended ring, see [Brightness/overexposure](#brightnessoverexposure). An old file needs manual editing: drop the `radius_px` line from any `Glow` literal and add a `layers: (...)` tuple (the default tight/mid/wide set — `(amplitude: 2.6, sigma_px: 5.0), (amplitude: 1.1, sigma_px: 16.0), (amplitude: 0.38, sigma_px: 48.0)` — is a reasonable starting point; scale sigmas roughly proportional to the old `radius_px` for a similar reach). Additive, not breaking: `FlashSpec`/`ParticleSpec` each gained the same `layers: [GlowLayer; 3]` field (default as above; ignored on non-additive particles); `BarrierLayer` gained `show_bar: bool` (default `false` — an old file with no `show_bar` now renders pure corona with no visible opaque bar unless it opts in with `show_bar: true`). |
+| N | Additive, not breaking: `Style` gained `background: ColorBinding` (default `Constant([0, 0, 0])`, i.e. black — matches the hardcoded clear color every renderer used before this field existed, so old files render unchanged). Also new: `Project::background_color: [u8; 3]` (the legacy/no-imported-style equivalent, edited via the Keyboard tab's "Background" color picker) and `Project::effective_background_color()`/`Style::from_legacy`'s new third parameter, mirroring the existing `effective_note_layer`/`effective_barrier_layer`/`effective_transition_layer` pattern. |
 
 If a previously-working `.fmstyle.ron` file fails to load after an upgrade, check this table first
 — Phase H's rename, Phase K's `BarrierLayer` rework, Phase L's `intensity` removal, and Phase M's
-`radius_px` → `layers` rework are the schema-breaking changes so far.
+`radius_px` → `layers` rework are the schema-breaking changes so far (Phase N is additive, no file
+needs editing because of it).

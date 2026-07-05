@@ -73,7 +73,13 @@ fn effective_note_layer(ui_state: &UiState) -> NoteLayer {
     ui_state
         .style
         .clone()
-        .unwrap_or_else(|| Style::from_legacy(&ui_state.note_style, &ui_state.barrier_style))
+        .unwrap_or_else(|| {
+            Style::from_legacy(
+                &ui_state.note_style,
+                &ui_state.barrier_style,
+                ui_state.background_color,
+            )
+        })
         .notes
         .resolve(0.0)
         .clone()
@@ -86,7 +92,13 @@ fn effective_barrier_layer(ui_state: &UiState) -> project::BarrierLayer {
     ui_state
         .style
         .clone()
-        .unwrap_or_else(|| Style::from_legacy(&ui_state.note_style, &ui_state.barrier_style))
+        .unwrap_or_else(|| {
+            Style::from_legacy(
+                &ui_state.note_style,
+                &ui_state.barrier_style,
+                ui_state.background_color,
+            )
+        })
         .barrier
         .resolve(0.0)
         .clone()
@@ -98,10 +110,50 @@ fn effective_transition_layer(ui_state: &UiState) -> project::TransitionLayer {
     ui_state
         .style
         .clone()
-        .unwrap_or_else(|| Style::from_legacy(&ui_state.note_style, &ui_state.barrier_style))
+        .unwrap_or_else(|| {
+            Style::from_legacy(
+                &ui_state.note_style,
+                &ui_state.barrier_style,
+                ui_state.background_color,
+            )
+        })
         .transition
         .resolve(0.0)
         .clone()
+}
+
+/// Same idea as `effective_note_layer`/`effective_barrier_layer`/`effective_transition_layer`,
+/// for the canvas background — mirrors `project::Project::effective_background_color`.
+fn effective_background_color(ui_state: &UiState) -> [u8; 3] {
+    ui_state
+        .style
+        .clone()
+        .unwrap_or_else(|| {
+            Style::from_legacy(
+                &ui_state.note_style,
+                &ui_state.barrier_style,
+                ui_state.background_color,
+            )
+        })
+        .background
+        .resolve_constant()
+}
+
+/// sRGB u8 -> linear f32, matching `render::barrier::srgb_to_linear`/`render::effects::srgb_to_linear`
+/// — kept as its own small copy rather than shared (both of those are private to `render`), same
+/// call this codebase already makes twice for the identical conversion. Used for the preview
+/// pass's clear color so the canvas background composites correctly against the compositor's
+/// linear-space blending (glow, additive particles) instead of clearing to a raw sRGB byte value.
+fn srgb_to_linear([r, g, b]: [u8; 3]) -> [f32; 3] {
+    fn component(u: u8) -> f32 {
+        let u = u as f32 / 255.0;
+        if u < 0.04045 {
+            u / 12.92
+        } else {
+            ((u + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    [component(r), component(g), component(b)]
 }
 
 fn create_preview_texture(
@@ -381,6 +433,7 @@ impl AppState {
                 transform: project::VideoTransform::default(),
                 barrier_style: project::BarrierStyle::default(),
                 note_style: project::NoteStyle::default(),
+                background_color: [0, 0, 0],
                 project_path_text: String::new(),
                 save_requested: false,
                 load_requested: false,
@@ -579,6 +632,7 @@ impl AppState {
             transform: self.ui_state.transform,
             barrier_style: self.ui_state.barrier_style,
             note_style: self.ui_state.note_style,
+            background_color: self.ui_state.background_color,
             style: self.ui_state.style.clone(),
         }
     }
@@ -665,6 +719,7 @@ impl AppState {
         self.ui_state.transform = project::VideoTransform::default();
         self.ui_state.barrier_style = project::BarrierStyle::default();
         self.ui_state.note_style = project::NoteStyle::default();
+        self.ui_state.background_color = [0, 0, 0];
         self.ui_state.style = None;
         self.ui_state.style_path = None;
         self.ui_state.project_path_text = String::new();
@@ -693,6 +748,7 @@ impl AppState {
                 self.ui_state.transform = project.transform;
                 self.ui_state.barrier_style = project.barrier_style;
                 self.ui_state.note_style = project.note_style;
+                self.ui_state.background_color = project.background_color;
                 self.ui_state.style = project.style.clone();
                 self.ui_state.style_path = None;
                 if let Some(video_path) = project.video_path.clone() {
@@ -1232,6 +1288,7 @@ impl AppState {
         // lifetime, same as the old "scene_pass" did, so `WaterfallRenderer` is still fine with
         // it even though it's a different render target now.
         {
+            let background = srgb_to_linear(effective_background_color(&self.ui_state));
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("preview_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1239,7 +1296,12 @@ impl AppState {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: background[0] as f64,
+                            g: background[1] as f64,
+                            b: background[2] as f64,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

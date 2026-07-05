@@ -27,6 +27,9 @@ pub struct UiState {
     pub transform: project::VideoTransform,
     pub barrier_style: project::BarrierStyle,
     pub note_style: project::NoteStyle,
+    /// Canvas clear color for the legacy (no-imported-style) path — mirrors
+    /// `project::Project::background_color`, edited by the Keyboard tab's "Background" picker.
+    pub background_color: [u8; 3],
     /// Path typed into the Save/Load text field; defaulted from the video path on first load.
     pub project_path_text: String,
     /// Set by the Save/Load buttons; the app loop consumes and clears these each redraw.
@@ -122,7 +125,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut UiState) {
                 .fit_to_exact_size(image_rect.size()),
         );
         draw_calibration_handles(ui, image_rect, &mut state.calibration);
-        draw_crop_handles(ui, image_rect, &mut state.transform);
         draw_barrier_handle(ui, image_rect, &mut state.calibration);
     });
 
@@ -389,6 +391,17 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
     .on_hover_text("Also changes how long each note looks, since a note's on-screen length is its duration times this speed.");
     if ui.button("Reset note style").clicked() {
         state.note_style = project::NoteStyle::default();
+    }
+
+    ui.separator();
+    ui.heading("Background");
+    ui.label("Canvas color behind the video and note highway.");
+    ui.horizontal(|ui| {
+        ui.label("Color:");
+        ui.color_edit_button_srgb(&mut state.background_color);
+    });
+    if ui.button("Reset background").clicked() {
+        state.background_color = [0, 0, 0];
     }
 }
 
@@ -1017,86 +1030,6 @@ fn draw_calibration_handles(
         egui::FontId::proportional(12.0),
         stroke.color,
     );
-}
-
-/// Draws four draggable guides (a rectangle) over the preview image marking the crop region,
-/// in a different color from the keyboard calibration handles so the two don't get confused
-/// when both are visible. Same `Sense::drag()` + accumulated `drag_delta()` pattern as
-/// `draw_calibration_handles`, extended to both axes, and against the same aspect-fit `screen`
-/// rect.
-fn draw_crop_handles(ui: &egui::Ui, screen: egui::Rect, transform: &mut project::VideoTransform) {
-    let inner = screen;
-    let stroke = egui::Stroke::new(3.0, egui::Color32::from_rgb(0, 220, 220));
-
-    let left_x = inner.left() + inner.width() * transform.crop_left;
-    let right_x = inner.left() + inner.width() * transform.crop_right;
-    let top_y = inner.top() + inner.height() * transform.crop_top;
-    let bottom_y = inner.top() + inner.height() * transform.crop_bottom;
-
-    let left_rect = egui::Rect::from_min_max(
-        egui::pos2(left_x - 6.0, inner.top()),
-        egui::pos2(left_x + 6.0, inner.bottom()),
-    );
-    let left_response = ui.interact(
-        left_rect,
-        egui::Id::new("crop_left_handle"),
-        egui::Sense::drag(),
-    );
-    if left_response.dragged() {
-        let delta = left_response.drag_delta().x / inner.width();
-        transform.crop_left =
-            (transform.crop_left + delta).clamp(0.0, transform.crop_right - CROP_MIN_GAP);
-    }
-
-    let right_rect = egui::Rect::from_min_max(
-        egui::pos2(right_x - 6.0, inner.top()),
-        egui::pos2(right_x + 6.0, inner.bottom()),
-    );
-    let right_response = ui.interact(
-        right_rect,
-        egui::Id::new("crop_right_handle"),
-        egui::Sense::drag(),
-    );
-    if right_response.dragged() {
-        let delta = right_response.drag_delta().x / inner.width();
-        transform.crop_right =
-            (transform.crop_right + delta).clamp(transform.crop_left + CROP_MIN_GAP, 1.0);
-    }
-
-    let top_rect = egui::Rect::from_min_max(
-        egui::pos2(inner.left(), top_y - 6.0),
-        egui::pos2(inner.right(), top_y + 6.0),
-    );
-    let top_response = ui.interact(
-        top_rect,
-        egui::Id::new("crop_top_handle"),
-        egui::Sense::drag(),
-    );
-    if top_response.dragged() {
-        let delta = top_response.drag_delta().y / inner.height();
-        transform.crop_top =
-            (transform.crop_top + delta).clamp(0.0, transform.crop_bottom - CROP_MIN_GAP);
-    }
-
-    let bottom_rect = egui::Rect::from_min_max(
-        egui::pos2(inner.left(), bottom_y - 6.0),
-        egui::pos2(inner.right(), bottom_y + 6.0),
-    );
-    let bottom_response = ui.interact(
-        bottom_rect,
-        egui::Id::new("crop_bottom_handle"),
-        egui::Sense::drag(),
-    );
-    if bottom_response.dragged() {
-        let delta = bottom_response.drag_delta().y / inner.height();
-        transform.crop_bottom =
-            (transform.crop_bottom + delta).clamp(transform.crop_top + CROP_MIN_GAP, 1.0);
-    }
-
-    let crop_rect =
-        egui::Rect::from_min_max(egui::pos2(left_x, top_y), egui::pos2(right_x, bottom_y));
-    ui.painter()
-        .rect_stroke(crop_rect, 0.0, stroke, egui::StrokeKind::Outside);
 }
 
 /// Valid range for `KeyboardCalibration::barrier_fraction` — keeps the drag handle (and the

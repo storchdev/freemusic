@@ -43,6 +43,24 @@ fn even(value: u32) -> u32 {
     (value & !1).max(2)
 }
 
+/// sRGB u8 -> linear f32, matching `render::barrier::srgb_to_linear`/`render::effects::srgb_to_linear`
+/// (and `app`'s own copy) — kept as its own small copy rather than shared (those are private to
+/// `render`), same call this codebase already makes more than once for the identical conversion.
+/// Used for the export scene pass's clear color so it composites correctly against the
+/// compositor's linear-space blending, and matches the interactive preview's own clear color
+/// exactly (both go through this identical formula).
+fn srgb_to_linear([r, g, b]: [u8; 3]) -> [f32; 3] {
+    fn component(u: u8) -> f32 {
+        let u = u as f32 / 255.0;
+        if u < 0.04045 {
+            u / 12.92
+        } else {
+            ((u + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    [component(r), component(g), component(b)]
+}
+
 /// Runs the whole export synchronously — call this from a `std::thread::spawn` closure.
 /// `project` is a snapshot (paths, sync offset, calibration, transform); `cancel` is polled once
 /// per output frame.
@@ -90,6 +108,7 @@ fn run_inner(
     let note_layer = project.effective_note_layer();
     let barrier_layer = project.effective_barrier_layer();
     let transition_layer = project.effective_transition_layer();
+    let background_color = srgb_to_linear(project.effective_background_color());
     let mut compositor = Compositor::new(
         &handles,
         (width as f32, height as f32),
@@ -197,7 +216,12 @@ fn run_inner(
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: background_color[0] as f64,
+                            g: background_color[1] as f64,
+                            b: background_color[2] as f64,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

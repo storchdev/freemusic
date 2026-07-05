@@ -16,6 +16,13 @@ fn current_style_version() -> u32 {
     1
 }
 
+/// Black, matching the hardcoded clear color both `app` and `export` used before this field
+/// existed — an old/simple `.fmstyle.ron` (or the no-imported-style legacy path, see
+/// `from_legacy`) gets the same canvas background as before, not an arbitrary default.
+fn default_background_color() -> ColorBinding {
+    ColorBinding::Constant([0, 0, 0])
+}
+
 /// Top-level `.fmstyle.ron` document: a resolved (or time-keyed) look for each of the three
 /// visual axes this milestone proves out. `version` exists so a future breaking format change has
 /// somewhere to branch on; unrecognized/missing fields fall back to defaults via `serde(default)`
@@ -30,6 +37,14 @@ pub struct Style {
     pub barrier: Timed<BarrierLayer>,
     #[serde(default)]
     pub transition: Timed<TransitionLayer>,
+    /// Canvas clear color, visible behind the video wherever it doesn't fully cover the frame
+    /// (e.g. a `VideoTransform` crop/scale leaving letterbox gaps) and behind the note highway
+    /// above the barrier. Not per-layer/time-keyed (unlike `notes`/`barrier`/`transition`) since
+    /// it's a single canvas-wide value, not something that varies per note or needs the `Timed`
+    /// extensibility spine — a plain `ColorBinding` (only `Constant` actually renders, same as
+    /// every other color field in this schema) is all a background needs.
+    #[serde(default = "default_background_color")]
+    pub background: ColorBinding,
 }
 
 impl Default for Style {
@@ -39,6 +54,7 @@ impl Default for Style {
             notes: Timed::default(),
             barrier: Timed::default(),
             transition: Timed::default(),
+            background: default_background_color(),
         }
     }
 }
@@ -59,8 +75,14 @@ impl Style {
     /// Produces the exact look the legacy `NoteStyle`/`BarrierStyle` sliders already draw —
     /// `Fill::Solid`, no sheen/glow, `BarrierKind::Line`, `TransitionKind::None` — so the renderer
     /// can always consume a `Style`, whether it was imported from a file or synthesized from
-    /// whatever the Keyboard tab's sliders currently hold.
-    pub fn from_legacy(note_style: &NoteStyle, barrier_style: &BarrierStyle) -> Self {
+    /// whatever the Keyboard tab's sliders currently hold. `background_color` is the Keyboard
+    /// tab's own background color picker (`Project::background_color`), not part of `NoteStyle`/
+    /// `BarrierStyle` since it isn't note- or barrier-specific.
+    pub fn from_legacy(
+        note_style: &NoteStyle,
+        barrier_style: &BarrierStyle,
+        background_color: [u8; 3],
+    ) -> Self {
         Self {
             version: current_style_version(),
             notes: Timed::Static(NoteLayer {
@@ -87,6 +109,7 @@ impl Style {
                 show_bar: true,
             }),
             transition: Timed::Static(TransitionLayer::default()),
+            background: ColorBinding::Constant(background_color),
         }
     }
 }
@@ -601,7 +624,7 @@ mod tests {
 
     #[test]
     fn style_ron_round_trip() {
-        let style = Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default());
+        let style = Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
         let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
         let parsed: Style = ron::from_str(&text).unwrap();
         assert_eq!(style, parsed);
@@ -609,7 +632,8 @@ mod tests {
 
     #[test]
     fn black_key_fill_custom_gradient_round_trips() {
-        let mut style = Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default());
+        let mut style =
+            Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
         let Timed::Static(notes) = &mut style.notes else {
             unreachable!()
         };
@@ -630,11 +654,32 @@ mod tests {
         assert_eq!(style, parsed);
     }
 
+    #[test]
+    fn style_background_round_trips_with_a_non_default_color() {
+        let mut style =
+            Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
+        style.background = ColorBinding::Constant([12, 34, 56]);
+        let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
+        let parsed: Style = ron::from_str(&text).unwrap();
+        assert_eq!(style, parsed);
+    }
+
+    /// An old `.fmstyle.ron` file predating `background` (or one that just never sets it) has no
+    /// `background` key at all — `serde(default)` should load it as black, matching the hardcoded
+    /// clear color every renderer used before this field existed, not an arbitrary fallback.
+    #[test]
+    fn style_without_background_field_loads_as_black() {
+        let text = "(notes: Static((fill: Solid(Constant((1, 2, 3))), roundedness: 1.0, fall_speed: 400.0)))";
+        let style: Style = ron::from_str(text).unwrap();
+        assert_eq!(style.background, ColorBinding::Constant([0, 0, 0]));
+    }
+
     /// Phase K: `BarrierLayer::glow` (replacing the earlier `kind`/`glow_radius_px` pair) and the
     /// new `brightness` fields on `Pulse`/`FlashSpec`/`ParticleSpec` round-trip through RON.
     #[test]
     fn barrier_layer_with_glow_and_pulse_brightness_round_trips() {
-        let mut style = Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default());
+        let mut style =
+            Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
         let Timed::Static(barrier) = &mut style.barrier else {
             unreachable!()
         };
@@ -654,7 +699,7 @@ mod tests {
 
     #[test]
     fn barrier_layer_without_glow_round_trips() {
-        let style = Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default());
+        let style = Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
         let Timed::Static(barrier) = &style.barrier else {
             unreachable!()
         };
@@ -695,6 +740,7 @@ mod tests {
                     layers: default_glow_layers(),
                 }),
             }),
+            background: default_background_color(),
         };
         let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
         let parsed: Style = ron::from_str(&text).unwrap();
