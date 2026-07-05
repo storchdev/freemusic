@@ -114,7 +114,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut UiState) {
         );
         draw_calibration_handles(ui, image_rect, &mut state.calibration);
         draw_crop_handles(ui, image_rect, &mut state.transform);
-        draw_barrier_handle(ui, image_rect, &mut state.calibration, &state.barrier_style);
+        draw_barrier_handle(ui, image_rect, &mut state.calibration);
     });
 
     if state.dropping {
@@ -1042,18 +1042,15 @@ fn draw_crop_handles(ui: &egui::Ui, screen: egui::Rect, transform: &mut project:
 const BARRIER_MIN_FRACTION: f32 = 0.05;
 const BARRIER_MAX_FRACTION: f32 = 0.98;
 
-/// Draws a draggable horizontal guide over the preview image marking where falling notes stop
-/// (`calibration.barrier_fraction`), styled per `barrier_style`. Same `Sense::drag()` +
-/// accumulated `drag_delta()` pattern as `draw_calibration_handles`, rotated 90°. This is a plain
-/// `egui` overlay, not a wgpu render pass — the actual barrier *behavior* (the hit line's real
-/// on-screen position, clipping notes that reach it) lives in
-/// `render::notes::NotesRenderer::render`, driven by the same `calibration.barrier_fraction`
-/// this handle edits.
+/// Drag hit-region for `calibration.barrier_fraction`, editor-only — same `Sense::drag()` +
+/// accumulated `drag_delta()` pattern as `draw_calibration_handles`, rotated 90°. The barrier
+/// itself is now a real wgpu pass (`render::barrier::BarrierRenderer`, Phase D of the
+/// `.fmstyle.ron` milestone — see CLAUDE.md) baked into the preview image and export alike, so
+/// this no longer paints anything; it only owns the invisible drag target over the rendered bar.
 fn draw_barrier_handle(
     ui: &egui::Ui,
     screen: egui::Rect,
     calibration: &mut project::KeyboardCalibration,
-    barrier_style: &project::BarrierStyle,
 ) {
     let y = screen.top() + screen.height() * calibration.barrier_fraction;
     let handle_rect = egui::Rect::from_min_max(
@@ -1070,25 +1067,6 @@ fn draw_barrier_handle(
         calibration.barrier_fraction = (calibration.barrier_fraction + delta)
             .clamp(BARRIER_MIN_FRACTION, BARRIER_MAX_FRACTION);
     }
-
-    let color = egui::Color32::from_rgb(
-        barrier_style.color[0],
-        barrier_style.color[1],
-        barrier_style.color[2],
-    );
-    let half_thickness = barrier_style.thickness / 2.0;
-    let bar = egui::Rect::from_min_max(
-        egui::pos2(screen.left(), y - half_thickness),
-        egui::pos2(screen.right(), y + half_thickness),
-    );
-    ui.painter().rect_filled(bar, 0.0, color);
-    ui.painter().text(
-        egui::pos2(screen.left() + 4.0, y - half_thickness - 2.0),
-        egui::Align2::LEFT_BOTTOM,
-        "barrier",
-        egui::FontId::proportional(12.0),
-        color,
-    );
 }
 
 fn format_timecode(seconds: f64) -> String {

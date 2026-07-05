@@ -1225,8 +1225,9 @@ any of this, sample-style screenshots) are not started.**
   confirming the label under the button flips to "Custom style imported…" and a project save/load
   round-trips `style` correctly (nothing else to check visually until Phase C).
 - **Phase C (note fill effects actually rendered) is now done** — see "Note fill effects: gradient,
-  sheen, glow" further below. **Not started**: Phase D (barrier promoted from egui overlay to a
-  real glow/pulse render pass), Phase E (particle/flash transition pass + hit-event precompute).
+  sheen, glow" further below. **Phase D (barrier promoted from egui overlay to a real glow/pulse
+  render pass) is now done** — see "Barrier glow/pulse pass" further below. **Not started**: Phase
+  E (particle/flash transition pass + hit-event precompute).
 
 ### Vendored note pipeline, pixel-parity (Phase B of the `.fmstyle.ron` milestone)
 
@@ -1307,6 +1308,78 @@ prior barrier-related change in this file.
   clip at the barrier, and are colored exactly as before at a few different `barrier_fraction`
   values (including far from the 0.8 default, which is what previously exposed the fade-out bug),
   since this phase touches the same code path that bug lived in.
+
+### Barrier glow/pulse pass (Phase D of the `.fmstyle.ron` milestone) — DONE
+
+Phase D promotes the barrier from a plain `egui` overlay (milestone 6a) to a real wgpu render
+pass, so it now shows up in exported video too — and reads `project::BarrierLayer`'s
+`kind`/`color`/`thickness`/`glow_radius_px`/`pulse` fields instead of just the legacy
+`BarrierStyle`'s color/thickness.
+
+- **New module `crates/render/src/barrier.rs`** (+ `barrier.wgsl`), structured like
+  `video_quad.rs`: no vertex buffer, six hardcoded unit-quad corners positioned/sized in the
+  vertex shader from a uniform, one bind group. `Compositor` gained a `barrier:
+  barrier::BarrierRenderer` field, constructed unconditionally in `Compositor::new` (no
+  `BarrierLayer` needed at construction time, unlike `notes::NotesRenderer` — see below for why).
+  Render order is now video quad → notes → **barrier** (`Compositor::render`), so the bar draws
+  on top of falling notes, matching how the old egui overlay always painted on top of everything.
+- **Barrier params are cheap uniform writes, not a dirty-checked rebuild** — unlike
+  `NoteLayer`'s fill/sheen/glow (baked into `NoteInstance`s at build time, needing a full
+  `compositor.resize`), every `BarrierLayer` field only drives a handful of uniform floats. So
+  `Compositor::update_barrier` is called *unconditionally every redraw* (`app/src/main.rs`'s
+  `apply_post_ui_updates`, right after the existing `update_viewport` call; `crates/export`'s
+  render loop, right after its own `update_viewport`/`update_midi` calls) — the same treatment
+  `update_viewport` already gets, no `applied_barrier_layer` dirty-check field needed at all.
+- **Geometry/color** (`BarrierRenderer::set_style`): a full-canvas-width bar centered at
+  `canvas_height * barrier_fraction`, thickness in canvas pixels (not on-screen/logical UI
+  points like the old egui bar was) — so at a given `thickness`, how thick the bar reads on
+  screen now depends on how much the preview image is scaled to fit the panel, same as the
+  falling notes always did. This is an intentional consequence of the bar now living in the same
+  canvas-pixel coordinate space export renders in, not a bug.
+- **Glow** (`BarrierKind::Glow`) uses the exact same "inflate the rasterized quad by the glow
+  radius, zero margin when disabled" trick `notes/shader.wgsl`'s note glow already uses — see
+  `barrier.wgsl`'s `glow_margin`/`half_extent`. `BarrierKind::Line` (what `Style::from_legacy`
+  produces, so a project with no imported style behaves exactly as before) leaves `flags.x`
+  (glow_enabled) at 0 in the shader, matching the old flat-line look regardless of
+  `glow_radius_px`.
+- **Pulse** (`Option<Pulse>` — brightens on note arrival, decays over `decay_seconds`) is
+  **stateless by design**, computed fresh every frame from the sorted note-onset list
+  (`notes::NotesRenderer::note_start_times`, the same cached list the timeline's note-density
+  strip already uses) rather than any spawned/tracked event queue: `BarrierRenderer::
+  pulse_intensity` binary-searches (`partition_point`) for the most recent note start at or
+  before the current (sync-offset-subtracted) transport time and linearly decays from
+  `pulse.intensity` to 0 over `decay_seconds`. This works because a note's *leading edge* reaches
+  the barrier exactly at `note.start` — re-derived from `notes/shader.wgsl`'s vertex math by
+  hand: at `time == note.start` the position-offset term is exactly zero, leaving the quad's
+  bottom edge sitting precisely at `keyboard_y`. Being stateless also means scrubbing anywhere
+  (forward or backward) just recomputes correctly with no "clear on seek" bookkeeping — unlike
+  Phase E's transition pass, whose particle pool *is* inherently stateful and will need that.
+- **Scissor-rect gotcha**: `notes::NotesRenderer::render` (drawn immediately before barrier in
+  the same render pass) leaves a scissor rect clipping to everything *above* the barrier line —
+  wgpu scissor state persists across draw calls within one render pass until changed again, so
+  `BarrierRenderer::render` must reset it to the full canvas before drawing, or the bar itself
+  (which sits at/below that clip edge, and extends further below when glow is enabled) would be
+  clipped away instead of rendered. Caught by re-deriving the render-pass state machine by hand,
+  not by running the app — `cargo build`/`clippy` can't catch a wrong-but-type-correct scissor
+  rect left over from a previous draw call in the same pass.
+- **`ui::draw_barrier_handle` now only owns the drag hit-region** — the color/thickness-styled
+  rect-fill and "barrier" text label it used to paint are gone (that's the compositor's job now);
+  it keeps exactly the `Sense::drag()` + accumulated `drag_delta()` interaction that edits
+  `calibration.barrier_fraction`, same pattern `draw_calibration_handles`/`draw_crop_handles` use.
+- `Project::effective_barrier_layer()` mirrors `effective_note_layer()` exactly (imported style's
+  `barrier` layer wins, else synthesized from `barrier_style`/`note_style` via
+  `Style::from_legacy`); `app/src/main.rs` has its own free-function mirror
+  (`effective_barrier_layer(&UiState)`) for the same reason `effective_note_layer`'s mirror
+  exists (`UiState` isn't a `Project`).
+- **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+  clean. **Not yet manually run** (per the "never run the app yourself" rule) — worth importing
+  `examples/styles/barrier-pulse.fmstyle.ron` (kind: Glow, thickness 6px, glow_radius_px 24,
+  pulse intensity 0.8 / decay 0.35s — already shipped, exercises every new code path at once)
+  next time someone has hands on the app: confirm the bar glows continuously at rest, briefly
+  flares brighter each time a note arrives then decays back over ~0.35s, and that dragging the
+  barrier handle still moves it (now with no visible egui-drawn line under the cursor, since the
+  rendered bar itself is what moves). Also worth exporting a short clip and confirming the barrier
+  bar (previously invisible in exports) now appears baked into the output frame.
 
 ### Note fill effects: gradient, sheen, glow (Phase C of the `.fmstyle.ron` milestone) — DONE
 

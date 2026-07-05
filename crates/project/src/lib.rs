@@ -157,6 +157,18 @@ impl Project {
             .clone()
     }
 
+    /// The `BarrierLayer` the renderer should actually draw — same "imported style wins,
+    /// otherwise synthesize from the legacy sliders" rule as `effective_note_layer`, just for the
+    /// barrier axis instead of the notes axis.
+    pub fn effective_barrier_layer(&self) -> BarrierLayer {
+        self.style
+            .clone()
+            .unwrap_or_else(|| Style::from_legacy(&self.note_style, &self.barrier_style))
+            .barrier
+            .resolve(0.0)
+            .clone()
+    }
+
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::new())
             .map_err(|err| format!("failed to serialize project: {err}"))?;

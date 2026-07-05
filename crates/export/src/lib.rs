@@ -88,6 +88,7 @@ fn run_inner(
     };
 
     let note_layer = project.effective_note_layer();
+    let barrier_layer = project.effective_barrier_layer();
     let mut compositor = Compositor::new(
         &handles,
         (width as f32, height as f32),
@@ -156,6 +157,13 @@ fn run_inner(
         compositor.update_viewport(&gpu.queue, (width, height), &project.transform);
         let midi_time = t - project.sync_offset_seconds;
         compositor.update_midi(&gpu.queue, midi_time as f32);
+        compositor.update_barrier(
+            &gpu.queue,
+            (width as f32, height as f32),
+            &project.calibration,
+            &barrier_layer,
+            midi_time as f32,
+        );
 
         let readback_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("export_readback_buffer"),

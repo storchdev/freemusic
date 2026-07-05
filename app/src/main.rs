@@ -79,6 +79,19 @@ fn effective_note_layer(ui_state: &UiState) -> NoteLayer {
         .clone()
 }
 
+/// Same idea as `effective_note_layer`, for the barrier axis — mirrors
+/// `project::Project::effective_barrier_layer`, which can't be used directly here for the same
+/// reason `effective_note_layer` can't (`UiState` isn't a `Project`).
+fn effective_barrier_layer(ui_state: &UiState) -> project::BarrierLayer {
+    ui_state
+        .style
+        .clone()
+        .unwrap_or_else(|| Style::from_legacy(&ui_state.note_style, &ui_state.barrier_style))
+        .barrier
+        .resolve(0.0)
+        .clone()
+}
+
 fn create_preview_texture(
     device: &wgpu::Device,
     size: (u32, u32),
@@ -973,6 +986,19 @@ impl AppState {
             &self.gpu.queue,
             self.canvas_size,
             &self.ui_state.transform,
+        );
+
+        // Same "cheap uniform write, apply every frame" treatment as `update_viewport` above —
+        // see `render::Compositor::update_barrier`'s doc comment for why this doesn't need a
+        // dirty-check the way `compositor.resize` does.
+        let barrier_layer = effective_barrier_layer(&self.ui_state);
+        let midi_time = (self.ui_state.position_seconds - self.ui_state.sync_offset_seconds) as f32;
+        self.compositor.update_barrier(
+            &self.gpu.queue,
+            (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
+            &self.ui_state.calibration,
+            &barrier_layer,
+            midi_time,
         );
 
         if self.ui_state.save_requested {
