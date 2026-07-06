@@ -62,18 +62,13 @@ cargo run --bin app -- project.fmproj.ron mystyle.fmstyle.ron        # or open a
    [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) (C++ workload, for
    the linker) and LLVM (`winget install LLVM.LLVM`, for `ffmpeg-sys-next`'s bindgen step).
 2. A Vulkan driver — normally already present via your GPU driver.
-3. Download a prebuilt FFmpeg **shared** dev package — specifically a build pinned to **FFmpeg
-   7.1**:
-   [`ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip`](https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip)
-   (from [BtbN/FFmpeg-Builds releases](https://github.com/BtbN/FFmpeg-Builds/releases)) — and
-   extract it, e.g. to `C:\ffmpeg` (it already has the `lib\`+`include\` layout `ffmpeg-sys-next`
-   expects).
-   **Don't grab `ffmpeg-master-latest-*`**: that tracks FFmpeg's git master, which is already past
-   the FFmpeg 8.0 release and has removed several `AVCodec`/`AVFrame`/`AVPacket` enum variants
-   from the public API — building against it fails with `E0609`/`E0425`/`E0004` errors. The
-   `n7.1-latest` build (FFmpeg 7.x) is the supported target; this repo vendors a patched copy of
-   `ffmpeg-next 8.1.0` (in `vendor/ffmpeg-next/`) that handles the subset of the deprecated API
-   removed in newer BtbN builds.
+3. Download a prebuilt FFmpeg **shared** dev package from
+   [BtbN/FFmpeg-Builds releases](https://github.com/BtbN/FFmpeg-Builds/releases) and extract it,
+   e.g. to `C:\ffmpeg` (it already has the `lib\`+`include\` layout `ffmpeg-sys-next` expects).
+   Any BtbN shared build (7.x or 8.x) should work — this repo vendors a patched copy of
+   `ffmpeg-next 8.1.0` (in `vendor/ffmpeg-next/`) that handles the deprecated API fields and enum
+   variants that BtbN builds omit (BtbN compiles with `--disable-deprecated`). If you already have
+   an FFmpeg 8.x SDK on your machine, point `FFMPEG_DIR` at it directly.
 4. Set `FFMPEG_DIR=C:\ffmpeg`, then `cargo build --release` (no extra features — this is the
    default dynamic-linking path, not the static one below):
    ```powershell
