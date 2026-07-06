@@ -74,6 +74,17 @@ make install
 
 $env:PKG_CONFIG_PATH = & $msysBash -c "cygpath -m '$x264Prefix/lib/pkgconfig'"
 
+# x264's own build/install step names the archive `libx264.lib` even under MSVC (it keeps the
+# Unix `lib` prefix regardless of toolchain) — but MSVC's link.exe and rustc's `-l static=x264`
+# below both look for a file named exactly `x264.lib` (no prefix, the MSVC convention), and error
+# with "cannot open input file 'x264.lib'" (LNK1181) even though /LIBPATH correctly points at this
+# directory, because that literal filename isn't in it. Make both names resolve.
+$libx264 = Join-Path $x264Prefix "lib\libx264.lib"
+$x264Lib = Join-Path $x264Prefix "lib\x264.lib"
+if ((Test-Path $libx264) -and -not (Test-Path $x264Lib)) {
+    Copy-Item $libx264 $x264Lib
+}
+
 # PKG_CONFIG_PATH alone only controls FFmpeg's own build of libavcodec/etc; it doesn't stop the
 # final link of the app binary from preferring some other x264 lib (e.g. a vcpkg-installed one)
 # earlier on the linker's search path over our static one (see README's static-build gotcha).
