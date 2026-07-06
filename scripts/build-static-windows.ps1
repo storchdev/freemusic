@@ -39,7 +39,15 @@ if (-not (Test-Path $msysBash)) {
 # from MSYS2 on PATH, alongside the MSVC toolchain (cl.exe etc.) that must already be on PATH
 # from the Developer shell. Do this before the libx264 build, not just before `cargo build`, so
 # `make`/`nasm` resolve during that build too.
-$env:PATH = "$Msys2Dir\usr\bin;$env:PATH"
+#
+# Append, don't prepend: MSYS2's usr\bin ships its own `link.exe` (a coreutils hardlink utility,
+# unrelated to MSVC's linker). If it comes before the Developer shell's PATH entries, cl.exe
+# silently invokes MSYS2's link.exe instead of MSVC's when finishing a compile, and configure's
+# test-compile fails with "cl.exe is unable to create an executable file" — a link failure
+# disguised as a compiler failure. Putting MSYS2 last means cl.exe/link.exe from the Developer
+# shell are always found first, and MSYS2 is only consulted for tools (sh, make, nasm, pkgconf)
+# that don't exist in the Developer shell's own PATH at all.
+$env:PATH = "$env:PATH;$Msys2Dir\usr\bin"
 
 # Deliberately `-c`, not `-lc` (login shell): a login shell re-sources MSYS2's own /etc/profile,
 # which resets PATH/INCLUDE/LIB/LIBPATH and can silently drop the vcvars environment this script's
