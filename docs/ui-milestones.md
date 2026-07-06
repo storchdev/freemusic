@@ -580,3 +580,76 @@ Narrative history of the UI restructure and subsequent milestones/fixes, split o
   an old pre-stretch project to confirm it still looks identical (uniform spacing) with the new
   "Clear camera stretch"/"Align notes to camera stretch…" buttons both behaving sensibly, next
   time someone has hands on the running app.
+
+## Note editor (non-destructive MIDI note deletion)
+
+A "Note editor" section at the top of the Keyboard tab (`ui::draw_note_editor`, called from
+`draw_keyboard_tab`) lists notes currently playing at the transport's current frame and lets the
+user exclude specific ones from the note highway and playback. The original design ask was to
+actually rewrite the `.mid` file on disk; this was changed mid-implementation (see git history) to
+a **non-destructive skip list persisted in the project file instead** — the loaded `.mid` file is
+never read from disk after the initial parse, and never written to. Rationale: rewriting real MIDI
+bytes correctly (preserving tempo maps, CC/pedal events, other tracks) needs surgical raw-event
+editing that `midi-file`'s derived `MidiNote` model can't support without re-deriving a lot of
+what that crate already does internally; a skip list sidesteps all of that risk entirely, at the
+cost of the original file always containing the "deleted" notes if opened elsewhere.
+
+- **Identity**: `project::SkippedNote { track_id, channel, note, start_seconds: f64, end_seconds:
+  f64 }` (`crates/project/src/lib.rs`) names one specific note occurrence. This works as a stable
+  key only because the app never rewrites the source `.mid` file — re-parsing the same bytes is
+  deterministic, so a note's `Duration`-derived seconds are bit-identical across reloads.
+  `end_seconds` is redundant in practice (track+channel+note+start is already unique for any
+  realistic file) but cheap insurance against a pathological unison duplicate.
+- **Persistence**: `Project.skipped_notes: Vec<SkippedNote>` (`#[serde(default)]`, so old
+  `.fmproj.ron` files load with an empty list), round-tripped through `snapshot_project`/
+  `load_project_from_path` in `app/src/main.rs` exactly like `calibration`/`note_style` already
+  were — no new save/load code path needed. `export::run` also reads it and threads it into
+  `Compositor::load_midi`, so a note deleted in the UI stays deleted in an exported MP4 too.
+- **Filtering**: `render::notes::NotesRenderer::rebuild_instances` (`crates/render/src/notes/
+  mod.rs`) gained a `skipped: &[SkippedNote]` parameter, threaded through `Compositor::load_midi`/
+  `resize` from `crates/render/src/lib.rs`. The skip check is a third `.filter()` alongside the
+  pre-existing in-range/non-drum ones, comparing `track_id`/`channel`/`note`/`start_seconds`
+  directly against each `MidiNote` before it's turned into a `NoteInstance`. Since this is the same
+  point that builds the falling-note quads, a skipped note simply never gets an instance — no
+  separate "hide" step needed anywhere else (barrier pulse, particle effects, etc. all already key
+  off the same filtered `note_intervals`/`active_notes`).
+- **"Currently playing" query**: alongside the existing `NoteInterval` (x-position only, no note
+  number — used by `effects::EffectsRenderer` for particles/flashes), `rebuild_instances` now also
+  builds a parallel `active_notes: Vec<ActiveNote>` carrying the identifying fields
+  (`track_id`/`channel`/`note`/`start_seconds`/`end_seconds`). `NotesRenderer::notes_at(time)` /
+  `Compositor::notes_at(time)` linearly scans it for notes whose window contains `time` — same
+  "currently held" pattern already used by `effects.rs`'s continuous-particle check, just against
+  the richer struct. `AppState::update_midi_position` (`app/src/main.rs`) calls this every redraw
+  (cheap — a few hundred notes at most) and stashes the result in `UiState.notes_now`, since
+  `ui.rs`'s drawing functions only ever see plain `UiState` data, never the compositor directly.
+- **Delete flow, entirely inside `ui.rs`** (no new "request" flags need `main.rs` involvement,
+  unlike most other UI actions in this app — see below for why): each row in the note table has a
+  🗑 button; clicking it pushes a `SkippedNote` key into `UiState.pending_delete_notes` (the
+  "deletion queue"), which shows as a small list above the table with "Confirm delete…"/"Cancel".
+  "Confirm delete…" opens an `egui::Window` warning ("This will exclude N note(s)... does not
+  modify your original MIDI file..."); only its own "Delete" button actually moves
+  `pending_delete_notes` into `skipped_notes` (`Vec::append`). This can all happen inline because
+  `ui::draw` already receives `&mut UiState` — no round-trip through `main.rs` is needed the way
+  e.g. `save_requested`/`open_midi_requested` need one (those trigger real I/O — file dialogs,
+  disk writes — that `ui.rs` has no access to).
+- **Compositor rebuild**: `AppState` gained `applied_skipped_notes: Vec<SkippedNote>`, dirty-checked
+  in `apply_post_ui_updates` alongside the existing `applied_calibration`/`applied_note_layer`
+  checks — a change triggers the same full `compositor.resize` rebuild. This means a delete takes
+  effect one frame after confirming (the next `apply_post_ui_updates`), same latency as every other
+  calibration/style edit in this app.
+- **Stale-skip-list handling**: `AppState::load_midi` doc comment spells out the rule — it uses
+  whatever's currently in `ui_state.skipped_notes` as-is and does not reset it, since a skip list
+  keyed to one MIDI file's track/note/time structure is meaningless for a different file loaded
+  later. The two sites that load an *unrelated* MIDI file (the Project tab's "Open MIDI…" button,
+  and dropping a `.mid` file onto the window) explicitly clear `skipped_notes`/
+  `pending_delete_notes`/`confirm_delete_open` immediately before calling `load_midi`.
+  `load_project_from_path` instead sets `skipped_notes` from the loaded project just before its own
+  `load_midi` call, so the project's own skip list survives that same reload.
+- Verified by `cargo build`/`scripts/check.sh` (fmt+clippy clean) only — not yet manually exercised
+  in the running app. Worth checking next time someone has hands on it: deleting a note actually
+  removes it from the highway next frame, the confirm dialog's "Cancel" leaves it playing, deleting
+  several notes across different tracks/channels doesn't cross-match the wrong one, saving then
+  reloading a project round-trips `skipped_notes` correctly, opening a different MIDI file (via
+  button or drag-drop) clears any leftover skip list instead of silently (and coincidentally)
+  filtering the new file by stale keys, and an export reflects the same deletions as the live
+  preview.

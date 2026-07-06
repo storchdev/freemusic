@@ -19,7 +19,7 @@ use std::path::Path;
 
 use midi_file::MidiFile;
 use piano_layout::{KeyboardLayout, KeyboardRange, Sizing};
-use project::{BlackKeyFill, Fill, KeyboardCalibration, NoteLayer};
+use project::{BlackKeyFill, Fill, KeyboardCalibration, NoteLayer, SkippedNote};
 
 use instance::NoteInstance;
 use pipeline::NotesPipeline;
@@ -64,6 +64,20 @@ impl NoteInterval {
     }
 }
 
+/// One currently-rendered note's full identity (track/channel/number) plus its start/end time in
+/// seconds — everything the keyboard tab's note editor (`ui::draw_note_editor`) needs to list
+/// "what's playing right now" and to build a `project::SkippedNote` key if the user deletes it.
+/// Unlike `NoteInterval` (x-position, no note number — used by particle/flash effects), this
+/// carries the identifying fields and drops the x-span, since the editor has no use for layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActiveNote {
+    pub track_id: usize,
+    pub channel: u8,
+    pub note: u8,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
 struct Loaded {
     midi: MidiFile,
     /// Sorted note start times in seconds, cached at load time — used by the bottom timeline's
@@ -71,8 +85,13 @@ struct Loaded {
     /// per-track structure.
     note_starts: Vec<f32>,
     /// Sorted (ascending start time, matching `note_starts`) intervals for the notes actually
-    /// drawn (in-range, non-drum) — see `NoteInterval`.
+    /// drawn (in-range, non-drum, non-skipped) — see `NoteInterval`.
     note_intervals: Vec<NoteInterval>,
+    /// Same filtering and ordering as `note_intervals`, built alongside it in `rebuild_instances`
+    /// — see `ActiveNote`. Kept as a separate vec (rather than folding fields into
+    /// `NoteInterval`) since `NoteInterval` is on the hot path for every particle/flash frame
+    /// update and callers there have no use for the identifying fields.
+    active_notes: Vec<ActiveNote>,
 }
 
 impl NotesRenderer {
@@ -108,7 +127,29 @@ impl NotesRenderer {
             .unwrap_or(&[])
     }
 
-    /// Parses `path` as a MIDI file and (re)builds the note instances for it.
+    /// Notes from the currently-rendered set (in-range, non-drum, non-skipped — same filter as
+    /// `rebuild_instances`) whose `[start, end]` window contains `time_seconds`; empty if nothing
+    /// is loaded. Used by the keyboard tab's note editor to list what's playing at the current
+    /// frame. Linear scan over `active_notes`, same pattern as
+    /// `effects::EffectsRenderer::update`'s "currently held" check — cheap enough to call once
+    /// per UI redraw.
+    pub fn notes_at(&self, time_seconds: f32) -> Vec<ActiveNote> {
+        let Some(loaded) = self.loaded.as_ref() else {
+            return Vec::new();
+        };
+        loaded
+            .active_notes
+            .iter()
+            .copied()
+            .filter(|note| {
+                note.start_seconds as f32 <= time_seconds && time_seconds <= note.end_seconds as f32
+            })
+            .collect()
+    }
+
+    /// Parses `path` as a MIDI file and (re)builds the note instances for it. `skipped` excludes
+    /// specific note occurrences (see `project::SkippedNote`) from both the rendered instances and
+    /// `notes_at`, without touching the file itself.
     pub fn load(
         &mut self,
         gpu: &GpuHandles,
@@ -116,6 +157,7 @@ impl NotesRenderer {
         calibration: &KeyboardCalibration,
         note_layer: &NoteLayer,
         path: &Path,
+        skipped: &[SkippedNote],
     ) -> Result<(), String> {
         let midi = MidiFile::new(path)?;
         let mut note_starts: Vec<f32> = midi
@@ -129,21 +171,23 @@ impl NotesRenderer {
             midi,
             note_starts,
             note_intervals: Vec::new(),
+            active_notes: Vec::new(),
         });
-        self.apply_view(gpu, viewport, calibration, note_layer);
+        self.apply_view(gpu, viewport, calibration, note_layer, skipped);
         Ok(())
     }
 
-    /// Recomputes the projection and note-lane layout for a new viewport size, calibration, or
-    /// note layer (fill/sheen/glow/roundedness/fall_speed).
+    /// Recomputes the projection and note-lane layout for a new viewport size, calibration, note
+    /// layer (fill/sheen/glow/roundedness/fall_speed), or skipped-notes set.
     pub fn resize(
         &mut self,
         gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
         note_layer: &NoteLayer,
+        skipped: &[SkippedNote],
     ) {
-        self.apply_view(gpu, viewport, calibration, note_layer);
+        self.apply_view(gpu, viewport, calibration, note_layer, skipped);
     }
 
     fn apply_view(
@@ -152,6 +196,7 @@ impl NotesRenderer {
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
         note_layer: &NoteLayer,
+        skipped: &[SkippedNote],
     ) {
         let barrier_fraction = calibration.barrier_fraction.clamp(0.05, 1.0);
         self.pipeline
@@ -161,7 +206,7 @@ impl NotesRenderer {
         self.pipeline.set_style(gpu.queue, note_layer);
         self.canvas_size = viewport;
         self.barrier_fraction = barrier_fraction;
-        self.rebuild_instances(gpu, viewport, calibration, note_layer);
+        self.rebuild_instances(gpu, viewport, calibration, note_layer, skipped);
     }
 
     fn rebuild_instances(
@@ -170,6 +215,7 @@ impl NotesRenderer {
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
         note_layer: &NoteLayer,
+        skipped: &[SkippedNote],
     ) {
         self.pipeline.clear();
         let Some(loaded) = self.loaded.as_ref() else {
@@ -207,11 +253,20 @@ impl NotesRenderer {
             .iter()
             .flat_map(|track| track.notes.iter())
             .filter(|note| range.contains(note.note) && note.channel != 9)
+            .filter(|note| {
+                !skipped.iter().any(|skip| {
+                    skip.track_id == note.track_id
+                        && skip.channel == note.channel
+                        && skip.note == note.note
+                        && skip.start_seconds == note.start.as_secs_f64()
+                })
+            })
             .collect();
         // Render newer notes on top of older ones, matching Neothesia's own convention.
         notes.sort_by_key(|note| note.start);
 
         let mut note_intervals = Vec::with_capacity(notes.len());
+        let mut active_notes = Vec::with_capacity(notes.len());
         let instances = self.pipeline.instances();
         for note in notes {
             let key = &keys[note.note as usize - range_start];
@@ -239,6 +294,13 @@ impl NotesRenderer {
                 x_left: note_x,
                 x_right: note_x + key.width,
             });
+            active_notes.push(ActiveNote {
+                track_id: note.track_id,
+                channel: note.channel,
+                note: note.note,
+                start_seconds: note.start.as_secs_f64(),
+                end_seconds: note.end.as_secs_f64(),
+            });
         }
 
         // `notes` was already sorted ascending by `note.start` above, so `note_intervals` (pushed
@@ -246,6 +308,7 @@ impl NotesRenderer {
         // to binary-search the slice of events crossed since the last update.
         if let Some(loaded) = self.loaded.as_mut() {
             loaded.note_intervals = note_intervals;
+            loaded.active_notes = active_notes;
         }
 
         self.pipeline.prepare(gpu.device, gpu.queue);

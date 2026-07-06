@@ -35,6 +35,12 @@ pub struct Project {
     /// one synthesized from `barrier_style`/`note_style` — see `Style::from_legacy`.
     #[serde(default)]
     pub style: Option<Style>,
+    /// Notes manually deleted from the keyboard tab's note editor (`ui::draw_note_editor`) —
+    /// excluded from rendering/playback everywhere a `NoteLayer` is applied, without ever
+    /// touching the source `.mid` file on disk. `#[serde(default)]` so `.fmproj.ron` files saved
+    /// before this field existed load with an empty list (nothing skipped).
+    #[serde(default)]
+    pub skipped_notes: Vec<SkippedNote>,
 }
 
 /// Horizontal bounds of the real keyboard visible in the footage (fractions of window width,
@@ -73,6 +79,22 @@ impl Default for KeyboardCalibration {
             stretch: None,
         }
     }
+}
+
+/// Identifies one specific note occurrence in the loaded MIDI file to exclude from rendering and
+/// playback — track id, channel, MIDI note number, and start time (seconds) is enough to
+/// uniquely pick out one note-on/off pair, since the same `.mid` file always parses to
+/// byte-identical `Duration`s (this app never rewrites the source file, so re-parsing it is
+/// always deterministic). `end_seconds` is carried too, purely as extra insurance against a
+/// pathological file with two same-pitch notes starting at the exact same tick on the same
+/// track/channel — not required for uniqueness in practice.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SkippedNote {
+    pub track_id: usize,
+    pub channel: u8,
+    pub note: u8,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
 }
 
 /// Camera-stretch calibration: fractions of canvas width for the left edge of C1 through C8, the

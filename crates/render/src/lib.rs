@@ -9,9 +9,11 @@ mod effects;
 mod notes;
 mod video_quad;
 
-use project::{BarrierLayer, KeyboardCalibration, NoteLayer, TransitionLayer, VideoTransform};
+use project::{
+    BarrierLayer, KeyboardCalibration, NoteLayer, SkippedNote, TransitionLayer, VideoTransform,
+};
 
-pub use notes::GpuHandles;
+pub use notes::{ActiveNote, GpuHandles};
 
 pub struct Compositor {
     video_quad: video_quad::VideoQuad,
@@ -29,7 +31,8 @@ impl Compositor {
     ) -> Self {
         let video_quad = video_quad::VideoQuad::new(gpu.device, gpu.texture_format);
         let mut notes = notes::NotesRenderer::new(gpu);
-        notes.resize(gpu, viewport, calibration, note_layer);
+        // No MIDI is loaded yet at construction time, so there's nothing to skip.
+        notes.resize(gpu, viewport, calibration, note_layer, &[]);
         let barrier = barrier::BarrierRenderer::new(gpu.device, gpu.texture_format);
         let effects = effects::EffectsRenderer::new(gpu.device, gpu.texture_format);
         Self {
@@ -50,6 +53,12 @@ impl Compositor {
         self.notes.note_start_times()
     }
 
+    /// Currently-rendered notes (in-range, non-drum, non-skipped) whose window contains
+    /// `time_seconds`; empty if nothing is loaded. Used by the keyboard tab's note editor.
+    pub fn notes_at(&self, time_seconds: f32) -> Vec<ActiveNote> {
+        self.notes.notes_at(time_seconds)
+    }
+
     pub fn load_midi(
         &mut self,
         gpu: &GpuHandles,
@@ -57,22 +66,25 @@ impl Compositor {
         calibration: &KeyboardCalibration,
         note_layer: &NoteLayer,
         path: &std::path::Path,
+        skipped: &[SkippedNote],
     ) -> Result<(), String> {
         self.notes
-            .load(gpu, viewport, calibration, note_layer, path)
+            .load(gpu, viewport, calibration, note_layer, path, skipped)
     }
 
-    /// Recomputes note-lane layout for a new viewport size, calibration, or note layer. Not
-    /// needed for the video quad itself — its viewport-dependent state is the cheap per-frame
-    /// uniform written by `update_viewport` instead.
+    /// Recomputes note-lane layout for a new viewport size, calibration, note layer, or
+    /// skipped-notes set. Not needed for the video quad itself — its viewport-dependent state is
+    /// the cheap per-frame uniform written by `update_viewport` instead.
     pub fn resize(
         &mut self,
         gpu: &GpuHandles,
         viewport: (f32, f32),
         calibration: &KeyboardCalibration,
         note_layer: &NoteLayer,
+        skipped: &[SkippedNote],
     ) {
-        self.notes.resize(gpu, viewport, calibration, note_layer);
+        self.notes
+            .resize(gpu, viewport, calibration, note_layer, skipped);
     }
 
     pub fn upload_frame(

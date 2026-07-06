@@ -67,6 +67,12 @@ custom timeline), 6a (barrier + note-highway styling), 6b (native Open/Save dial
 menu bar), 6d (keyboard shortcuts), and 6e (synced audio playback via a new
 `crates/audio-playback`) are all implemented — see below.
 
+Beyond the plan's own milestones, the Keyboard tab also has a note editor (list notes currently
+playing at the current frame, delete individual ones with a confirm step) that excludes them from
+the note highway/playback/export via a persisted skip list rather than ever rewriting the loaded
+`.mid` file — see `docs/ui-milestones.md`'s "Note editor" section for the full design (identity
+key, persistence, filtering, and why it's non-destructive).
+
 ## Commands
 
 ```sh

@@ -123,6 +123,7 @@ fn run_inner(
                 &project.calibration,
                 &note_layer,
                 midi_path,
+                &project.skipped_notes,
             )
             .map_err(|err| format!("failed to load MIDI: {err}"))?;
     }

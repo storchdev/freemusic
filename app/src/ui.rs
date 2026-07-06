@@ -30,6 +30,21 @@ pub struct UiState {
     /// Canvas clear color for the legacy (no-imported-style) path — mirrors
     /// `project::Project::background_color`, edited by the Keyboard tab's "Background" picker.
     pub background_color: [u8; 3],
+    /// Confirmed skip list — notes excluded from rendering/playback, mirroring
+    /// `project::Project::skipped_notes`. Edited only by the note editor's confirm-delete flow
+    /// (`draw_note_editor`); the app loop dirty-checks this against `applied_skipped_notes` each
+    /// redraw (same pattern as `calibration`/the effective `NoteLayer`) and rebuilds the
+    /// compositor's note instances when it changes.
+    pub skipped_notes: Vec<project::SkippedNote>,
+    /// Notes staged for deletion but not yet confirmed — the "deletion queue" the note editor
+    /// shows above its table. Cleared on confirm (moved into `skipped_notes`) or cancel.
+    pub pending_delete_notes: Vec<project::SkippedNote>,
+    /// Whether the "this will exclude these notes" warning dialog is open.
+    pub confirm_delete_open: bool,
+    /// Notes whose window contains the current playback frame, mirrored from
+    /// `Compositor::notes_at` every redraw (see `main.rs`'s `update_midi_position`) regardless of
+    /// whether the keyboard tab is actually visible — cheap enough not to bother gating it.
+    pub notes_now: Vec<render::ActiveNote>,
     /// Path typed into the Save/Load text field; defaulted from the video path on first load.
     pub project_path_text: String,
     /// Set by the Save/Load buttons; the app loop consumes and clears these each redraw.
@@ -325,7 +340,135 @@ fn darken_color(color: [u8; 3], factor: f32) -> [u8; 3] {
 /// keyboard.
 const CALIBRATION_MIN_GAP: f32 = 0.05;
 
+/// MIDI note number to scientific-pitch-notation name (note 60 = "C4", 21 = "A0", 108 = "C8" —
+/// matches `piano_layout::KeyboardRange::standard_88_keys`'s own A0..C8 naming).
+fn note_name(note: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let octave = note as i32 / 12 - 1;
+    format!("{}{octave}", NAMES[note as usize % 12])
+}
+
+/// Turns an `render::ActiveNote` (identity + timing, no display concerns) into the
+/// `project::SkippedNote` key that names it in the persisted skip list — same fields, just
+/// crossing the crate boundary.
+fn skipped_note_key(note: &render::ActiveNote) -> project::SkippedNote {
+    project::SkippedNote {
+        track_id: note.track_id,
+        channel: note.channel,
+        note: note.note,
+        start_seconds: note.start_seconds,
+        end_seconds: note.end_seconds,
+    }
+}
+
+/// Lists notes currently playing at the frame the transport is on, each with a delete icon that
+/// stages it in a "pending deletion" queue; a "Confirm delete…" button above the queue opens a
+/// warning dialog, and only on that dialog's own confirmation are the staged notes moved into
+/// `state.skipped_notes` — the persisted list the compositor filters out of the note highway and
+/// playback everywhere (see `render::notes::rebuild_instances`). Nothing here ever touches the
+/// loaded `.mid` file on disk; the exclusion lives only in the project's own save file.
+fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
+    ui.heading("Note editor");
+    ui.label(
+        "Notes currently playing at this frame. Deleting a note excludes it from the note \
+        highway and playback wherever this project is opened or exported — it never modifies \
+        your original MIDI file.",
+    );
+
+    if !state.pending_delete_notes.is_empty() {
+        ui.add_space(4.0);
+        ui.group(|ui| {
+            ui.label(format!(
+                "{} note(s) queued for deletion:",
+                state.pending_delete_notes.len()
+            ));
+            ui.horizontal_wrapped(|ui| {
+                for note in &state.pending_delete_notes {
+                    ui.label(note_name(note.note));
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Confirm delete…").clicked() {
+                    state.confirm_delete_open = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    state.pending_delete_notes.clear();
+                }
+            });
+        });
+    }
+
+    if state.confirm_delete_open {
+        egui::Window::new("Delete notes?")
+            .collapsible(false)
+            .resizable(false)
+            .show(ui.ctx(), |ui| {
+                ui.label(format!(
+                    "This will exclude {} note(s) from the note highway and playback. This \
+                    does not modify your original MIDI file — the exclusion is saved with this \
+                    project instead. Continue?",
+                    state.pending_delete_notes.len()
+                ));
+                ui.horizontal(|ui| {
+                    if ui.button("Delete").clicked() {
+                        state.skipped_notes.append(&mut state.pending_delete_notes);
+                        state.confirm_delete_open = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        state.confirm_delete_open = false;
+                    }
+                });
+            });
+    }
+
+    ui.add_space(4.0);
+    let visible: Vec<_> = state
+        .notes_now
+        .iter()
+        .filter(|note| !state.pending_delete_notes.contains(&skipped_note_key(note)))
+        .copied()
+        .collect();
+
+    if visible.is_empty() {
+        ui.label("No notes playing at the current frame.");
+        return;
+    }
+
+    egui::ScrollArea::vertical()
+        .max_height(160.0)
+        .id_salt("note_editor_scroll")
+        .show(ui, |ui| {
+            egui::Grid::new("note_editor_grid")
+                .num_columns(3)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label("Note");
+                    ui.label("Duration");
+                    ui.label("");
+                    ui.end_row();
+
+                    let mut newly_queued = None;
+                    for note in &visible {
+                        ui.label(note_name(note.note));
+                        ui.label(format!("{:.2}s", note.end_seconds - note.start_seconds));
+                        if ui.button("🗑").clicked() {
+                            newly_queued = Some(skipped_note_key(note));
+                        }
+                        ui.end_row();
+                    }
+                    if let Some(key) = newly_queued {
+                        state.pending_delete_notes.push(key);
+                    }
+                });
+        });
+}
+
 fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
+    draw_note_editor(ui, state);
+    ui.separator();
+
     ui.heading("Keyboard calibration");
     ui.label("Drag the yellow guides on the preview, or use the sliders below.");
     ui.horizontal(|ui| {

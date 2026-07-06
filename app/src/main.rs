@@ -206,6 +206,10 @@ struct AppState {
     /// legacy sliders or importing a `.fmstyle.ron`) needs a full `compositor.resize`, not just a
     /// per-frame uniform write.
     applied_note_layer: NoteLayer,
+    /// Same dirty-check idea as `applied_calibration`/`applied_note_layer`, for
+    /// `ui_state.skipped_notes` (the keyboard tab's note editor) — a change needs the same full
+    /// `compositor.resize` rebuild.
+    applied_skipped_notes: Vec<project::SkippedNote>,
     ui_state: UiState,
     last_instant: Instant,
     /// Transport position `pipeline.seek_and_decode` was last called with, so a redraw that
@@ -409,6 +413,7 @@ impl AppState {
             midi_path: None,
             applied_calibration: KeyboardCalibration::default(),
             applied_note_layer: NoteLayer::default(),
+            applied_skipped_notes: Vec::new(),
             ui_state: UiState {
                 playing: false,
                 position_seconds: 0.0,
@@ -434,6 +439,10 @@ impl AppState {
                 barrier_style: project::BarrierStyle::default(),
                 note_style: project::NoteStyle::default(),
                 background_color: [0, 0, 0],
+                skipped_notes: Vec::new(),
+                pending_delete_notes: Vec::new(),
+                confirm_delete_open: false,
+                notes_now: Vec::new(),
                 project_path_text: String::new(),
                 save_requested: false,
                 load_requested: false,
@@ -519,9 +528,11 @@ impl AppState {
             (size.0 as f32, size.1 as f32),
             &self.ui_state.calibration,
             &note_layer,
+            &self.ui_state.skipped_notes,
         );
         self.applied_calibration = self.ui_state.calibration;
         self.applied_note_layer = note_layer;
+        self.applied_skipped_notes = self.ui_state.skipped_notes.clone();
     }
 
     /// Opens `path` as the active video, replacing whatever was loaded before (CLI arg at
@@ -583,7 +594,11 @@ impl AppState {
         }
     }
 
-    /// Parses `path` as a MIDI file and (re)builds the waterfall overlay for it.
+    /// Parses `path` as a MIDI file and (re)builds the waterfall overlay for it. Uses whatever is
+    /// currently in `ui_state.skipped_notes` as-is — callers loading an unrelated MIDI file (the
+    /// "Open MIDI…" button, drag-drop) are responsible for clearing it first, since a skip list
+    /// keyed to the previous file's track/note/time structure is meaningless for a different one;
+    /// `load_project_from_path` instead sets it from the loaded project just before calling this.
     fn load_midi(&mut self, path: &Path) {
         let size = self.canvas_size;
         let note_layer = effective_note_layer(&self.ui_state);
@@ -593,11 +608,13 @@ impl AppState {
             &self.ui_state.calibration,
             &note_layer,
             path,
+            &self.ui_state.skipped_notes,
         ) {
             Ok(()) => {
                 self.midi_path = Some(path.to_path_buf());
                 self.ui_state.midi_name = self.compositor.loaded_midi_name().map(str::to_owned);
                 self.ui_state.midi_note_times = self.compositor.note_start_times().to_vec();
+                self.applied_skipped_notes = self.ui_state.skipped_notes.clone();
             }
             Err(err) => eprintln!("failed to open midi file {path:?}: {err}"),
         }
@@ -638,6 +655,7 @@ impl AppState {
             note_style: self.ui_state.note_style,
             background_color: self.ui_state.background_color,
             style: self.ui_state.style.clone(),
+            skipped_notes: self.ui_state.skipped_notes.clone(),
         }
     }
 
@@ -703,6 +721,7 @@ impl AppState {
         );
         self.applied_calibration = KeyboardCalibration::default();
         self.applied_note_layer = NoteLayer::default();
+        self.applied_skipped_notes = Vec::new();
         self.last_decoded_position = None;
         self.audio = AudioPlayback::new();
         self.audio_playing = false;
@@ -726,6 +745,10 @@ impl AppState {
         self.ui_state.background_color = [0, 0, 0];
         self.ui_state.style = None;
         self.ui_state.style_path = None;
+        self.ui_state.skipped_notes = Vec::new();
+        self.ui_state.pending_delete_notes = Vec::new();
+        self.ui_state.confirm_delete_open = false;
+        self.ui_state.notes_now = Vec::new();
         self.ui_state.project_path_text = String::new();
         self.ui_state.export_path_text = String::new();
         self.ui_state.canvas_size = self.canvas_size;
@@ -755,6 +778,9 @@ impl AppState {
                 self.ui_state.background_color = project.background_color;
                 self.ui_state.style = project.style.clone();
                 self.ui_state.style_path = None;
+                self.ui_state.skipped_notes = project.skipped_notes.clone();
+                self.ui_state.pending_delete_notes = Vec::new();
+                self.ui_state.confirm_delete_open = false;
                 if let Some(video_path) = project.video_path.clone() {
                     self.load_video(&video_path);
                 }
@@ -1062,23 +1088,29 @@ impl AppState {
 
     fn update_midi_position(&mut self) {
         let midi_time = self.ui_state.position_seconds - self.ui_state.sync_offset_seconds;
-        self.compositor
-            .update_midi(&self.gpu.queue, midi_time as f32);
+        let midi_time = midi_time as f32;
+        self.compositor.update_midi(&self.gpu.queue, midi_time);
+        // Refreshed every redraw (cheap linear scan) so the keyboard tab's note editor always
+        // reflects the current frame, whether or not that tab is actually visible right now.
+        self.ui_state.notes_now = self.compositor.notes_at(midi_time);
     }
 
     fn apply_post_ui_updates(&mut self) {
         let note_layer = effective_note_layer(&self.ui_state);
         if self.ui_state.calibration != self.applied_calibration
             || note_layer != self.applied_note_layer
+            || self.ui_state.skipped_notes != self.applied_skipped_notes
         {
             self.compositor.resize(
                 &gpu_handles(&self.gpu),
                 (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
                 &self.ui_state.calibration,
                 &note_layer,
+                &self.ui_state.skipped_notes,
             );
             self.applied_calibration = self.ui_state.calibration;
             self.applied_note_layer = note_layer;
+            self.applied_skipped_notes = self.ui_state.skipped_notes.clone();
         }
 
         if self.ui_state.save_requested {
@@ -1104,6 +1136,11 @@ impl AppState {
                 .add_filter("MIDI", &["mid", "midi"])
                 .pick_file()
             {
+                // A skip list keyed to the *previous* MIDI file's track/note/time structure is
+                // meaningless for a different one — see `load_midi`'s doc comment.
+                self.ui_state.skipped_notes = Vec::new();
+                self.ui_state.pending_delete_notes = Vec::new();
+                self.ui_state.confirm_delete_open = false;
                 self.load_midi(&path);
             }
         }
@@ -1538,7 +1575,14 @@ impl ApplicationHandler for App {
                     .map(str::to_ascii_lowercase)
                     .as_deref()
                 {
-                    Some("mid") | Some("midi") => state.load_midi(path),
+                    Some("mid") | Some("midi") => {
+                        // See `load_midi`'s doc comment: a skip list keyed to the previous MIDI
+                        // file's structure is meaningless for a different one.
+                        state.ui_state.skipped_notes = Vec::new();
+                        state.ui_state.pending_delete_notes = Vec::new();
+                        state.ui_state.confirm_delete_open = false;
+                        state.load_midi(path);
+                    }
                     _ => state.load_video(path),
                 }
                 state.window.request_redraw();
