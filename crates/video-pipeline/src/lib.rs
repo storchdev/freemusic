@@ -1,7 +1,59 @@
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::format::Pixel;
+use ffmpeg_next::software::scaling::color_space::ColorSpace as SwsColorSpace;
 use ffmpeg_next::software::scaling::{context::Context as ScalingContext, flag::Flags};
+use ffmpeg_next::util::color::{Range as ColorRange, Space as ColorSpace};
 use ffmpeg_next::util::frame::video::Video as VideoFrame;
+
+/// Maps a stream's tagged colorspace to the `SWS_CS_*` matrix swscale should use, with a
+/// resolution-based fallback for `Unspecified` (the common case — most containers don't bother
+/// tagging this) matching the convention most other players/tools use: SD content defaults to
+/// BT.601, HD/UHD defaults to BT.709.
+fn sws_colorspace(space: ColorSpace, height: u32) -> SwsColorSpace {
+    match space {
+        ColorSpace::BT709 => SwsColorSpace::ITU709,
+        ColorSpace::BT470BG => SwsColorSpace::ITU601,
+        ColorSpace::SMPTE170M => SwsColorSpace::SMPTE170M,
+        ColorSpace::SMPTE240M => SwsColorSpace::SMPTE240M,
+        ColorSpace::FCC => SwsColorSpace::FCC,
+        _ => {
+            if height >= 720 {
+                SwsColorSpace::ITU709
+            } else {
+                SwsColorSpace::ITU601
+            }
+        }
+    }
+}
+
+/// `ScalingContext::get`/`sws_getContext` only take pixel format and size — no colorspace or
+/// color-range info — so swscale silently falls back to its own default (BT.601, limited/MPEG
+/// range in and out). Camera footage is very commonly BT.709 and/or full-range, and without this
+/// call the resulting BGRA came out visibly darker/washed-out than reference players (mpv, iOS
+/// Photos/Camera) that read and correct for the stream's actual color metadata. `dstRange` is
+/// always full (1) since the destination is BGRA/RGB, which has no separate "limited" encoding.
+fn apply_colorspace_details(
+    scaler: &mut ScalingContext,
+    color_space: ColorSpace,
+    color_range: ColorRange,
+    height: u32,
+) {
+    let sws_cs: std::os::raw::c_int = sws_colorspace(color_space, height).into();
+    let src_full_range = matches!(color_range, ColorRange::JPEG);
+    unsafe {
+        let coeffs = ffmpeg::ffi::sws_getCoefficients(sws_cs);
+        ffmpeg::ffi::sws_setColorspaceDetails(
+            scaler.as_mut_ptr(),
+            coeffs,
+            src_full_range as std::os::raw::c_int,
+            coeffs,
+            1,
+            0,
+            1 << 16,
+            1 << 16,
+        );
+    }
+}
 
 /// One decoded video frame, ready to upload to a GPU texture.
 #[derive(Clone)]
@@ -146,7 +198,7 @@ impl VideoPipeline {
         let width = decoder.width();
         let height = decoder.height();
 
-        let scaler = ScalingContext::get(
+        let mut scaler = ScalingContext::get(
             decoder.format(),
             width,
             height,
@@ -155,6 +207,12 @@ impl VideoPipeline {
             height,
             Flags::BILINEAR,
         )?;
+        apply_colorspace_details(
+            &mut scaler,
+            decoder.color_space(),
+            decoder.color_range(),
+            height,
+        );
 
         Ok(Self {
             input,
@@ -350,6 +408,12 @@ impl VideoPipeline {
                         Flags::BILINEAR,
                     )
                     .map_err(|_| err)?;
+                    apply_colorspace_details(
+                        &mut self.scaler,
+                        raw.color_space(),
+                        raw.color_range(),
+                        actual_h,
+                    );
                     self.width = actual_w;
                     self.height = actual_h;
                     scaled = VideoFrame::empty();

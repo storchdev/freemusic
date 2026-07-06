@@ -298,6 +298,23 @@ it, rather than bumping `wgpu` independently.
   the Hyprland section below) before assuming it's decode-related, since this machine has a
   documented history of occlusion-driven multi-hundred-ms `Surface::get_current_texture` stalls
   that look identical from the decode side.
+- **Fixed: video played back visibly darker than reference players (mpv, iOS Camera/Photos)**
+  even with no brightness adjustment applied in the editor. Root cause: `ScalingContext::get`
+  (`sws_getContext`) only takes pixel format and dimensions — it has no colorspace/color-range
+  parameters — so swscale silently used its own hardcoded default (BT.601 matrix, limited/MPEG
+  16-235 range in and out) regardless of what the source actually was. Camera-originated footage
+  (phones especially) is very commonly BT.709 and/or full-range, so without an explicit
+  `sws_setColorspaceDetails` call, values stayed compressed toward the middle of the 8-bit range
+  compared to players that read and correct for the stream's real color metadata. Fixed by adding
+  `apply_colorspace_details` in `crates/video-pipeline/src/lib.rs`, called right after each
+  `ScalingContext::get` (both the initial one in `open` and the `AVERROR_INPUT_CHANGED` reinit
+  path in `decode_ref`): maps the decoded frame's/decoder's `color::Space` to the matching
+  `SWS_CS_*` constant (falling back to a resolution-based guess — BT.709 for `height >= 720`, else
+  BT.601 — when the stream doesn't tag a colorspace, which is common), reads `color::Range` to
+  determine whether the source is limited or full range, and calls
+  `ffmpeg_next::ffi::sws_setColorspaceDetails` via the crate's `as_mut_ptr()` escape hatch (not
+  wrapped safely by `ffmpeg-next`). `dstRange` is always passed as full (1) since the destination
+  is BGRA, which has no limited-range encoding of its own.
 
 ### RESOLVED: "playback goes very laggy whenever the mouse moves anywhere over the window"
 
@@ -366,6 +383,26 @@ no effect).
   hardcoded vertices in the shader (no vertex buffer) — see `shader.wgsl`. Wrapped, along with
   `midi_overlay`, by `render::Compositor` — see the MP4 export section for why this is a
   separate crate rather than living directly in `app`.
+- **Fixed: interactive preview was visibly darker than mpv/iOS, on top of (not fixed by) the
+  video-pipeline colorspace/range fix above.** The colorspace/range fix made `video-pipeline`'s
+  BGRA output match `ffmpeg`'s own reference conversion exactly (verified with a throwaway
+  `dump_frame` example comparing mean RGB against `ffmpeg -noautorotate -ss <t> -frames:v 1
+  -pix_fmt rgb24` on the same timestamp — they matched to 2 decimal places), but the app still
+  looked dark, meaning the real bug was downstream in rendering, not decode. Root cause: the video
+  texture (`VideoQuad::TEXTURE_FORMAT = Bgra8UnormSrgb`) is correctly sampled — `textureSample`
+  auto-decodes sRGB→linear — but since milestone 6c the compositor renders into the offscreen
+  preview texture, which is forced to `Rgba8Unorm` (`app/src/main.rs::PREVIEW_TEXTURE_FORMAT`,
+  because `egui_wgpu::Renderer::register_native_texture` requires exactly that format), not an
+  sRGB format. A non-sRGB render target does *not* auto-encode linear→gamma on store, so
+  `shader.wgsl`'s `fs_main` was writing linear-space color directly into it — those bytes then got
+  read back (by egui, and ultimately the display) as if they were already gamma-encoded, crushing
+  every midtone dark (e.g. 50% linear gray stores as `~128/255` where correct sRGB-encoded 50%
+  gray is `~188/255`). Export was unaffected (`crates/export/src/lib.rs` renders to
+  `Bgra8UnormSrgb`, which does auto-encode correctly), which is why this was preview-only. Fixed by
+  adding a `manual_srgb_encode` uniform flag (`VideoQuad::new` sets it from
+  `!surface_format.is_srgb()`) and a `linear_to_srgb` function in `shader.wgsl`, applied in
+  `fs_main` only when the flag is set — so the interactive preview now gets a manual gamma encode
+  and export keeps relying on its target's automatic one.
 - `AppState::redraw` in `main.rs` is the per-frame orchestrator: advance/clamp the transport
   position and decode → update MIDI → run egui (`ui::draw`) → if egui queued a seek, consume and
   decode it immediately in that same redraw → apply calibration/project/export changes → sync

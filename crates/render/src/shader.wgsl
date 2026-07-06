@@ -5,7 +5,22 @@ struct Uniforms {
     crop_uv_min: vec2<f32>,
     crop_uv_max: vec2<f32>,
     brightness: f32,
+    // Non-zero when the render target is a plain (non-sRGB) format, e.g. the interactive preview's
+    // `Rgba8Unorm` offscreen texture (egui's `register_native_texture` requires exactly that
+    // format). `video_texture` is sampled from an `Bgra8UnormSrgb` source, so `textureSample`
+    // already decoded it to linear; a `*Srgb` render target would auto-encode back to gamma on
+    // store, but a plain `Unorm` target does not, so without this the stored bytes are linear
+    // values read back as if they were gamma-encoded — i.e. every midtone comes out darker than it
+    // should (the video-looks-darker-than-mpv bug). Export renders straight to a `Bgra8UnormSrgb`
+    // target instead, which auto-encodes correctly, so this stays 0 there.
+    manual_srgb_encode: f32,
 };
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let lower = c * 12.92;
+    let higher = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(higher, lower, c <= vec3<f32>(0.0031308));
+}
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var video_texture: texture_2d<f32>;
@@ -49,5 +64,9 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let color = textureSample(video_texture, video_sampler, in.uv);
-    return vec4<f32>(color.rgb * uniforms.brightness, color.a);
+    var rgb = color.rgb * uniforms.brightness;
+    if (uniforms.manual_srgb_encode > 0.5) {
+        rgb = linear_to_srgb(rgb);
+    }
+    return vec4<f32>(rgb, color.a);
 }

@@ -77,18 +77,18 @@ pub fn decode_all(path: &Path, target_sample_rate: i32) -> Result<DecodedAudio, 
     };
 
     let drain_decoder = |decoder: &mut ffmpeg::decoder::Audio,
-                             resampler: &mut ResamplingContext,
-                             raw: &mut AudioFrame,
-                             left: &mut Vec<f32>,
-                             right: &mut Vec<f32>|
+                         resampler: &mut ResamplingContext,
+                         raw: &mut AudioFrame,
+                         left: &mut Vec<f32>,
+                         right: &mut Vec<f32>|
      -> Result<(), String> {
         while decoder.receive_frame(raw).is_ok() {
             // Use swr_convert (not swr_convert_frame) to bypass the frame-metadata
             // consistency check — on Windows static FFmpeg 7.x builds, decoded AAC
             // frames leave ch_layout and sample_rate zeroed, causing AVERROR_*_CHANGED.
             let in_samples = raw.samples() as i32;
-            let out_size = (resampler.out_sample_count(in_samples) as usize)
-                .max(in_samples as usize + 256);
+            let out_size =
+                (resampler.out_sample_count(in_samples) as usize).max(in_samples as usize + 256);
             let mut out_left = vec![0f32; out_size];
             let mut out_right = vec![0f32; out_size];
             let in_planes: Vec<*const u8> = (0..n_in_planes)
@@ -110,16 +110,30 @@ pub fn decode_all(path: &Path, target_sample_rate: i32) -> Result<DecodedAudio, 
         decoder
             .send_packet(&packet)
             .map_err(|err| format!("audio decode error: {err}"))?;
-        drain_decoder(&mut decoder, &mut resampler, &mut raw, &mut left, &mut right)?;
+        drain_decoder(
+            &mut decoder,
+            &mut resampler,
+            &mut raw,
+            &mut left,
+            &mut right,
+        )?;
     }
     decoder.send_eof().ok();
-    drain_decoder(&mut decoder, &mut resampler, &mut raw, &mut left, &mut right)?;
+    drain_decoder(
+        &mut decoder,
+        &mut resampler,
+        &mut raw,
+        &mut left,
+        &mut right,
+    )?;
 
     // Drain any samples swresample is still holding onto internally after the last real frame.
     loop {
         let mut fl = vec![0f32; 4096];
         let mut fr = vec![0f32; 4096];
-        let n = resampler.convert_planes(&[], 0, &mut fl, &mut fr).unwrap_or(0);
+        let n = resampler
+            .convert_planes(&[], 0, &mut fl, &mut fr)
+            .unwrap_or(0);
         if n == 0 {
             break;
         }

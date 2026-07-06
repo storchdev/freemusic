@@ -16,7 +16,11 @@ struct Uniforms {
     crop_uv_min: [f32; 2],
     crop_uv_max: [f32; 2],
     brightness: f32,
-    _padding: [f32; 3],
+    /// See the matching field's doc comment in `shader.wgsl` — non-zero when `surface_format`
+    /// (the render target this quad draws into) isn't an sRGB format, so the shader must manually
+    /// gamma-encode before writing out instead of relying on the target's automatic encode.
+    manual_srgb_encode: f32,
+    _padding: [f32; 2],
 }
 
 fn mat3_mul(a: Mat3, b: Mat3) -> Mat3 {
@@ -98,6 +102,7 @@ pub struct VideoQuad {
     uniform_buffer: wgpu::Buffer,
     texture: wgpu::Texture,
     texture_size: (u32, u32),
+    manual_srgb_encode: bool,
 }
 
 impl VideoQuad {
@@ -200,6 +205,7 @@ impl VideoQuad {
             uniform_buffer,
             texture,
             texture_size: (1, 1),
+            manual_srgb_encode: !surface_format.is_srgb(),
         }
     }
 
@@ -285,7 +291,8 @@ impl VideoQuad {
                 crop_uv_min: [transform.crop_left, transform.crop_top],
                 crop_uv_max: [transform.crop_right, transform.crop_bottom],
                 brightness: transform.brightness,
-                _padding: [0.0; 3],
+                manual_srgb_encode: if self.manual_srgb_encode { 1.0 } else { 0.0 },
+                _padding: [0.0; 2],
             }]),
         );
     }
