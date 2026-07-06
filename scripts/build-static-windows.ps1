@@ -88,7 +88,14 @@ make install
     Write-Host "== Static libx264 already built at $x264Prefix, skipping =="
 }
 
-$env:PKG_CONFIG_PATH = & $msysBash -c "cygpath -m '$x264Prefix/lib/pkgconfig'"
+# Deliberately `-u` (POSIX-style, e.g. /c/Users/.../pkgconfig), not `-m` (Windows-style
+# C:/Users/...): the pkg-config binary that actually runs here is the one from this same MSYS2
+# install, in the same POSIX-path world as the x264.pc file it needs to find (that file's own
+# `prefix=` line is POSIX-style too, since x264's ./configure was given the POSIX-converted
+# prefix above) — a Windows-style PKG_CONFIG_PATH left it unable to locate x264.pc at all
+# ("Package x264 was not found in the pkg-config search path"), even though the directory and
+# file both genuinely existed.
+$env:PKG_CONFIG_PATH = & $msysBash -c "cygpath -u '$x264Prefix/lib/pkgconfig'"
 
 # x264's own build/install step names the archive `libx264.lib` even under MSVC (it keeps the
 # Unix `lib` prefix regardless of toolchain) — but MSVC's link.exe and rustc's `-l static=x264`
