@@ -98,8 +98,12 @@ if ((Test-Path $libx264) -and -not (Test-Path $x264Lib)) {
 # earlier on the linker's search path over our static one (see README's static-build gotcha).
 # `-l static=x264` tells rustc it must find a static .lib for x264 and refuse a shared/import lib
 # outright, so that can't happen regardless of search order.
+#
+# Built fresh each run (not appended to whatever $env:RUSTFLAGS already held) so re-running this
+# script repeatedly in the same PowerShell session doesn't keep compounding duplicate copies of
+# this flag onto every rustc invocation.
 $x264LibDir = Join-Path $x264Prefix "lib"
-$env:RUSTFLAGS = "$($env:RUSTFLAGS) -L native=$x264LibDir -l static=x264"
+$env:RUSTFLAGS = "-L native=$x264LibDir -l static=x264"
 
 Write-Host "== Building app (release, static-ffmpeg feature) =="
 cargo build --release -p app --features static-ffmpeg
