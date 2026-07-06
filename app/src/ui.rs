@@ -369,6 +369,11 @@ fn skipped_note_key(note: &render::ActiveNote) -> project::SkippedNote {
 /// `state.skipped_notes` — the persisted list the compositor filters out of the note highway and
 /// playback everywhere (see `render::notes::rebuild_instances`). Nothing here ever touches the
 /// loaded `.mid` file on disk; the exclusion lives only in the project's own save file.
+/// Fixed pixel height of the note editor's currently-playing table (see `draw_note_editor`) —
+/// kept constant regardless of how many notes are playing so the section doesn't grow/shrink
+/// every frame as notes start and stop; a longer list scrolls within this instead.
+const NOTE_EDITOR_TABLE_HEIGHT: f32 = 160.0;
+
 fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
     ui.heading("Note editor");
     ui.label(
@@ -431,15 +436,19 @@ fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
         .copied()
         .collect();
 
-    if visible.is_empty() {
-        ui.label("No notes playing at the current frame.");
-        return;
-    }
-
+    // Fixed height regardless of how many notes are currently playing — `auto_shrink` off keeps
+    // this from collapsing to fit shorter content, which is what made the section constantly jump
+    // as notes started/stopped during playback. Once there are more rows than fit, this scrolls
+    // instead of growing.
     egui::ScrollArea::vertical()
-        .max_height(160.0)
+        .max_height(NOTE_EDITOR_TABLE_HEIGHT)
+        .auto_shrink([false, false])
         .id_salt("note_editor_scroll")
         .show(ui, |ui| {
+            if visible.is_empty() {
+                ui.label("No notes playing at the current frame.");
+                return;
+            }
             egui::Grid::new("note_editor_grid")
                 .num_columns(3)
                 .striped(true)
