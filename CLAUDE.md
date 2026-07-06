@@ -205,6 +205,25 @@ this bug never affected the Linux static-build script). If `ffmpeg-sys-next` is 
 this bug being fixed upstream, remove `vendor/ffmpeg-sys-next/` and its patch entry the same way
 as `ffmpeg-next` above.
 
+**Second MSVC-only bug in the same file, found immediately after fixing the first one:** once
+FFmpeg's own `configure` succeeds under MSVC, `build.rs` parses its `ffbuild/config.mak`'s
+`EXTRALIBS` line to forward any extra linker flags FFmpeg's configure collected (e.g. from
+libx264's pkg-config output) as `cargo:rustc-link-lib=...`/`cargo:rustc-link-search=...`
+directives. Its filter for library-name flags was `flag.starts_with("-l")` — but MSVC's linker
+spells a library *search path* as `-libpath:DIR` (a lowercased, single-dash rendering of its
+native `/LIBPATH:DIR`), which also happens to start with the two characters `-l`. The unpatched
+code matched that string, stripped its first 2 characters, and emitted
+`cargo:rustc-link-lib=ibpath:/c/Users/.../x264-static/lib` — cargo passes that to rustc as `-l
+ibpath:/c/Users/.../lib`, i.e. "library named `ibpath`, renamed to `/c/Users/.../lib`" (rustc's
+`-l NAME:RENAME` syntax), which then fails with `error: renaming of the library `ibpath` was
+specified, however this crate contains no #[link(...)] attributes referencing this library`
+(E0459) — another confusing, hard-to-reverse-engineer-from-the-message-alone symptom; `cargo build
+-v` to get the exact failing rustc invocation (grep for `-l` flags in it) is what actually cracked
+this one. The patch adds an `is_msvc_libpath` check (case-insensitive `-libpath:` prefix) that
+excludes these from the library-name loop and instead extracts their path and feeds it into the
+existing search-path loop alongside plain `-L` flags. Same scope as the first patch: MSVC/Windows-
+only, inert on Linux/macOS (their linkers never emit `-libpath:`).
+
 ### Static/cross-platform release builds
 
 Added a `static-ffmpeg` cargo feature (on `app`, `export`, `video-pipeline`, `audio-playback`,

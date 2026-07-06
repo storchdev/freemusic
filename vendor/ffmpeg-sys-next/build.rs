@@ -1013,17 +1013,38 @@ fn main() {
                 .flatten()
                 .collect::<Vec<_>>();
 
+            // MSVC's linker spells a library search path `-libpath:DIR` (a lowercased,
+            // single-dash rendering of its native `/LIBPATH:DIR` flag), which FFmpeg's own
+            // config.mak EXTRALIBS can contain when built with `--toolchain=msvc` (e.g. from
+            // libx264's own pkg-config `Libs:` line under MSVC). That string also happens to
+            // start with the two characters "-l", so the naive `-l`-name filter below used to
+            // misclassify it as a library literally named `ibpath` with a rename target of the
+            // rest of the path — producing rustc error E0459 ("renaming of the library `ibpath`
+            // was specified, however this crate contains no #[link(...)] attributes referencing
+            // this library"). Recognize and route it to the search-path loop instead.
+            let is_msvc_libpath =
+                |flag: &&String| flag.to_ascii_lowercase().starts_with("-libpath:");
+
             extra_linker_args
                 .iter()
-                .filter(|flag| flag.starts_with("-l"))
+                .filter(|flag| flag.starts_with("-l") && !is_msvc_libpath(flag))
                 .map(|lib| &lib[2..])
                 .for_each(|lib| println!("cargo:rustc-link-lib={lib}"));
 
             extra_linker_args
                 .iter()
-                .filter(|v| v.starts_with("-L"))
-                .map(|flag| {
-                    let path = &flag[2..];
+                .filter_map(|flag| {
+                    if let Some(path) = flag.strip_prefix("-L") {
+                        Some(path)
+                    } else if is_msvc_libpath(&flag) {
+                        // "-libpath:" is 9 bytes; slice past it regardless of the casing matched
+                        // above (config.mak has only ever been observed lowercase in practice).
+                        Some(&flag["-libpath:".len()..])
+                    } else {
+                        None
+                    }
+                })
+                .map(|path| {
                     if path.starts_with('/') {
                         PathBuf::from(path)
                     } else {
