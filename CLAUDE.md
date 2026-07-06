@@ -181,98 +181,30 @@ values anyway). If `ffmpeg-next` is ever bumped to a version that handles this, 
 directory and the patch entry.
 
 **`ffmpeg-sys-next` is also vendored/patched (`vendor/ffmpeg-sys-next/`, same `8.1.0` pin, same
-`[patch.crates-io]` mechanism), for an unrelated MSVC-only build bug found while getting the
-`static-ffmpeg` feature working on Windows via `scripts/build-static-windows.ps1`:** the published
-crate's `build.rs` unconditionally adds `--extra-cflags=-march=native -mtune=native` to FFmpeg's
-own `configure` invocation whenever `target == host` (i.e. every non-cross-compiling build,
-`build.rs:330-332` in the unpatched source) — with no MSVC awareness at all. `cl.exe` has no
-`-march`/`-mtune` equivalent (that's GCC/Clang-only syntax) and rejects it outright with `cl :
-Command line error D8043 : unknown option '-mtune=native'`, which FFmpeg's `configure` then
-reports as the much more confusing "cl.exe is unable to create an executable file" / "C compiler
-test failed" — indistinguishable at a glance from an actual missing-Windows-SDK or wrong-toolchain
-problem, which is what made this one take a few round trips to actually pin down (see
-`config.log`'s tail for the real `cl.exe ...` invocation and error — that's always the fastest way
-to cut through FFmpeg's generic configure failure messages). An unreleased post-8.1.0 version of
-the crate added `FFMPEG_MARCH`/`FFMPEG_MTUNE` env vars to override this, but that escape hatch
-doesn't actually work on Windows regardless of crate version: Win32's `SetEnvironmentVariable`
-(which PowerShell/.NET use to set child-process environment) treats an empty-string value as
-"delete the variable," so `$env:FFMPEG_MARCH = ""` can't express "set to empty" at all on Windows,
-and the crate would silently fall back to its hardcoded default no matter what. The vendored patch
-instead special-cases `cfg!(target_env = "msvc")` in `build.rs` directly to skip adding the flag,
-sidestepping that OS-level limitation rather than working around it. This patch is Windows/MSVC-
-specific and inert everywhere else (Linux/macOS's gcc/clang understand `-march`/`-mtune` fine, so
-this bug never affected the Linux static-build script). If `ffmpeg-sys-next` is ever bumped past
-this bug being fixed upstream, remove `vendor/ffmpeg-sys-next/` and its patch entry the same way
-as `ffmpeg-next` above.
-
-**Second MSVC-only bug in the same file, found immediately after fixing the first one:** once
-FFmpeg's own `configure` succeeds under MSVC, `build.rs` parses its `ffbuild/config.mak`'s
-`EXTRALIBS` line to forward any extra linker flags FFmpeg's configure collected (e.g. from
-libx264's pkg-config output) as `cargo:rustc-link-lib=...`/`cargo:rustc-link-search=...`
-directives. Its filter for library-name flags was `flag.starts_with("-l")` — but MSVC's linker
-spells a library *search path* as `-libpath:DIR` (a lowercased, single-dash rendering of its
-native `/LIBPATH:DIR`), which also happens to start with the two characters `-l`. The unpatched
-code matched that string, stripped its first 2 characters, and emitted
-`cargo:rustc-link-lib=ibpath:/c/Users/.../x264-static/lib` — cargo passes that to rustc as `-l
-ibpath:/c/Users/.../lib`, i.e. "library named `ibpath`, renamed to `/c/Users/.../lib`" (rustc's
-`-l NAME:RENAME` syntax), which then fails with `error: renaming of the library `ibpath` was
-specified, however this crate contains no #[link(...)] attributes referencing this library`
-(E0459) — another confusing, hard-to-reverse-engineer-from-the-message-alone symptom; `cargo build
--v` to get the exact failing rustc invocation (grep for `-l` flags in it) is what actually cracked
-this one. The patch adds an `is_msvc_libpath` check (case-insensitive `-libpath:` prefix) that
-excludes these from the library-name loop and instead extracts their path and feeds it into the
-existing search-path loop alongside plain `-L` flags. Same scope as the first patch: MSVC/Windows-
-only, inert on Linux/macOS (their linkers never emit `-libpath:`).
+`[patch.crates-io]` mechanism), for two unrelated MSVC-only build bugs found while getting the
+`static-ffmpeg` feature working on Windows** — bogus `-march=native`/`-mtune=native` GCC flags
+passed to `cl.exe`, and MSVC `-libpath:` linker flags misparsed as library names (E0459). Full
+narrative (exact errors, why each is confusing, the patch mechanics) is in
+**[`docs/building.md`](docs/building.md)**'s "Windows static-build gotchas" section — read that
+before touching either patch. Same scope as the `ffmpeg-next` patch above: Windows/MSVC-specific,
+inert on Linux/macOS. If `ffmpeg-sys-next` is ever bumped past both bugs being fixed upstream,
+remove `vendor/ffmpeg-sys-next/` and its patch entry the same way as `ffmpeg-next` above.
 
 ### Static/cross-platform release builds
 
 Added a `static-ffmpeg` cargo feature (on `app`, `export`, `video-pipeline`, `audio-playback`,
 `mp4-encoder`) that vendors and statically links FFmpeg (via `ffmpeg-sys-next`'s `build` feature)
 plus `libx264` (since `mp4-encoder` prefers the `libx264` encoder by name), so release binaries
-run on machines with no FFmpeg installed — this is what lets Windows users get a working `.exe`
-without setting up a Rust/FFmpeg dev environment. `.github/workflows/release.yml` builds this for
-Linux/Windows/macOS (x86_64 + arm64) on a pushed `v*` tag or manual dispatch. Full prerequisites
-and rationale are in the README's "Static/cross-platform builds" section — read that before
-touching this, since the one non-obvious gotcha is load-bearing:
-
-`scripts/build-static-linux.sh` and `scripts/build-static-windows.ps1` let a developer reproduce
-the CI build locally (each only builds for the OS it's run on, no cross-compiling): both build
-static `libx264` into a cached prefix (`~/x264-static`, skipped on repeat runs), point
-`PKG_CONFIG_PATH` at it, then run `cargo build --release -p app --features static-ffmpeg` and
-copy the binary into `dist/`. The Windows script needs to run from a Developer PowerShell (for
-`cl.exe`/`lib.exe`/`link.exe`) and needs MSYS2 installed for `sh`/`make`/`nasm`/`pkgconf`; the
-Linux script checks for `nasm`/`pkg-config`/`clang`/`make` up front and fails fast with a clear
-message if any are missing. Neither script has a macOS counterpart yet — the release workflow's
-macOS steps are the reference until one is added. The Linux script also runs an `ldd` check after
-building and warns (not fails) if the binary still dynamically links FFmpeg/x264, to catch the
-search-order gotcha described next.
-
-Unlike the CI runners, a dev machine may already have a system `libx264` installed (this is
-exactly how the gotcha below was first found), so both scripts additionally set
-`RUSTFLAGS="-L native=<x264-static>/lib -l static=x264"` before invoking `cargo build`. `-l
-static=x264` isn't just another search path — it tells rustc the link kind must be a static
-archive, so it errors out rather than silently accepting a shared `.so`/import lib, closing the
-loophole described next regardless of what else is installed on the machine. `PKG_CONFIG_PATH`
-alone doesn't do this: it only steers FFmpeg's own build of `libavcodec`/etc., not the final
-link of the `app` binary itself.
-
-**Never let a system/Homebrew/apt/vcpkg-shared `libx264` exist alongside the static one.**
-`ffmpeg-sys-next` links `libx264` by bare name (`-lx264`), not by embedding it, and if any
-`libx264.so`/dylib is reachable on the linker's default search path, the linker silently prefers
-it over a static `libx264.a` passed via an explicit `-L` dir — this is search-*order* behavior,
-not a "static always wins" rule, and neither cargo nor the linker warns about it. This was found
-by building the exact same `static-ffmpeg` build in a throwaway Docker container (`ubuntu:24.04`,
-nothing preinstalled) vs. this dev machine, which already had Arch's `x264` package installed for
-unrelated reasons: the container binary came out with zero FFmpeg/x264 dynamic deps (`ldd` showed
-only libc/libm/libgcc_s/libasound), while the exact same build on this machine still linked
-`libx264.so.165` — no error, no warning, just a silently-not-actually-static binary. The fix is to
-always build `libx264` from source as a static-only archive (`--enable-static`, never
-`--enable-shared`) and point `PKG_CONFIG_PATH` at it, so there's no shared alternative anywhere
-for the linker to find; see the README for the exact commands per OS. The Linux/macOS steps in
-`release.yml` are locally verified this way (fresh container, confirmed static via `ldd`); the
-Windows leg (MSYS2 + `ilammy/msvc-dev-cmd` + building `libx264` with `CC=cl` inside the MSYS2
-shell) follows the same documented pattern but could not be tested from this Linux sandbox — if
-it breaks in CI, that's the first thing to check.
+run on machines with no FFmpeg installed. `.github/workflows/release.yml` builds this for
+Linux/Windows/macOS (x86_64 + arm64) on a pushed `v*` tag or manual dispatch.
+`scripts/build-static-linux.sh`/`scripts/build-static-windows.ps1` reproduce that build locally,
+with `scripts/setup-msvc-x64.ps1` to load a correct x64 MSVC dev environment first on Windows.
+Full prerequisites, the from-source-static-libx264 recipe, and every gotcha found getting this
+working (two `ffmpeg-sys-next` MSVC bugs, the shared-libx264-search-order trap, three rounds of a
+Windows libx264 architecture mismatch, and the Windows-specific shell/encoding pitfalls) are in
+**[`docs/building.md`](docs/building.md)** — read that, not this file, before touching any of it.
+`scripts/build-static-windows.ps1` has been run to a successful, verified-static completion on
+real Windows hardware (`dumpbin /dependents` shows no avcodec/avformat/avutil/x264 DLL).
 
 ## Architecture
 
@@ -323,3 +255,8 @@ touching that area of the code:
   persistence verification pattern (milestones 3–4), and the MP4 export verification pattern
   (milestone 5). Per this file's own top-level rule, never run the app yourself — these are
   patterns to hand to the user, except where noted as safe static-file analysis (e.g. `ffprobe`).
+- **`docs/building.md`** — the Windows dynamic-link dev setup, the `static-ffmpeg` feature and its
+  from-source-static-libx264 recipe, the `scripts/build-static-*`/`scripts/setup-msvc-x64.ps1`
+  helper scripts, every static-build gotcha found on each OS (two `ffmpeg-sys-next` MSVC bugs, the
+  shared-libx264 search-order trap, the Windows libx264 architecture-mismatch saga, Developer Shell
+  shortcut and PowerShell encoding pitfalls), and how the GitHub Releases binaries get built.

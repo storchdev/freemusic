@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Builds a standalone (FFmpeg + libx264 statically linked) release binary for Linux, the same
 # way .github/workflows/release.yml does for its linux-x86_64 target. Run this ON Linux — it
-# does not cross-compile. See the README's "Static/cross-platform builds" section for the full
-# rationale, especially the "never let a system libx264 exist" gotcha this script works around
-# by building libx264 from source into a private prefix.
+# does not cross-compile. See docs/building.md for the full rationale, especially the "never let
+# a system libx264 exist" gotcha this script works around by building libx264 from source into a
+# private prefix.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -42,7 +42,7 @@ export PKG_CONFIG_PATH="$x264_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFI
 
 # PKG_CONFIG_PATH alone only controls FFmpeg's own build of libavcodec/etc; it doesn't stop the
 # final link of the app binary from preferring a system libx264.so over our static libx264.a if
-# one exists on the linker's default search path (see README's static-build gotcha). Force it:
+# one exists on the linker's default search path (see docs/building.md). Force it:
 # `-l static=x264` tells rustc it must find a static archive for x264 and refuse a shared lib
 # outright, so a system-installed libx264.so can no longer win regardless of search order.
 export RUSTFLAGS="${RUSTFLAGS:-} -L native=$x264_prefix/lib -l static=x264"
@@ -56,7 +56,7 @@ chmod +x dist/freemusic-linux-x86_64
 
 echo "== Verifying the binary has no dynamic FFmpeg/x264 dependency =="
 if ldd dist/freemusic-linux-x86_64 | grep -Ei 'avcodec|avformat|avutil|swscale|swresample|libx264'; then
-  echo "WARNING: binary still dynamically links FFmpeg/x264 — see README's static-build gotcha" >&2
+  echo "WARNING: binary still dynamically links FFmpeg/x264 — see docs/building.md" >&2
 else
   echo "OK: no dynamic FFmpeg/x264 dependency found"
 fi
