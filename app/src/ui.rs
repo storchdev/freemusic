@@ -134,6 +134,12 @@ const CAMERA_STRETCH_POINT_LABELS: [&str; 10] = [
     "right edge of C8 (rightmost key)",
 ];
 
+/// Short tags for the same 10 points, used to label each already-clicked point's guide line on
+/// the preview during capture (see `draw_camera_stretch_overlay`) — `CAMERA_STRETCH_POINT_LABELS`
+/// is too long to fit next to a thin vertical line.
+const CAMERA_STRETCH_POINT_TAGS: [&str; 10] =
+    ["A0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "end"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     #[default]
@@ -1135,6 +1141,9 @@ fn draw_camera_stretch_handles(
             egui::Id::new(("camera_stretch_handle", i)),
             egui::Sense::drag(),
         );
+        if response.hovered() || response.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
         if response.dragged() {
             let delta = response.drag_delta().x / screen.width();
             stretch.c_fractions[i] =
@@ -1190,10 +1199,14 @@ fn clamp_camera_stretch(calibration: &mut project::KeyboardCalibration) {
 /// Drawn instead of the ordinary calibration/barrier/stretch-anchor handles while
 /// `state.camera_stretch_capture` is `Some` — walks the user through clicking
 /// `CAMERA_STRETCH_POINT_LABELS.len()` points on the preview image (a crosshair follows the
-/// pointer, with an instruction label naming the next point) and records each click's x-fraction
-/// of `screen`. Finalizes into `calibration.left_fraction`/`right_fraction`/`stretch` once every
-/// point is captured (see `finalize_camera_stretch`); Escape or the Cancel button abort the whole
-/// sequence, discarding whatever was clicked so far and leaving `calibration` untouched.
+/// pointer, with an instruction label naming the next point). Every point already clicked this
+/// run is also plotted as its own labeled guide line (yellow for the two calibration edges, teal
+/// for the 8 interior anchors, matching the colors those points settle into once finalized) so
+/// it stays unambiguous which points remain as the run progresses. Records each click's
+/// x-fraction of `screen`, and finalizes into `calibration.left_fraction`/`right_fraction`/
+/// `stretch` once every point is captured (see `finalize_camera_stretch`); Escape or the Cancel
+/// button abort the whole sequence, discarding whatever was clicked so far and leaving
+/// `calibration` untouched.
 fn draw_camera_stretch_overlay(ui: &mut egui::Ui, screen: egui::Rect, state: &mut UiState) {
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         state.camera_stretch_capture = None;
@@ -1212,10 +1225,11 @@ fn draw_camera_stretch_overlay(ui: &mut egui::Ui, screen: egui::Rect, state: &mu
         return;
     }
 
-    let step = match &state.camera_stretch_capture {
-        Some(capture) => capture.points.len(),
+    let captured: Vec<f32> = match &state.camera_stretch_capture {
+        Some(capture) => capture.points.clone(),
         None => return,
     };
+    let step = captured.len();
 
     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
     let response = ui.interact(
@@ -1224,8 +1238,29 @@ fn draw_camera_stretch_overlay(ui: &mut egui::Ui, screen: egui::Rect, state: &mu
         egui::Sense::click(),
     );
 
-    let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 209, 0));
     let painter = ui.painter();
+
+    for (i, &fraction) in captured.iter().enumerate() {
+        let x = screen.left() + screen.width() * fraction;
+        let color = if i == 0 || i == CAMERA_STRETCH_POINT_LABELS.len() - 1 {
+            egui::Color32::from_rgb(255, 209, 0)
+        } else {
+            egui::Color32::from_rgb(0, 220, 160)
+        };
+        painter.line_segment(
+            [egui::pos2(x, screen.top()), egui::pos2(x, screen.bottom())],
+            egui::Stroke::new(2.0, color),
+        );
+        painter.text(
+            egui::pos2(x, screen.bottom() - 4.0),
+            egui::Align2::CENTER_BOTTOM,
+            CAMERA_STRETCH_POINT_TAGS[i],
+            egui::FontId::proportional(11.0),
+            color,
+        );
+    }
+
+    let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 209, 0));
     if let Some(pos) = response.hover_pos() {
         painter.line_segment(
             [
