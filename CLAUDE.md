@@ -180,6 +180,31 @@ fields directly (hardcoded `AV_SAMPLE_FMT_FLTP` + 44100 Hz for AAC, which are it
 values anyway). If `ffmpeg-next` is ever bumped to a version that handles this, remove the vendor
 directory and the patch entry.
 
+**`ffmpeg-sys-next` is also vendored/patched (`vendor/ffmpeg-sys-next/`, same `8.1.0` pin, same
+`[patch.crates-io]` mechanism), for an unrelated MSVC-only build bug found while getting the
+`static-ffmpeg` feature working on Windows via `scripts/build-static-windows.ps1`:** the published
+crate's `build.rs` unconditionally adds `--extra-cflags=-march=native -mtune=native` to FFmpeg's
+own `configure` invocation whenever `target == host` (i.e. every non-cross-compiling build,
+`build.rs:330-332` in the unpatched source) — with no MSVC awareness at all. `cl.exe` has no
+`-march`/`-mtune` equivalent (that's GCC/Clang-only syntax) and rejects it outright with `cl :
+Command line error D8043 : unknown option '-mtune=native'`, which FFmpeg's `configure` then
+reports as the much more confusing "cl.exe is unable to create an executable file" / "C compiler
+test failed" — indistinguishable at a glance from an actual missing-Windows-SDK or wrong-toolchain
+problem, which is what made this one take a few round trips to actually pin down (see
+`config.log`'s tail for the real `cl.exe ...` invocation and error — that's always the fastest way
+to cut through FFmpeg's generic configure failure messages). An unreleased post-8.1.0 version of
+the crate added `FFMPEG_MARCH`/`FFMPEG_MTUNE` env vars to override this, but that escape hatch
+doesn't actually work on Windows regardless of crate version: Win32's `SetEnvironmentVariable`
+(which PowerShell/.NET use to set child-process environment) treats an empty-string value as
+"delete the variable," so `$env:FFMPEG_MARCH = ""` can't express "set to empty" at all on Windows,
+and the crate would silently fall back to its hardcoded default no matter what. The vendored patch
+instead special-cases `cfg!(target_env = "msvc")` in `build.rs` directly to skip adding the flag,
+sidestepping that OS-level limitation rather than working around it. This patch is Windows/MSVC-
+specific and inert everywhere else (Linux/macOS's gcc/clang understand `-march`/`-mtune` fine, so
+this bug never affected the Linux static-build script). If `ffmpeg-sys-next` is ever bumped past
+this bug being fixed upstream, remove `vendor/ffmpeg-sys-next/` and its patch entry the same way
+as `ffmpeg-next` above.
+
 ### Static/cross-platform release builds
 
 Added a `static-ffmpeg` cargo feature (on `app`, `export`, `video-pipeline`, `audio-playback`,

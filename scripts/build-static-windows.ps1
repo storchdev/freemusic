@@ -113,15 +113,6 @@ if ((Test-Path $libx264) -and -not (Test-Path $x264Lib)) {
 $x264LibDir = Join-Path $x264Prefix "lib"
 $env:RUSTFLAGS = "-L native=$x264LibDir -l static=x264"
 
-# ffmpeg-sys-next's build.rs unconditionally adds `-march=native -mtune=native` to FFmpeg's
-# configure via --extra-cflags, with no awareness of MSVC — cl.exe doesn't understand that
-# GCC-style syntax at all and fails configure's C-compiler smoke test with "Command line error
-# D8043 : unknown option '-mtune=native'" (surfaced upstream as the more generic-sounding
-# "cl.exe is unable to create an executable file"). Setting these two env vars to empty strings
-# is the crate's own documented highest-priority override to omit both flags entirely.
-$env:FFMPEG_MARCH = ""
-$env:FFMPEG_MTUNE = ""
-
 Write-Host "== Building app (release, static-ffmpeg feature) =="
 cargo build --release -p app --features static-ffmpeg
 if ($LASTEXITCODE -ne 0) {

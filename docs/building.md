@@ -114,6 +114,16 @@ the system. The Linux script still runs an `ldd` check afterwards as a belt-and-
 sanity check. There's no equivalent macOS script yet — follow the manual recipe above (or read
 the release workflow's macOS steps) until one is added.
 
+**Windows-only `ffmpeg-sys-next` MSVC bug, already patched for you:** getting the Windows script
+working surfaced a real bug in `ffmpeg-sys-next 8.1.0`'s own build script — it unconditionally
+passes GCC/Clang-only `-march=native -mtune=native` flags to FFmpeg's `configure`, which `cl.exe`
+rejects outright, surfacing as the confusing "cl.exe is unable to create an executable file" /
+"C compiler test failed" during `cargo build`. This is already fixed by a vendored patch in
+`vendor/ffmpeg-sys-next/` (see CLAUDE.md's FFmpeg-vendoring section for the full story) — you
+don't need to do anything about it, but if you ever hit that exact error again on Windows, that's
+the first place to look; `config.log`'s tail (search for it under
+`target\release\build\ffmpeg-sys-next-*\out\`) always has the real underlying `cl.exe` error.
+
 Per-OS prerequisites for the `static-ffmpeg` feature (on top of the Vulkan/`libxkbcommon-x11`
 requirements above, which are unrelated to FFmpeg and still apply, and the from-source `libx264`
 build above, which applies to every OS):
