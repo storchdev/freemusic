@@ -98,7 +98,7 @@ scripts/build-static-linux.sh
 ```powershell
 # Windows — must be run from an x64 Developer Shell (cl.exe/lib.exe/link.exe on PATH, matching
 # the Rust toolchain's target arch — see the gotchas below), and needs MSYS2 installed (with
-# `pacman -S make nasm diffutils pkgconf`) for the sh/make/nasm/pkgconf that FFmpeg's and
+# `pacman -S make nasm diffutils pkgconf git`) for the sh/make/nasm/pkgconf/git that FFmpeg's and
 # libx264's build scripts need. Defaults to C:\msys64; pass -Msys2Dir if installed elsewhere.
 # scripts\setup-msvc-x64.ps1 loads a correct x64 dev environment into the current session if you
 # don't already have one open (see the gotchas below for why this needs its own script).
@@ -225,9 +225,10 @@ build above, which applies to every OS):
   (`brew install nasm`) — again, don't `brew install x264`, build it from source per above.
 - **Windows**: this is the fussiest platform, since FFmpeg's build system is a `sh`/`configure`/
   `make` script, not something MSVC or `cargo` understands natively:
-  - [MSYS2](https://www.msys2.org/), with `make`, `nasm`, `diffutils`, and `pkgconf` installed via
-    its `pacman` (`pacman -S make nasm diffutils pkgconf`) — its `usr/bin` needs to be on `PATH`
-    so `ffmpeg-sys-next`'s build script can find `sh.exe`.
+  - [MSYS2](https://www.msys2.org/), with `make`, `nasm`, `diffutils`, `pkgconf`, and `git`
+    installed via its `pacman` (`pacman -S make nasm diffutils pkgconf git`) — its `usr/bin` needs
+    to be on `PATH` so `ffmpeg-sys-next`'s build script can find `sh.exe`, and `git` is what
+    `build-static-windows.ps1` uses (from inside that same MSYS2 shell) to clone libx264's source.
   - Visual Studio Build Tools (the MSVC C++ toolchain), with its environment set up (`cl.exe`,
     `lib.exe`, `link.exe` on `PATH` — e.g. via a "Developer Command Prompt", or the
     `ilammy/msvc-dev-cmd` GitHub Action in CI) *before* running `cargo build`. FFmpeg's configure

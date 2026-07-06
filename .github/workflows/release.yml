@@ -91,13 +91,13 @@ jobs:
           echo "PKG_CONFIG_PATH=$HOME/x264-static/lib/pkgconfig" >> "$GITHUB_ENV"
 
       # --- Windows ---
-      - name: Set up MSYS2 (provides sh/make/nasm/pkgconf for building libx264 and FFmpeg)
+      - name: Set up MSYS2 (provides sh/make/nasm/pkgconf/git for building libx264 and FFmpeg)
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
           msystem: MSYS
           update: true
-          install: make nasm diffutils pkgconf
+          install: make nasm diffutils pkgconf git
           path-type: inherit
 
       - name: Set up MSVC dev environment (cl.exe/lib.exe/link.exe)

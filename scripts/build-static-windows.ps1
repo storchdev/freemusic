@@ -6,9 +6,9 @@
 #
 # Prerequisites:
 #   - Rust (MSVC toolchain, the rustup default) with `cargo`/`rustc` on PATH.
-#   - MSYS2 (https://www.msys2.org/) with `make`, `nasm`, `diffutils`, `pkgconf` installed via
-#     `pacman -S make nasm diffutils pkgconf`. Pass its install dir via -Msys2Dir if not the
-#     default C:\msys64.
+#   - MSYS2 (https://www.msys2.org/) with `make`, `nasm`, `diffutils`, `pkgconf`, `git` installed
+#     via `pacman -S make nasm diffutils pkgconf git`. Pass its install dir via -Msys2Dir if not
+#     the default C:\msys64.
 #   - An MSVC dev environment matching the active Rust toolchain's target arch (x64 by default) —
 #     run scripts\setup-msvc-x64.ps1 first if you don't already have one loaded in this session.
 #
@@ -31,7 +31,7 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
 
 $msysBash = Join-Path $Msys2Dir "usr\bin\bash.exe"
 if (-not (Test-Path $msysBash)) {
-    Write-Error "MSYS2 bash.exe not found at $msysBash. Install MSYS2 from https://www.msys2.org/ (with 'pacman -S make nasm diffutils pkgconf') or pass -Msys2Dir."
+    Write-Error "MSYS2 bash.exe not found at $msysBash. Install MSYS2 from https://www.msys2.org/ (with 'pacman -S make nasm diffutils pkgconf git') or pass -Msys2Dir."
     exit 1
 }
 
