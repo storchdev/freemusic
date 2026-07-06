@@ -102,7 +102,37 @@ pub struct UiState {
     /// it. A flag consumed right after the call is the straightforward way to let both write to
     /// the same logical piece of state without an overlapping-borrow conflict.
     pub side_panel_toggle_requested: bool,
+    /// State machine for the "Align notes to camera stretch" guided click flow (see
+    /// `draw_camera_stretch_overlay`); `None` when not currently calibrating. Entirely
+    /// self-contained within `ui::draw` (unlike the `_requested` flags above, the app loop never
+    /// looks at this) — it only ever writes into `calibration` once finished.
+    pub camera_stretch_capture: Option<CameraStretchCapture>,
 }
+
+/// The points recorded so far during a "Align notes to camera stretch" run, in click order: the
+/// left edge of A0, then the left edge of each of C1..C8, then the right edge of C8 (see the doc
+/// comment on `project::CameraStretch` for why exactly these 10 points). `points.len()` is always
+/// less than `CAMERA_STRETCH_POINT_LABELS.len()` while capturing — once the last point lands,
+/// `finalize_camera_stretch` consumes this and resets it to `None`.
+#[derive(Debug, Clone, Default)]
+pub struct CameraStretchCapture {
+    pub points: Vec<f32>,
+}
+
+/// Labels for each of the 10 points a camera-stretch calibration run asks for, in click order —
+/// see `CameraStretchCapture`.
+const CAMERA_STRETCH_POINT_LABELS: [&str; 10] = [
+    "left edge of A0 (leftmost key)",
+    "left edge of C1",
+    "left edge of C2",
+    "left edge of C3",
+    "left edge of C4",
+    "left edge of C5",
+    "left edge of C6",
+    "left edge of C7",
+    "left edge of C8",
+    "right edge of C8 (rightmost key)",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
@@ -124,9 +154,16 @@ pub fn draw(ui: &mut egui::Ui, state: &mut UiState) {
             egui::Image::new((state.preview_texture_id, image_rect.size()))
                 .fit_to_exact_size(image_rect.size()),
         );
-        draw_calibration_handles(ui, image_rect, &mut state.calibration);
-        draw_barrier_handle(ui, image_rect, &mut state.calibration);
+        if state.camera_stretch_capture.is_some() {
+            draw_camera_stretch_overlay(ui, image_rect, state);
+        } else {
+            draw_calibration_handles(ui, image_rect, &mut state.calibration);
+            draw_barrier_handle(ui, image_rect, &mut state.calibration);
+            draw_camera_stretch_handles(ui, image_rect, &mut state.calibration);
+        }
     });
+
+    clamp_camera_stretch(&mut state.calibration);
 
     if state.dropping {
         draw_drop_overlay(ui, ui.max_rect());
@@ -310,6 +347,25 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
     ));
     if ui.button("Reset calibration").clicked() {
         state.calibration = project::KeyboardCalibration::default();
+    }
+
+    ui.add_space(4.0);
+    ui.label(
+        "Camera stretch: corrects perspective distortion in filmed footage, where octaves \
+        further from the camera's center appear narrower or wider than a head-on shot would.",
+    );
+    if state.calibration.stretch.is_some() {
+        ui.label("Calibrated — drag the green anchors on the preview to fine-tune.");
+        ui.horizontal(|ui| {
+            if ui.button("Redo camera stretch…").clicked() {
+                state.camera_stretch_capture = Some(CameraStretchCapture::default());
+            }
+            if ui.button("Clear camera stretch").clicked() {
+                state.calibration.stretch = None;
+            }
+        });
+    } else if ui.button("Align notes to camera stretch…").clicked() {
+        state.camera_stretch_capture = Some(CameraStretchCapture::default());
     }
 
     ui.separator();
@@ -1030,6 +1086,204 @@ fn draw_calibration_handles(
         egui::FontId::proportional(12.0),
         stroke.color,
     );
+}
+
+/// Minimum gap kept between adjacent camera-stretch anchors, and between an anchor and its
+/// neighboring left/right calibration edge, as a fraction of the preview image width — same
+/// purpose as `CALIBRATION_MIN_GAP`, keeps a drag (or a shrunk left/right calibration span) from
+/// collapsing an octave segment to zero width or reordering two anchors past each other.
+const STRETCH_ANCHOR_MIN_GAP: f32 = 0.01;
+
+/// Draws the 8 camera-stretch anchor points (the left edge of C1..C8) as draggable vertical
+/// guides, shown once `calibration.stretch` is `Some` — lets the user fine-tune a calibration
+/// captured by `draw_camera_stretch_overlay` without redoing the whole click sequence. Each
+/// anchor is clamped between its immediate neighbors (the adjacent anchor, or
+/// `left_fraction`/`right_fraction` at the two ends) so a drag can't reorder or collapse an
+/// octave segment; `clamp_camera_stretch` enforces the same invariant against other mutation
+/// paths (sliders, a shrunk left/right span) every frame.
+fn draw_camera_stretch_handles(
+    ui: &egui::Ui,
+    screen: egui::Rect,
+    calibration: &mut project::KeyboardCalibration,
+) {
+    let Some(stretch) = calibration.stretch.as_mut() else {
+        return;
+    };
+    let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 220, 160));
+    let left_fraction = calibration.left_fraction;
+    let right_fraction = calibration.right_fraction;
+
+    for i in 0..8 {
+        let lower_bound = (if i == 0 {
+            left_fraction
+        } else {
+            stretch.c_fractions[i - 1]
+        }) + STRETCH_ANCHOR_MIN_GAP;
+        let upper_bound = (if i == 7 {
+            right_fraction
+        } else {
+            stretch.c_fractions[i + 1]
+        }) - STRETCH_ANCHOR_MIN_GAP;
+
+        let x = screen.left() + screen.width() * stretch.c_fractions[i];
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(x - 5.0, screen.top()),
+            egui::pos2(x + 5.0, screen.bottom()),
+        );
+        let response = ui.interact(
+            rect,
+            egui::Id::new(("camera_stretch_handle", i)),
+            egui::Sense::drag(),
+        );
+        if response.dragged() {
+            let delta = response.drag_delta().x / screen.width();
+            stretch.c_fractions[i] =
+                (stretch.c_fractions[i] + delta).clamp(lower_bound.min(upper_bound), upper_bound);
+        }
+
+        let painter = ui.painter();
+        painter.line_segment(
+            [egui::pos2(x, screen.top()), egui::pos2(x, screen.bottom())],
+            stroke,
+        );
+        painter.text(
+            egui::pos2(x, screen.bottom() - 4.0),
+            egui::Align2::CENTER_BOTTOM,
+            format!("C{}", i + 1),
+            egui::FontId::proportional(11.0),
+            stroke.color,
+        );
+    }
+}
+
+/// Keeps `calibration.stretch`'s 8 anchors ascending and inside
+/// `(left_fraction, right_fraction)` after any edit this frame — dragging the plain left/right
+/// calibration handles or typing into their sliders doesn't itself touch `stretch`, so without
+/// this an anchor could end up outside the new bounds or out of order, collapsing an octave
+/// segment to zero/negative width (`render::notes::keyboard_layout` floors segment width at a
+/// tiny minimum so this can't crash, but it would otherwise still look broken).
+fn clamp_camera_stretch(calibration: &mut project::KeyboardCalibration) {
+    let left = calibration.left_fraction;
+    let right = calibration.right_fraction;
+    let Some(stretch) = calibration.stretch.as_mut() else {
+        return;
+    };
+
+    // Forward pass: each anchor at least MIN_GAP above the previous one (or `left`).
+    let mut floor = left;
+    for c in stretch.c_fractions.iter_mut() {
+        floor += STRETCH_ANCHOR_MIN_GAP;
+        *c = c.max(floor);
+        floor = *c;
+    }
+    // Backward pass: each anchor at least MIN_GAP below the next one (or `right`) — run after
+    // the forward pass so a shrunk `right_fraction` pulls anchors down without breaking the
+    // ascending order the forward pass already established.
+    let mut ceiling = right;
+    for c in stretch.c_fractions.iter_mut().rev() {
+        ceiling -= STRETCH_ANCHOR_MIN_GAP;
+        *c = c.min(ceiling);
+        ceiling = *c;
+    }
+}
+
+/// Drawn instead of the ordinary calibration/barrier/stretch-anchor handles while
+/// `state.camera_stretch_capture` is `Some` — walks the user through clicking
+/// `CAMERA_STRETCH_POINT_LABELS.len()` points on the preview image (a crosshair follows the
+/// pointer, with an instruction label naming the next point) and records each click's x-fraction
+/// of `screen`. Finalizes into `calibration.left_fraction`/`right_fraction`/`stretch` once every
+/// point is captured (see `finalize_camera_stretch`); Escape or the Cancel button abort the whole
+/// sequence, discarding whatever was clicked so far and leaving `calibration` untouched.
+fn draw_camera_stretch_overlay(ui: &mut egui::Ui, screen: egui::Rect, state: &mut UiState) {
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        state.camera_stretch_capture = None;
+        return;
+    }
+
+    let cancel_rect = egui::Rect::from_min_size(
+        egui::pos2(screen.right() - 96.0, screen.top() + 8.0),
+        egui::vec2(88.0, 24.0),
+    );
+    if ui
+        .put(cancel_rect, egui::Button::new("Cancel (Esc)"))
+        .clicked()
+    {
+        state.camera_stretch_capture = None;
+        return;
+    }
+
+    let step = match &state.camera_stretch_capture {
+        Some(capture) => capture.points.len(),
+        None => return,
+    };
+
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    let response = ui.interact(
+        screen,
+        egui::Id::new("camera_stretch_capture"),
+        egui::Sense::click(),
+    );
+
+    let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 209, 0));
+    let painter = ui.painter();
+    if let Some(pos) = response.hover_pos() {
+        painter.line_segment(
+            [
+                egui::pos2(pos.x, screen.top()),
+                egui::pos2(pos.x, screen.bottom()),
+            ],
+            stroke,
+        );
+        painter.line_segment(
+            [
+                egui::pos2(screen.left(), pos.y),
+                egui::pos2(screen.right(), pos.y),
+            ],
+            stroke,
+        );
+    }
+    painter.text(
+        egui::pos2(screen.center().x, screen.top() + 10.0),
+        egui::Align2::CENTER_TOP,
+        format!(
+            "Click the {} ({}/{})",
+            CAMERA_STRETCH_POINT_LABELS[step],
+            step + 1,
+            CAMERA_STRETCH_POINT_LABELS.len(),
+        ),
+        egui::FontId::proportional(16.0),
+        egui::Color32::WHITE,
+    );
+
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let fraction = ((pos.x - screen.left()) / screen.width()).clamp(0.0, 1.0);
+            if let Some(capture) = state.camera_stretch_capture.as_mut() {
+                capture.points.push(fraction);
+                if capture.points.len() == CAMERA_STRETCH_POINT_LABELS.len() {
+                    finalize_camera_stretch(state);
+                }
+            }
+        }
+    }
+}
+
+/// Called once `camera_stretch_capture`'s 10 points are all recorded — sorts them (defensive
+/// against a click landing slightly out of left-to-right order, which would otherwise fold the
+/// keyboard layout back on itself) and splits them into `calibration.left_fraction`/
+/// `right_fraction` (the first/last point) and the 8 interior `CameraStretch::c_fractions`
+/// anchors.
+fn finalize_camera_stretch(state: &mut UiState) {
+    let Some(capture) = state.camera_stretch_capture.take() else {
+        return;
+    };
+    let mut points = capture.points;
+    points.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut c_fractions = [0.0; 8];
+    c_fractions.copy_from_slice(&points[1..9]);
+    state.calibration.left_fraction = points[0];
+    state.calibration.right_fraction = points[9];
+    state.calibration.stretch = Some(project::CameraStretch { c_fractions });
 }
 
 /// Valid range for `KeyboardCalibration::barrier_fraction` — keeps the drag handle (and the

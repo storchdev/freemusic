@@ -176,9 +176,9 @@ impl NotesRenderer {
             return;
         };
 
-        let layout = keyboard_layout(viewport, calibration);
-        let range = &layout.range;
+        let range = KeyboardRange::standard_88_keys();
         let range_start = range.start() as usize;
+        let keys = keyboard_layout(viewport, calibration);
         let left_x = viewport.0 * calibration.left_fraction;
 
         // Resolve the fill to a top/bottom color pair once per rebuild — for `Fill::Solid` both
@@ -214,22 +214,22 @@ impl NotesRenderer {
         let mut note_intervals = Vec::with_capacity(notes.len());
         let instances = self.pipeline.instances();
         for note in notes {
-            let key = &layout.keys[note.note as usize - range_start];
-            let (color_top, color_bottom) = if key.kind().is_sharp() {
+            let key = &keys[note.note as usize - range_start];
+            let (color_top, color_bottom) = if key.is_sharp {
                 (top_dark, bottom_dark)
             } else {
                 (top_light, bottom_light)
             };
             let duration = note.duration.as_secs_f32().max(0.1);
-            let note_x = key.x() + left_x;
+            let note_x = key.x + left_x;
             let start_seconds = note.start.as_secs_f32();
 
             instances.push(NoteInstance {
                 position: [note_x, start_seconds],
-                size: [key.width() - 1.0, duration - 0.01],
+                size: [key.width - 1.0, duration - 0.01],
                 color_top,
                 color_bottom,
-                radius: key.width() * 0.2 * note_layer.roundedness,
+                radius: key.width * 0.2 * note_layer.roundedness,
                 velocity: note.velocity as f32 / 127.0,
                 track_index: note.track_id as f32,
             });
@@ -237,7 +237,7 @@ impl NotesRenderer {
                 start_seconds,
                 end_seconds: start_seconds + duration,
                 x_left: note_x,
-                x_right: note_x + key.width(),
+                x_right: note_x + key.width,
             });
         }
 
@@ -276,19 +276,108 @@ impl NotesRenderer {
     }
 }
 
-/// Builds a keyboard layout sized to fit between the calibrated left/right bounds rather than
-/// the full window width. `KeyboardLayout::from_range` always starts its keys at local x=0, so
-/// the calibrated left bound is applied afterward, added directly into each instance's position.
+/// MIDI note numbers of the interior octave boundaries of a standard 88-key keyboard (A0=21 ..
+/// C8=108) — the left edge of C1 through C8, i.e. every multiple of 12 within that range. Along
+/// with the calibrated left/right edges, these bound the 9 independent layout segments (a partial
+/// A0-B0 segment, seven full octaves C1-B1..C7-B7, and a final C8-alone segment) that
+/// `keyboard_layout` lays out one at a time, so a camera-stretch calibration can give each octave
+/// a different real width.
+const OCTAVE_BOUNDARY_NOTES: [u8; 8] = [24, 36, 48, 60, 72, 84, 96, 108];
+
+/// A laid-out key's absolute position, local to `calibration.left_fraction` (0.0 at the left
+/// calibration edge, growing rightward) — replaces `piano_layout::Key` as the per-note lookup
+/// table `rebuild_instances` indexes into. `Key`'s fields are private (getter-only), so once each
+/// octave segment is laid out by its own `KeyboardLayout::from_range` call there's no way to
+/// re-offset a `Key` from outside that crate; this plain struct is built instead.
+#[derive(Debug, Clone, Copy)]
+struct LayoutKey {
+    x: f32,
+    width: f32,
+    is_sharp: bool,
+}
+
+/// The 10 fractions (of canvas width) bounding the 9 octave segments, in order:
+/// `calibration.left_fraction`, the 8 interior C-boundaries, then `calibration.right_fraction`.
+/// Without a camera-stretch calibration (`calibration.stretch == None`) the interior boundaries
+/// are placed proportionally to cumulative white-key count, which reproduces the pre-stretch
+/// single-`neutral_width` uniform layout exactly (every octave the same real width) — so
+/// `keyboard_layout` only needs one code path for both the calibrated and uncalibrated case.
+fn octave_boundary_fractions(calibration: &KeyboardCalibration) -> [f32; 10] {
+    let mut bounds = [0.0; 10];
+    bounds[0] = calibration.left_fraction;
+    bounds[9] = calibration.right_fraction;
+    match calibration.stretch {
+        Some(stretch) => bounds[1..9].copy_from_slice(&stretch.c_fractions),
+        None => {
+            let total_white = KeyboardRange::standard_88_keys().white_count() as f32;
+            for (i, &boundary_note) in OCTAVE_BOUNDARY_NOTES.iter().enumerate() {
+                let cumulative_white = KeyboardRange::new(21..boundary_note).white_count() as f32;
+                bounds[i + 1] = calibration.left_fraction
+                    + (calibration.right_fraction - calibration.left_fraction) * cumulative_white
+                        / total_white;
+            }
+        }
+    }
+    bounds
+}
+
+/// Lays out all 88 keys as 9 independent segments (see `OCTAVE_BOUNDARY_NOTES`), each scaled to
+/// fit exactly between its two `octave_boundary_fractions`, instead of one `KeyboardLayout` with
+/// a single global `neutral_width`. This is what lets a camera-stretch calibration give different
+/// octaves different real widths while keeping each octave's own internal key proportions (from
+/// the vendored `piano_layout::Octave`) intact — the width fed to `Sizing::new` for a segment is
+/// derived from its target pixel width divided by its own white-key count, so `Octave`'s existing
+/// per-key math (unmodified) produces correctly-scaled keys for that segment alone. Returned keys
+/// are ordered by MIDI note number (index 0 = A0/note 21), local to `calibration.left_fraction`
+/// like the old single-layout version was.
 fn keyboard_layout(
     (width, height): (f32, f32),
     calibration: &KeyboardCalibration,
-) -> KeyboardLayout {
-    let range = KeyboardRange::standard_88_keys();
-    let keyboard_width =
-        (width * (calibration.right_fraction - calibration.left_fraction)).max(1.0);
-    let neutral_width = keyboard_width / range.white_count() as f32;
+) -> Vec<LayoutKey> {
+    let bounds = octave_boundary_fractions(calibration);
     let neutral_height = height * 0.2;
-    KeyboardLayout::from_range(Sizing::new(neutral_width, neutral_height), range)
+    let segment_notes: [u8; 10] = [21, 24, 36, 48, 60, 72, 84, 96, 108, 109];
+
+    // One past the real top key (C8 = note 108) — see the `full_range` comment below for why
+    // every segment's query always extends out to here rather than stopping at its own end.
+    const KEYBOARD_END: u8 = 109;
+
+    let mut keys = Vec::with_capacity(88);
+    for i in 0..9 {
+        let segment_start = segment_notes[i];
+        let segment_len = (segment_notes[i + 1] - segment_start) as usize;
+        let segment_left = (bounds[i] - calibration.left_fraction) * width;
+        let segment_width = ((bounds[i + 1] - bounds[i]) * width).max(0.1);
+        // Counting white keys is a simple range scan (no octave-chunking involved), so the exact,
+        // narrow segment range is safe to use here even though the wider `full_range` below has
+        // to be used for the actual layout call.
+        let white_count = KeyboardRange::new(segment_start..segment_notes[i + 1])
+            .white_count()
+            .max(1) as f32;
+        let neutral_width = segment_width / white_count;
+        // `KeyboardLayout::from_range` (vendored `piano_layout`) chunks by octave via
+        // `split_range_by_octaves`, which computes a truncated chunk's end as an *absolute* note
+        // count from the query's start rather than octave-relative — only correct when the
+        // truncated chunk happens to start at a C (index 0 in `Octave`'s table). That's always
+        // true for the real keyboard's own final chunk (the range this crate was ever actually
+        // exercised with: `KeyboardRange::standard_88_keys()`), but querying a segment's own
+        // narrow end directly (e.g. `21..24` for the A0-B0 segment, which starts mid-octave at
+        // index 9) hits that bug and panics on an invalid slice. Querying through to the real
+        // keyboard end instead makes every one of these calls an exact suffix of that one
+        // known-safe range — the same sequence of chunks `split_range_by_octaves` would produce
+        // partway through the original whole-keyboard call — so the bug's precondition (a
+        // mid-octave truncation) never occurs; the extra trailing keys are simply discarded via
+        // `take(segment_len)`.
+        let full_range = KeyboardRange::new(segment_start..KEYBOARD_END);
+        let layout =
+            KeyboardLayout::from_range(Sizing::new(neutral_width, neutral_height), full_range);
+        keys.extend(layout.keys.iter().take(segment_len).map(|key| LayoutKey {
+            x: segment_left + key.x(),
+            width: key.width(),
+            is_sharp: key.kind().is_sharp(),
+        }));
+    }
+    keys
 }
 
 /// Resolves a `Fill` to its (top, bottom) base colors — shared by the white-key fill and, since
@@ -325,4 +414,41 @@ fn color_to_linear([r, g, b]: [u8; 3]) -> [f32; 3] {
         }
     }
     [component(r), component(g), component(b)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for a real crash: the vendored `piano_layout` crate's octave-chunking
+    /// (`split_range_by_octaves`) mis-slices when a queried range starts mid-octave and ends
+    /// before that octave completes — exactly the A0-B0 segment (`21..24`) hits this if queried
+    /// directly, panicking with "slice index starts at 9 but ends at 3" the moment a MIDI file
+    /// was loaded. `keyboard_layout` works around it by always querying through to the real
+    /// keyboard end and discarding the extra keys (see its `full_range` comment) — this just
+    /// confirms that holds for every segment, with and without a camera-stretch calibration.
+    #[test]
+    fn keyboard_layout_does_not_panic_and_covers_all_88_keys() {
+        let calibration = KeyboardCalibration::default();
+        let keys = keyboard_layout((1000.0, 200.0), &calibration);
+        assert_eq!(keys.len(), 88);
+        for pair in keys.windows(2) {
+            assert!(pair[1].x >= pair[0].x, "keys must be left-to-right ordered");
+        }
+    }
+
+    #[test]
+    fn keyboard_layout_with_camera_stretch_does_not_panic() {
+        let calibration = KeyboardCalibration {
+            stretch: Some(project::CameraStretch {
+                c_fractions: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+            }),
+            ..KeyboardCalibration::default()
+        };
+        let keys = keyboard_layout((1000.0, 200.0), &calibration);
+        assert_eq!(keys.len(), 88);
+        for pair in keys.windows(2) {
+            assert!(pair[1].x >= pair[0].x, "keys must be left-to-right ordered");
+        }
+    }
 }

@@ -489,3 +489,94 @@ Narrative history of the UI restructure and subsequent milestones/fixes, split o
   confirming visually the results look like an upside-down rotation and a fully rounded/pill note
   shape respectively, next time someone has hands on the running app.
 
+
+### Camera-stretch calibration (per-octave keyboard perspective correction)
+
+- **Motivation**: `KeyboardCalibration` originally only stored `left_fraction`/`right_fraction`
+  (the two edges of the keyboard) and every one of the 88 keys was spaced uniformly between them
+  (`render::notes::keyboard_layout`'s old single-`neutral_width` approach). That's correct for a
+  camera shooting the keyboard head-on from far away, but a real camera at finite distance/angle
+  makes octaves further from the lens's center appear stretched or compressed relative to
+  octaves near it — a uniform layout drifts out of alignment with the footage the further a note
+  is from wherever the two calibration edges happen to sit.
+- **Calibration model** (`crates/project/src/lib.rs`): `KeyboardCalibration` gained
+  `stretch: Option<CameraStretch>`, `#[serde(default)]` so every project saved before this field
+  existed loads as `None` (uniform spacing, byte-for-byte the old behavior).
+  `CameraStretch { c_fractions: [f32; 8] }` holds the canvas-width fractions of the left edge of
+  C1 through C8 — the 8 interior octave boundaries of a standard 88-key keyboard (A0..C8). The
+  other two boundaries needed to fully bound all 9 octave segments (a partial A0-B0 segment,
+  seven full octaves, and a final C8-alone segment) are the pre-existing `left_fraction` (A0's
+  left edge) and `right_fraction` (C8's right edge) — 10 boundary points for 9 segments.
+- **Layout math** (`crates/render/src/notes/mod.rs`): `keyboard_layout` no longer builds one
+  `piano_layout::KeyboardLayout` with a single global `neutral_width`. It now calls
+  `KeyboardLayout::from_range` once per octave segment, each with its own `neutral_width` derived
+  from that segment's *target pixel width* (the distance between its two calibrated boundary
+  fractions) divided by its own white-key count — `piano_layout::Octave`'s existing per-key ratio
+  math (unmodified, still vendored) then lays out that segment's keys correctly scaled to fit.
+  Segments are contiguous (each starts exactly where the previous ends), so keys never gap or
+  overlap at octave boundaries. `octave_boundary_fractions` computes the 10 boundary fractions:
+  when `stretch` is `None` it places the 8 interior boundaries proportionally to cumulative
+  white-key count (2 for the A0-B0 partial octave, then +7 per full octave), which reproduces the
+  old uniform layout exactly — so calibrated and uncalibrated projects share one code path.
+  `piano_layout::Key`'s fields are getter-only (can't be re-offset from outside that crate once
+  laid out independently per segment), so a plain local `LayoutKey { x, width, is_sharp }` replaces
+  it as the per-note lookup table.
+- **Capture UI** (`app/src/ui.rs`): a "Align notes to camera stretch…" button in the Keyboard tab
+  starts `UiState::camera_stretch_capture` (`CameraStretchCapture { points: Vec<f32> }`), which
+  `draw_camera_stretch_overlay` drives instead of the ordinary calibration/barrier/stretch-anchor
+  handles: a crosshair follows the pointer over the preview image, an instruction label names the
+  next of the 10 points (`CAMERA_STRETCH_POINT_LABELS`, in order: A0 left edge, C1..C8 left edges,
+  C8 right edge), and each click records that point's x-fraction of the preview rect. Escape or
+  the on-screen "Cancel (Esc)" button abort the whole sequence without touching `calibration`.
+  Once all 10 land, `finalize_camera_stretch` sorts them (defensive against a click landing
+  slightly out of left-to-right order) and splits them into `left_fraction`/`right_fraction` (the
+  first/last point) and `CameraStretch::c_fractions` (the 8 interior points) — this is also why
+  the plain left/right calibration handles get overwritten by running this flow, not just the 8
+  interior anchors.
+- **Post-capture editing**: once `calibration.stretch` is `Some`, `draw_camera_stretch_handles`
+  draws the 8 anchors as persistent draggable vertical guides (green, labeled C1..C8) alongside
+  the ordinary yellow left/right handles, so they can be nudged without redoing the whole click
+  sequence. `clamp_camera_stretch` runs unconditionally every frame (same pattern as
+  `CALIBRATION_MIN_GAP`/`CROP_MIN_GAP`) to keep the 8 anchors ascending and inside
+  `(left_fraction, right_fraction)` regardless of how they got there — a drag, a slider edit to
+  the plain left/right calibration fields, or a shrunk keyboard span — via a forward pass
+  (ascending floor from `left_fraction`) then a backward pass (descending ceiling from
+  `right_fraction`, applied second so a shrunk `right_fraction` wins). `keyboard_layout` also
+  floors each segment's pixel width at a tiny minimum so a still-degenerate case can't divide by
+  zero, just look visibly wrong until fixed.
+- **Crash found on first real use**: opening a project, then a video, then a MIDI file panicked
+  immediately with `slice index starts at 9 but ends at 3` inside vendored
+  `piano_layout::Octave::sub_range`, loading any MIDI file at all (not specific to a stretch
+  calibration — it hit the default/uncalibrated path too, since `keyboard_layout` always builds
+  the 9 segments regardless of whether `stretch` is set). **Root cause**: the vendored crate's
+  `split_range_by_octaves` chunks a queried `KeyboardRange` by absolute octave boundaries, and
+  when a chunk gets truncated (queried range ends before a full 12-note octave completes), it
+  computes the truncated end as `end - id` — an *absolute* remaining-note count — and uses it
+  directly as an index into the current octave's 12-key table. That's only correct when the
+  truncated chunk also starts at index 0 (a C), which happens to always hold for the one range
+  shape this crate was ever exercised with before (`KeyboardRange::standard_88_keys()`, whose only
+  truncated chunk is the real final one, C8 alone, which is C-aligned). Segment 0 of this
+  feature's own layout (`21..24`, the A0-B0 partial octave) starts mid-octave (`21 % 12 == 9`)
+  *and* is queried with an end that completes that same octave — from the crate's perspective
+  indistinguishable from "truncated before finishing", so it computed the invalid slice `9..3` and
+  panicked (via `Rc<[Key]>`'s `Index`, not a `Result`, so no way to recover short of not hitting
+  it). **Fix**: rather than querying each segment's own narrow `start..end`,
+  `keyboard_layout`/`from_range` is now always called with `start..109` (the real keyboard end),
+  discarding the extra trailing keys via `.take(segment_len)` — this makes every segment's query
+  an exact suffix of the one known-safe range shape, so the truncation branch only ever fires on
+  the true final (always C-aligned) chunk, exactly like before this feature existed. White-key
+  counting for the `neutral_width` scale factor still uses the narrow per-segment range (a plain
+  scan, not the buggy chunking, so it's unaffected). Added two `#[cfg(test)]` regression tests in
+  `crates/render/src/notes/mod.rs` (`keyboard_layout_does_not_panic_and_covers_all_88_keys`,
+  `..._with_camera_stretch_does_not_panic`) covering both the default and a stretch-calibrated
+  layout — the one piece of this feature judged worth an automated test despite this project's
+  usual manual-verification convention, given it's pure per-key math that already caused a real
+  crash once.
+- Verified by `cargo build`/`cargo test -p render`/`scripts/check.sh` (fmt+clippy clean, both new
+  tests pass); the capture flow itself is still not yet manually exercised — worth running it
+  against real filmed footage (all 10 clicks, including deliberately clicking slightly out of
+  order to confirm the sort-based recovery), dragging a couple of the resulting green anchors,
+  saving/reloading the project to confirm `stretch` round-trips through `.fmproj.ron`, and loading
+  an old pre-stretch project to confirm it still looks identical (uniform spacing) with the new
+  "Clear camera stretch"/"Align notes to camera stretch…" buttons both behaving sensibly, next
+  time someone has hands on the running app.

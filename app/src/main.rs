@@ -454,6 +454,7 @@ impl AppState {
                 export_cancel_requested: false,
                 export_progress: None,
                 export_message: None,
+                camera_stretch_capture: None,
             },
             last_instant: Instant::now(),
             last_decoded_position: None,

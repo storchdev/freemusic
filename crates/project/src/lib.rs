@@ -46,6 +46,17 @@ pub struct KeyboardCalibration {
     pub left_fraction: f32,
     pub right_fraction: f32,
     pub barrier_fraction: f32,
+    /// Non-linear "camera stretch" correction for perspective-distorted footage (a real camera
+    /// isn't at infinite distance, so a physically uniform 88-key keyboard doesn't map to evenly
+    /// spaced pixels). `None` — the default, and what every project saved before this field
+    /// existed loads as via `serde(default)` — means the 88 keys are spaced uniformly between
+    /// `left_fraction`/`right_fraction`, the original behavior. `Some` places the 8 interior
+    /// octave boundaries (the left edge of C1..C8) at the given calibrated fractions instead of
+    /// evenly spacing them, so each octave can stretch or compress independently to match the
+    /// footage. See `render::notes::keyboard_layout` for how this is turned into per-key
+    /// positions, and `ui::draw_camera_stretch_overlay` for how it's captured.
+    #[serde(default)]
+    pub stretch: Option<CameraStretch>,
 }
 
 impl Default for KeyboardCalibration {
@@ -59,8 +70,21 @@ impl Default for KeyboardCalibration {
             // `barrier_fraction` as a real uniform, so this is just a starting value, not a
             // constraint imposed by any vendored code.
             barrier_fraction: 0.8,
+            stretch: None,
         }
     }
+}
+
+/// Camera-stretch calibration: fractions of canvas width for the left edge of C1 through C8, the
+/// 8 interior octave boundaries of a standard 88-key keyboard (A0..C8) — the other two boundaries
+/// needed to fully bound all 9 octave segments are `KeyboardCalibration::left_fraction` (A0's
+/// left edge) and `right_fraction` (C8's right edge), both already existing fields. Captured by
+/// clicking through all 10 points in order (see `ui::draw_camera_stretch_overlay`), and expected
+/// (though not enforced by this type — see `ui::clamp_camera_stretch`) to be strictly ascending
+/// and to lie strictly between `left_fraction` and `right_fraction`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CameraStretch {
+    pub c_fractions: [f32; 8],
 }
 
 /// Style of the horizontal barrier where falling notes stop, drawn as a plain `egui` overlay
