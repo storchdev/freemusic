@@ -160,6 +160,19 @@ Not vendored, must be present on the machine:
   without it winit panics at startup with "Library libxkbcommon-x11.so could not be loaded",
   it does not silently fall back further.
 
+**Dynamic-link FFmpeg version pin (matters most on Windows):** `ffmpeg-next 8.1.0` (pinned in
+`crates/{video-pipeline,export,audio-playback}/Cargo.toml`) wraps FFmpeg **7.x**'s C API, not 8.x
+— despite the crate's own version number. FFmpeg 8.0 removed several `AVCodec`/`AVFrame`/
+`AVPacket` fields this crate still reads directly (`sample_fmts`, `pix_fmts`,
+`supported_framerates`, `ch_layouts`, plus a couple of enum variants), so building the dynamic-link
+(non-`static-ffmpeg`) path against an FFmpeg 8.x dev package fails with a wall of
+`E0609`/`E0425`/`E0004` errors about those fields/variants not existing. This bit a Windows user
+who grabbed BtbN's `ffmpeg-master-latest-win64-gpl-shared.zip` (BtbN's "master" builds track
+FFmpeg git master, which is already past the 8.0 release). The README's Windows dev-setup section
+now points at `ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip` instead — a BtbN release asset pinned
+to FFmpeg 7.1 — which still has these fields. If `ffmpeg-next`/`ffmpeg-sys-next` are ever bumped to
+a version that supports FFmpeg 8's API, this pin and the README note can be revisited.
+
 ### Static/cross-platform release builds
 
 Added a `static-ffmpeg` cargo feature (on `app`, `export`, `video-pipeline`, `audio-playback`,

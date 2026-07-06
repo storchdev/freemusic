@@ -62,10 +62,18 @@ cargo run --bin app -- project.fmproj.ron mystyle.fmstyle.ron        # or open a
    [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) (C++ workload, for
    the linker) and LLVM (`winget install LLVM.LLVM`, for `ffmpeg-sys-next`'s bindgen step).
 2. A Vulkan driver — normally already present via your GPU driver.
-3. Download a prebuilt FFmpeg **shared** dev package, e.g.
-   [BtbN/FFmpeg-Builds releases](https://github.com/BtbN/FFmpeg-Builds/releases)
-   (`ffmpeg-master-latest-win64-gpl-shared.zip`), and extract it, e.g. to `C:\ffmpeg` (it already
-   has the `lib\`+`include\` layout `ffmpeg-sys-next` expects).
+3. Download a prebuilt FFmpeg **shared** dev package — specifically a build pinned to **FFmpeg
+   7.1**:
+   [`ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip`](https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip)
+   (from [BtbN/FFmpeg-Builds releases](https://github.com/BtbN/FFmpeg-Builds/releases)) — and
+   extract it, e.g. to `C:\ffmpeg` (it already has the `lib\`+`include\` layout `ffmpeg-sys-next`
+   expects).
+   **Don't grab `ffmpeg-master-latest-*`**: that tracks FFmpeg's git master, which is already past
+   the FFmpeg 8.0 release and has dropped several `AVCodec`/`AVFrame`/`AVPacket` fields
+   (`sample_fmts`, `pix_fmts`, `supported_framerates`, `ch_layouts`, etc.) that the `ffmpeg-next
+   8.1.0` crate this project pins still reads directly — building against it fails with a wall of
+   `E0609`/`E0425`/`E0004` errors about those fields/enum variants not existing. FFmpeg 7.1 still
+   has them.
 4. Set `FFMPEG_DIR=C:\ffmpeg`, then `cargo build --release` (no extra features — this is the
    default dynamic-linking path, not the static one below):
    ```powershell
