@@ -544,21 +544,24 @@ impl AppState {
         self.ui_state.seek_request_exact = false;
         self.next_playback_redraw_at = None;
 
-        if let Ok(frame) = pipeline.seek_and_decode(0.0, false) {
-            self.set_canvas_size((even(frame.width), even(frame.height)));
-            self.compositor.upload_frame(
-                &self.gpu.device,
-                &self.gpu.queue,
-                frame.width,
-                frame.height,
-                &frame.bgra,
-            );
-            self.compositor.update_viewport(
-                &self.gpu.queue,
-                self.canvas_size,
-                &self.ui_state.transform,
-            );
-            self.last_decoded_position = Some(0.0);
+        match pipeline.seek_and_decode(0.0, false) {
+            Err(err) => eprintln!("initial video frame decode failed: {err:?}"),
+            Ok(frame) => {
+                self.set_canvas_size((even(frame.width), even(frame.height)));
+                self.compositor.upload_frame(
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    frame.width,
+                    frame.height,
+                    &frame.bgra,
+                );
+                self.compositor.update_viewport(
+                    &self.gpu.queue,
+                    self.canvas_size,
+                    &self.ui_state.transform,
+                );
+                self.last_decoded_position = Some(0.0);
+            }
         }
 
         if let Err(err) = self.audio.load(path) {
@@ -1013,16 +1016,16 @@ impl AppState {
                         );
                     }
                     self.last_decoded_position = Some(self.ui_state.position_seconds);
-                } else if let Some(perf) = self.perf.as_mut() {
-                    perf.decode += decode_elapsed;
-                    if trace_active {
-                        eprintln!(
-                            "[interaction:decode] err target={:.3} elapsed_ms={:.2} exact={}",
-                            self.ui_state.position_seconds,
-                            decode_elapsed.as_secs_f64() * 1000.0,
-                            if is_seek { seek_exact } else { true },
-                        );
+                } else {
+                    if let Some(perf) = self.perf.as_mut() {
+                        perf.decode += decode_elapsed;
                     }
+                    eprintln!(
+                        "video decode error at {:.3}s (elapsed {:.2}ms, exact={})",
+                        self.ui_state.position_seconds,
+                        decode_elapsed.as_secs_f64() * 1000.0,
+                        if is_seek { seek_exact } else { true },
+                    );
                 }
                 // Read the purely-CPU sub-stage split now that `decoded_result` (which borrowed
                 // `pipeline`) has been dropped. Cache-hit calls leave these at zero, matching that
@@ -1076,43 +1079,6 @@ impl AppState {
             self.applied_calibration = self.ui_state.calibration;
             self.applied_note_layer = note_layer;
         }
-
-        // Cheap (one small uniform write), so applied unconditionally every redraw rather than
-        // dirty-checked — unlike `compositor.resize`'s full note-instance rebuild above, this
-        // needs no guard, and running it after the egui pass means a slider drag this frame is
-        // reflected in this same frame's render rather than lagging by one redraw.
-        self.compositor.update_viewport(
-            &self.gpu.queue,
-            self.canvas_size,
-            &self.ui_state.transform,
-        );
-
-        // Same "cheap uniform write, apply every frame" treatment as `update_viewport` above —
-        // see `render::Compositor::update_barrier`'s doc comment for why this doesn't need a
-        // dirty-check the way `compositor.resize` does.
-        let barrier_layer = effective_barrier_layer(&self.ui_state);
-        let midi_time = (self.ui_state.position_seconds - self.ui_state.sync_offset_seconds) as f32;
-        self.compositor.update_barrier(
-            &self.gpu.queue,
-            (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
-            &self.ui_state.calibration,
-            &barrier_layer,
-            midi_time,
-        );
-
-        // Same "cheap per-frame update, no dirty-check" treatment as `update_barrier` above, but
-        // stateful (see `render::Compositor::update_transition`'s doc comment) — the particle/
-        // flash simulation needs to advance every redraw regardless of whether any style field
-        // changed this frame.
-        let transition_layer = effective_transition_layer(&self.ui_state);
-        self.compositor.update_transition(
-            &self.gpu.device,
-            &self.gpu.queue,
-            (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
-            &self.ui_state.calibration,
-            &transition_layer,
-            midi_time,
-        );
 
         if self.ui_state.save_requested {
             self.ui_state.save_requested = false;
@@ -1215,6 +1181,33 @@ impl AppState {
                 self.export_run = None;
             }
         }
+
+        // Cheap uniform writes applied after all file-loading handlers so that canvas_size is
+        // final (load_video may have changed it above) before barrier/effects store it for use
+        // in set_scissor_rect during render. update_viewport is here too for consistency.
+        self.compositor.update_viewport(
+            &self.gpu.queue,
+            self.canvas_size,
+            &self.ui_state.transform,
+        );
+        let barrier_layer = effective_barrier_layer(&self.ui_state);
+        let midi_time = (self.ui_state.position_seconds - self.ui_state.sync_offset_seconds) as f32;
+        self.compositor.update_barrier(
+            &self.gpu.queue,
+            (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
+            &self.ui_state.calibration,
+            &barrier_layer,
+            midi_time,
+        );
+        let transition_layer = effective_transition_layer(&self.ui_state);
+        self.compositor.update_transition(
+            &self.gpu.device,
+            &self.gpu.queue,
+            (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
+            &self.ui_state.calibration,
+            &transition_layer,
+            midi_time,
+        );
     }
 
     fn render_frame(

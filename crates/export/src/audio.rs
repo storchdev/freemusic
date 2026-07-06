@@ -47,9 +47,18 @@ pub fn decode_all(path: &Path, target_sample_rate: i32) -> Result<DecodedAudio, 
         .audio()
         .map_err(|err| format!("failed to open audio decoder: {err}"))?;
 
+    let src_layout = {
+        let l = decoder.channel_layout();
+        if l.channels() <= 0 {
+            ffmpeg::ChannelLayout::STEREO
+        } else {
+            l
+        }
+    };
+
     let mut resampler = ResamplingContext::get(
         decoder.format(),
-        decoder.channel_layout(),
+        src_layout,
         decoder.rate(),
         Sample::F32(Type::Planar),
         ffmpeg::ChannelLayout::STEREO,
@@ -61,33 +70,35 @@ pub fn decode_all(path: &Path, target_sample_rate: i32) -> Result<DecodedAudio, 
     let mut right = Vec::new();
     let mut raw = AudioFrame::empty();
 
+    let n_in_planes = if decoder.format().is_planar() {
+        (src_layout.channels() as usize).max(1)
+    } else {
+        1
+    };
+
     let drain_decoder = |decoder: &mut ffmpeg::decoder::Audio,
-                         resampler: &mut ResamplingContext,
-                         raw: &mut AudioFrame,
-                         left: &mut Vec<f32>,
-                         right: &mut Vec<f32>|
+                             resampler: &mut ResamplingContext,
+                             raw: &mut AudioFrame,
+                             left: &mut Vec<f32>,
+                             right: &mut Vec<f32>|
      -> Result<(), String> {
         while decoder.receive_frame(raw).is_ok() {
-            let mut resampled = AudioFrame::empty();
-            if resampler.run(raw, &mut resampled).is_err() {
-                // Frame format differs from stream header (common with iPhone MOV/AAC).
-                // Reinitialize from the actual frame properties and retry.
-                *resampler = ResamplingContext::get(
-                    raw.format(),
-                    raw.channel_layout(),
-                    raw.rate(),
-                    Sample::F32(Type::Planar),
-                    ffmpeg::ChannelLayout::STEREO,
-                    target_sample_rate as u32,
-                )
-                .map_err(|err| format!("audio resample reinit error: {err}"))?;
-                resampled = AudioFrame::empty();
-                resampler
-                    .run(raw, &mut resampled)
-                    .map_err(|err| format!("audio resample error: {err}"))?;
-            }
-            left.extend_from_slice(resampled.plane::<f32>(0));
-            right.extend_from_slice(resampled.plane::<f32>(1));
+            // Use swr_convert (not swr_convert_frame) to bypass the frame-metadata
+            // consistency check — on Windows static FFmpeg 7.x builds, decoded AAC
+            // frames leave ch_layout and sample_rate zeroed, causing AVERROR_*_CHANGED.
+            let in_samples = raw.samples() as i32;
+            let out_size = (resampler.out_sample_count(in_samples) as usize)
+                .max(in_samples as usize + 256);
+            let mut out_left = vec![0f32; out_size];
+            let mut out_right = vec![0f32; out_size];
+            let in_planes: Vec<*const u8> = (0..n_in_planes)
+                .map(|i| unsafe { (*raw.as_ptr()).data[i] as *const u8 })
+                .collect();
+            let n = resampler
+                .convert_planes(&in_planes, in_samples, &mut out_left, &mut out_right)
+                .map_err(|err| format!("audio resample error: {err}"))?;
+            left.extend_from_slice(&out_left[..n]);
+            right.extend_from_slice(&out_right[..n]);
         }
         Ok(())
     };
@@ -99,33 +110,21 @@ pub fn decode_all(path: &Path, target_sample_rate: i32) -> Result<DecodedAudio, 
         decoder
             .send_packet(&packet)
             .map_err(|err| format!("audio decode error: {err}"))?;
-        drain_decoder(
-            &mut decoder,
-            &mut resampler,
-            &mut raw,
-            &mut left,
-            &mut right,
-        )?;
+        drain_decoder(&mut decoder, &mut resampler, &mut raw, &mut left, &mut right)?;
     }
     decoder.send_eof().ok();
-    drain_decoder(
-        &mut decoder,
-        &mut resampler,
-        &mut raw,
-        &mut left,
-        &mut right,
-    )?;
+    drain_decoder(&mut decoder, &mut resampler, &mut raw, &mut left, &mut right)?;
 
     // Drain any samples swresample is still holding onto internally after the last real frame.
     loop {
-        let mut resampled = AudioFrame::empty();
-        match resampler.flush(&mut resampled) {
-            Ok(Some(_)) if resampled.samples() > 0 => {
-                left.extend_from_slice(resampled.plane::<f32>(0));
-                right.extend_from_slice(resampled.plane::<f32>(1));
-            }
-            _ => break,
+        let mut fl = vec![0f32; 4096];
+        let mut fr = vec![0f32; 4096];
+        let n = resampler.convert_planes(&[], 0, &mut fl, &mut fr).unwrap_or(0);
+        if n == 0 {
+            break;
         }
+        left.extend_from_slice(&fl[..n]);
+        right.extend_from_slice(&fr[..n]);
     }
 
     Ok(DecodedAudio { left, right })

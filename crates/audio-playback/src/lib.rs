@@ -219,9 +219,21 @@ fn decode_all(path: &Path, target_sample_rate: i32) -> Result<DecodedAudio, Stri
         .audio()
         .map_err(|err| format!("failed to open audio decoder: {err}"))?;
 
+    // On Windows static FFmpeg 7.x builds, AVCodecContext.ch_layout.nb_channels can be zeroed
+    // even though the stream parameters are correct — guard against that so the resampler init
+    // and plane-count derivation below don't produce garbage.
+    let src_layout = {
+        let l = decoder.channel_layout();
+        if l.channels() <= 0 {
+            ffmpeg::ChannelLayout::STEREO
+        } else {
+            l
+        }
+    };
+
     let mut resampler = ResamplingContext::get(
         decoder.format(),
-        decoder.channel_layout(),
+        src_layout,
         decoder.rate(),
         Sample::F32(Type::Planar),
         ffmpeg::ChannelLayout::STEREO,
@@ -233,33 +245,41 @@ fn decode_all(path: &Path, target_sample_rate: i32) -> Result<DecodedAudio, Stri
     let mut right = Vec::new();
     let mut raw = AudioFrame::empty();
 
+    // For planar formats each channel has its own data[] plane; for packed/interleaved formats
+    // all channels share data[0]. Using channel_layout.channels() unconditionally was wrong
+    // for packed formats where data[1] is null, causing wrong output or memory errors.
+    let n_in_planes = if decoder.format().is_planar() {
+        (src_layout.channels() as usize).max(1)
+    } else {
+        1
+    };
+
     let drain_decoder = |decoder: &mut ffmpeg::decoder::Audio,
-                         resampler: &mut ResamplingContext,
-                         raw: &mut AudioFrame,
-                         left: &mut Vec<f32>,
-                         right: &mut Vec<f32>|
+                             resampler: &mut ResamplingContext,
+                             raw: &mut AudioFrame,
+                             left: &mut Vec<f32>,
+                             right: &mut Vec<f32>|
      -> Result<(), String> {
         while decoder.receive_frame(raw).is_ok() {
-            let mut resampled = AudioFrame::empty();
-            if resampler.run(raw, &mut resampled).is_err() {
-                // Frame format differs from stream header (common with iPhone MOV/AAC).
-                // Reinitialize from the actual frame properties and retry.
-                *resampler = ResamplingContext::get(
-                    raw.format(),
-                    raw.channel_layout(),
-                    raw.rate(),
-                    Sample::F32(Type::Planar),
-                    ffmpeg::ChannelLayout::STEREO,
-                    target_sample_rate as u32,
-                )
-                .map_err(|err| format!("audio resample reinit error: {err}"))?;
-                resampled = AudioFrame::empty();
-                resampler
-                    .run(raw, &mut resampled)
-                    .map_err(|err| format!("audio resample error: {err}"))?;
-            }
-            left.extend_from_slice(resampled.plane::<f32>(0));
-            right.extend_from_slice(resampled.plane::<f32>(1));
+            // Use swr_convert (not swr_convert_frame) to bypass the frame-metadata
+            // consistency check — on Windows static FFmpeg 7.x builds, decoded AAC
+            // frames leave ch_layout and sample_rate zeroed even though the PCM data
+            // itself is valid, and swr_convert_frame rejects them with AVERROR_*_CHANGED.
+            let in_samples = raw.samples() as i32;
+            let out_size = (resampler.out_sample_count(in_samples) as usize)
+                .max(in_samples as usize + 256);
+            let mut out_left = vec![0f32; out_size];
+            let mut out_right = vec![0f32; out_size];
+            // Access data[] directly — plane() uses ch_layout.nb_channels which is
+            // zeroed on Windows; data[] is always populated by the decoder.
+            let in_planes: Vec<*const u8> = (0..n_in_planes)
+                .map(|i| unsafe { (*raw.as_ptr()).data[i] as *const u8 })
+                .collect();
+            let n = resampler
+                .convert_planes(&in_planes, in_samples, &mut out_left, &mut out_right)
+                .map_err(|err| format!("audio resample error: {err}"))?;
+            left.extend_from_slice(&out_left[..n]);
+            right.extend_from_slice(&out_right[..n]);
         }
         Ok(())
     };
@@ -271,33 +291,21 @@ fn decode_all(path: &Path, target_sample_rate: i32) -> Result<DecodedAudio, Stri
         decoder
             .send_packet(&packet)
             .map_err(|err| format!("audio decode error: {err}"))?;
-        drain_decoder(
-            &mut decoder,
-            &mut resampler,
-            &mut raw,
-            &mut left,
-            &mut right,
-        )?;
+        drain_decoder(&mut decoder, &mut resampler, &mut raw, &mut left, &mut right)?;
     }
     decoder.send_eof().ok();
-    drain_decoder(
-        &mut decoder,
-        &mut resampler,
-        &mut raw,
-        &mut left,
-        &mut right,
-    )?;
+    drain_decoder(&mut decoder, &mut resampler, &mut raw, &mut left, &mut right)?;
 
     // Drain any samples swresample is still holding onto internally after the last real frame.
     loop {
-        let mut resampled = AudioFrame::empty();
-        match resampler.flush(&mut resampled) {
-            Ok(Some(_)) if resampled.samples() > 0 => {
-                left.extend_from_slice(resampled.plane::<f32>(0));
-                right.extend_from_slice(resampled.plane::<f32>(1));
-            }
-            _ => break,
+        let mut fl = vec![0f32; 4096];
+        let mut fr = vec![0f32; 4096];
+        let n = resampler.convert_planes(&[], 0, &mut fl, &mut fr).unwrap_or(0);
+        if n == 0 {
+            break;
         }
+        left.extend_from_slice(&fl[..n]);
+        right.extend_from_slice(&fr[..n]);
     }
 
     Ok(DecodedAudio {
@@ -390,9 +398,13 @@ impl PlaybackCursor {
         let anchor_index = self.anchor_index(position_bits);
         let generation = resync_generation.load(Ordering::Relaxed);
         let explicit_resync = generation != self.last_resync_generation;
-        let should_resync = !self.initialized
-            || explicit_resync
-            || self.next_index.abs_diff(anchor_index) > self.resync_threshold_samples;
+        // Only resync when audio is lagging BEHIND the video anchor — being ahead is normal
+        // (the callback fills a whole buffer at once, leaving cursor buffer-size ahead of the
+        // anchor until the next video-position update). Resyncing on "ahead" as well with
+        // abs_diff meant that any audio device with a buffer larger than the threshold
+        // (50 ms) would resync on every callback, making audio stutter continuously.
+        let lagging = anchor_index.saturating_sub(self.next_index) > self.resync_threshold_samples;
+        let should_resync = !self.initialized || explicit_resync || lagging;
 
         if should_resync {
             self.next_index = anchor_index;

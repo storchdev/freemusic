@@ -186,6 +186,50 @@ impl Context {
         }
     }
 
+    /// Lower-level conversion using `swr_convert` instead of `swr_convert_frame`.
+    /// `swr_convert_frame` checks that the frame's metadata fields (`ch_layout`,
+    /// `sample_rate`, `format`) match what the context was initialized with, and on
+    /// Windows static FFmpeg 7.x builds those fields are often left zeroed by the AAC
+    /// decoder even though the PCM data itself is valid. `swr_convert` skips that check.
+    ///
+    /// `in_planes` is one `*const u8` per input channel (planar format); pass an empty
+    /// slice with `in_samples = 0` to flush the internal SWR delay buffer.
+    /// The output is always written as two-channel planar f32 into `out_left`/`out_right`.
+    /// Returns the number of samples per channel written.
+    pub fn convert_planes(
+        &mut self,
+        in_planes: &[*const u8],
+        in_samples: i32,
+        out_left: &mut [f32],
+        out_right: &mut [f32],
+    ) -> Result<usize, Error> {
+        debug_assert_eq!(out_left.len(), out_right.len());
+        unsafe {
+            let mut out_ptrs = [
+                out_left.as_mut_ptr() as *mut u8,
+                out_right.as_mut_ptr() as *mut u8,
+            ];
+            let in_ptr = if in_samples > 0 { in_planes.as_ptr() } else { ptr::null() };
+            let n = swr_convert(
+                self.ptr,
+                out_ptrs.as_mut_ptr(),
+                out_left.len() as c_int,
+                in_ptr,
+                in_samples,
+            );
+            if n < 0 {
+                Err(Error::from(n))
+            } else {
+                Ok(n as usize)
+            }
+        }
+    }
+
+    /// Estimated output sample count for the given input count.
+    pub fn out_sample_count(&self, in_samples: i32) -> i32 {
+        unsafe { swr_get_out_samples(self.ptr as *mut _, in_samples).max(0) }
+    }
+
     /// Convert one of the remaining internal frames.
     ///
     /// When there are no more internal frames `Ok(None)` will be returned.

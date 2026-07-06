@@ -251,7 +251,10 @@ impl VideoPipeline {
             // the timestamp is in `AV_TIME_BASE` (microsecond) units, not this stream's own
             // time base.
             let target_ts = (target_seconds / f64::from(ffmpeg::rescale::TIME_BASE)) as i64;
-            self.input.seek(target_ts, ..target_ts)?;
+            if let Err(err) = self.input.seek(target_ts, ..target_ts) {
+                eprintln!("video seek failed: target_ts={target_ts} err={err:?}");
+                return Err(err);
+            }
             self.decoder.flush();
         } else if self
             .current_frame
@@ -299,7 +302,10 @@ impl VideoPipeline {
                 continue;
             }
             let send_start = std::time::Instant::now();
-            self.decoder.send_packet(&packet)?;
+            if let Err(err) = self.decoder.send_packet(&packet) {
+                eprintln!("video send_packet failed: {err:?}");
+                return Err(err);
+            }
             send_elapsed += send_start.elapsed();
             let mut raw = VideoFrame::empty();
             loop {
@@ -326,7 +332,29 @@ impl VideoPipeline {
 
                 let scale_start = std::time::Instant::now();
                 let mut scaled = VideoFrame::empty();
-                self.scaler.run(&raw, &mut scaled)?;
+                if let Err(err) = self.scaler.run(&raw, &mut scaled) {
+                    // AVERROR_INPUT_CHANGED: actual frame format/size differs from what the
+                    // scaler was initialized with (common on Windows when coded dimensions or
+                    // pixel format differ from what the stream parameters reported at open).
+                    // Reinitialize from the frame's actual parameters and retry once.
+                    let actual_fmt = raw.format();
+                    let actual_w = raw.width();
+                    let actual_h = raw.height();
+                    self.scaler = ScalingContext::get(
+                        actual_fmt,
+                        actual_w,
+                        actual_h,
+                        Pixel::BGRA,
+                        actual_w,
+                        actual_h,
+                        Flags::BILINEAR,
+                    )
+                    .map_err(|_| err)?;
+                    self.width = actual_w;
+                    self.height = actual_h;
+                    scaled = VideoFrame::empty();
+                    self.scaler.run(&raw, &mut scaled)?;
+                }
                 scale_elapsed += scale_start.elapsed();
 
                 let copy_start = std::time::Instant::now();
@@ -355,6 +383,11 @@ impl VideoPipeline {
             copy: copy_elapsed,
         };
 
+        if self.current_frame.is_none() {
+            eprintln!(
+                "video decode: packet loop exhausted with no frame (target={target_seconds:.3}s)"
+            );
+        }
         self.current_frame
             .as_ref()
             .map(|frame| DecodedFrameRef {
