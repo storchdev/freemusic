@@ -67,7 +67,13 @@ cargo run --bin app -- project.fmproj.ron mystyle.fmstyle.ron        # or open a
    (`ffmpeg-master-latest-win64-gpl-shared.zip`), and extract it, e.g. to `C:\ffmpeg` (it already
    has the `lib\`+`include\` layout `ffmpeg-sys-next` expects).
 4. Set `FFMPEG_DIR=C:\ffmpeg`, then `cargo build --release` (no extra features — this is the
-   default dynamic-linking path, not the static one below).
+   default dynamic-linking path, not the static one below):
+   ```powershell
+   $env:FFMPEG_DIR = "C:\ffmpeg"    # PowerShell
+   ```
+   ```cmd
+   set FFMPEG_DIR=C:\ffmpeg         :: cmd.exe
+   ```
 5. Copy the DLLs from that package's `bin\` folder next to `target\release\app.exe` (or add that
    `bin\` to `PATH`) so the binary can find them at runtime.
 
