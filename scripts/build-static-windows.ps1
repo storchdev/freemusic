@@ -35,8 +35,21 @@ if (-not (Test-Path $msysBash)) {
     exit 1
 }
 
+# ffmpeg-sys-next's build script (and the libx264 build below) needs sh.exe/make/nasm/pkgconf
+# from MSYS2 on PATH, alongside the MSVC toolchain (cl.exe etc.) that must already be on PATH
+# from the Developer shell. Do this before the libx264 build, not just before `cargo build`, so
+# `make`/`nasm` resolve during that build too.
+$env:PATH = "$Msys2Dir\usr\bin;$env:PATH"
+
+# Deliberately `-c`, not `-lc` (login shell): a login shell re-sources MSYS2's own /etc/profile,
+# which resets PATH/INCLUDE/LIB/LIBPATH and can silently drop the vcvars environment this script's
+# Developer-shell prerequisite set up — making cl.exe unreachable (or unusable) inside bash even
+# though `Get-Command cl.exe` above found it fine in PowerShell. That's what produces x264's
+# misleading "Microsoft Visual Studio support requires Visual Studio 2013 Update 2 or newer"
+# error: it's cl.exe detection failing, not an actual VS-version problem. `-c` inherits this
+# process's environment as-is instead.
 $x264Prefix = Join-Path $env:USERPROFILE "x264-static"
-$x264PrefixUnix = & $msysBash -lc "cygpath -u '$x264Prefix'"
+$x264PrefixUnix = & $msysBash -c "cygpath -u '$x264Prefix'"
 
 $pcFile = Join-Path $x264Prefix "lib\pkgconfig\x264.pc"
 if (-not (Test-Path $pcFile)) {
@@ -50,7 +63,7 @@ CC=cl ./configure --enable-static --disable-cli --disable-asm --prefix='$x264Pre
 make -j"`$(nproc)"
 make install
 "@
-    & $msysBash -lc $buildScript
+    & $msysBash -c $buildScript
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Building static libx264 failed."
         exit 1
@@ -59,11 +72,7 @@ make install
     Write-Host "== Static libx264 already built at $x264Prefix, skipping =="
 }
 
-$env:PKG_CONFIG_PATH = & $msysBash -lc "cygpath -m '$x264Prefix/lib/pkgconfig'"
-
-# ffmpeg-sys-next's build script needs sh.exe/make/nasm/pkgconf from MSYS2 on PATH, alongside the
-# MSVC toolchain (cl.exe etc.) that must already be on PATH from the Developer shell.
-$env:PATH = "$Msys2Dir\usr\bin;$env:PATH"
+$env:PKG_CONFIG_PATH = & $msysBash -c "cygpath -m '$x264Prefix/lib/pkgconfig'"
 
 # PKG_CONFIG_PATH alone only controls FFmpeg's own build of libavcodec/etc; it doesn't stop the
 # final link of the app binary from preferring some other x264 lib (e.g. a vcpkg-installed one)
