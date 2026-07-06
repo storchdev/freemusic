@@ -160,18 +160,25 @@ Not vendored, must be present on the machine:
   without it winit panics at startup with "Library libxkbcommon-x11.so could not be loaded",
   it does not silently fall back further.
 
-**Dynamic-link FFmpeg version pin (matters most on Windows):** `ffmpeg-next 8.1.0` (pinned in
-`crates/{video-pipeline,export,audio-playback}/Cargo.toml`) wraps FFmpeg **7.x**'s C API, not 8.x
-— despite the crate's own version number. FFmpeg 8.0 removed several `AVCodec`/`AVFrame`/
-`AVPacket` fields this crate still reads directly (`sample_fmts`, `pix_fmts`,
-`supported_framerates`, `ch_layouts`, plus a couple of enum variants), so building the dynamic-link
-(non-`static-ffmpeg`) path against an FFmpeg 8.x dev package fails with a wall of
-`E0609`/`E0425`/`E0004` errors about those fields/variants not existing. This bit a Windows user
-who grabbed BtbN's `ffmpeg-master-latest-win64-gpl-shared.zip` (BtbN's "master" builds track
-FFmpeg git master, which is already past the 8.0 release). The README's Windows dev-setup section
-now points at `ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip` instead — a BtbN release asset pinned
-to FFmpeg 7.1 — which still has these fields. If `ffmpeg-next`/`ffmpeg-sys-next` are ever bumped to
-a version that supports FFmpeg 8's API, this pin and the README note can be revisited.
+**Dynamic-link FFmpeg version pin and vendored patch (matters most on Windows):** `ffmpeg-next
+8.1.0` (pinned in `crates/{video-pipeline,export,audio-playback}/Cargo.toml`) wraps FFmpeg **7.x**'s
+C API. The upstream `n7.1-latest` BtbN builds compile FFmpeg without the deprecated `AVCodec` struct
+fields (`sample_fmts`, `pix_fmts`, `supported_framerates`, `ch_layouts`) — bindgen omits those fields
+from the generated Rust struct — which caused `ffmpeg-next 8.1.0` to fail to compile with `E0609`/
+`E0425`/`E0004` errors on these fields and on several `AVCodecID` enum variants added in 7.1.5.
+
+The fix lives in `vendor/ffmpeg-next/` — a vendored copy of `ffmpeg-next 8.1.0` with three targeted
+patches applied: (1) `src/codec/video.rs` + `src/codec/audio.rs`: return `None` from the methods
+that accessed those deprecated struct fields (the deprecated API is no longer reachable anyway);
+(2) `src/codec/id.rs`: map `V410`/`V308`/`V408` codec IDs to `AV_CODEC_ID_NONE` in the forward
+direction and add a `_ => Id::None` wildcard to the reverse match for codec IDs added in 7.1.5+;
+(3) `src/util/frame/side_data.rs` + `src/codec/packet/side_data.rs`: add `_ => todo!()` wildcard
+arms for enum variants added in 7.1.5+ that the crate doesn't know about yet. The workspace
+`Cargo.toml` has `[patch.crates-io] ffmpeg-next = { path = "vendor/ffmpeg-next" }` to use this
+patched copy. `crates/mp4-encoder/src/audio.rs` was also updated to not access the deprecated
+fields directly (hardcoded `AV_SAMPLE_FMT_FLTP` + 44100 Hz for AAC, which are its only supported
+values anyway). If `ffmpeg-next` is ever bumped to a version that handles this, remove the vendor
+directory and the patch entry.
 
 ### Static/cross-platform release builds
 

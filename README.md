@@ -69,11 +69,11 @@ cargo run --bin app -- project.fmproj.ron mystyle.fmstyle.ron        # or open a
    extract it, e.g. to `C:\ffmpeg` (it already has the `lib\`+`include\` layout `ffmpeg-sys-next`
    expects).
    **Don't grab `ffmpeg-master-latest-*`**: that tracks FFmpeg's git master, which is already past
-   the FFmpeg 8.0 release and has dropped several `AVCodec`/`AVFrame`/`AVPacket` fields
-   (`sample_fmts`, `pix_fmts`, `supported_framerates`, `ch_layouts`, etc.) that the `ffmpeg-next
-   8.1.0` crate this project pins still reads directly — building against it fails with a wall of
-   `E0609`/`E0425`/`E0004` errors about those fields/enum variants not existing. FFmpeg 7.1 still
-   has them.
+   the FFmpeg 8.0 release and has removed several `AVCodec`/`AVFrame`/`AVPacket` enum variants
+   from the public API — building against it fails with `E0609`/`E0425`/`E0004` errors. The
+   `n7.1-latest` build (FFmpeg 7.x) is the supported target; this repo vendors a patched copy of
+   `ffmpeg-next 8.1.0` (in `vendor/ffmpeg-next/`) that handles the subset of the deprecated API
+   removed in newer BtbN builds.
 4. Set `FFMPEG_DIR=C:\ffmpeg`, then `cargo build --release` (no extra features — this is the
    default dynamic-linking path, not the static one below):
    ```powershell

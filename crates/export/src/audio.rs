@@ -69,9 +69,23 @@ pub fn decode_all(path: &Path, target_sample_rate: i32) -> Result<DecodedAudio, 
      -> Result<(), String> {
         while decoder.receive_frame(raw).is_ok() {
             let mut resampled = AudioFrame::empty();
-            resampler
-                .run(raw, &mut resampled)
-                .map_err(|err| format!("audio resample error: {err}"))?;
+            if resampler.run(raw, &mut resampled).is_err() {
+                // Frame format differs from stream header (common with iPhone MOV/AAC).
+                // Reinitialize from the actual frame properties and retry.
+                *resampler = ResamplingContext::get(
+                    raw.format(),
+                    raw.channel_layout(),
+                    raw.rate(),
+                    Sample::F32(Type::Planar),
+                    ffmpeg::ChannelLayout::STEREO,
+                    target_sample_rate as u32,
+                )
+                .map_err(|err| format!("audio resample reinit error: {err}"))?;
+                resampled = AudioFrame::empty();
+                resampler
+                    .run(raw, &mut resampled)
+                    .map_err(|err| format!("audio resample error: {err}"))?;
+            }
             left.extend_from_slice(resampled.plane::<f32>(0));
             right.extend_from_slice(resampled.plane::<f32>(1));
         }

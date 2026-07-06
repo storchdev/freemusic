@@ -41,34 +41,16 @@ pub fn new_audio_streams(
 
     let mut codec_ctx = codec.context();
 
-    let codec_ptr = codec.as_ptr();
     let codec_ctx_ptr = codec_ctx.as_ptr();
 
     {
-        let sample_fmts = unsafe { (*codec_ptr).sample_fmts };
-
         unsafe {
-            (*codec_ctx_ptr).sample_fmt = if sample_fmts.is_null() {
-                AVSampleFormat::AV_SAMPLE_FMT_FLTP
-            } else {
-                *(*codec_ptr).sample_fmts
-            };
-
+            // Deprecated AVCodec fields (sample_fmts, supported_samplerates) are not
+            // accessible in FFmpeg builds that strip the deprecated API. AAC always uses
+            // AV_SAMPLE_FMT_FLTP and supports 44100 Hz, so hardcode those.
+            (*codec_ctx_ptr).sample_fmt = AVSampleFormat::AV_SAMPLE_FMT_FLTP;
             (*codec_ctx_ptr).bit_rate = 64000;
             (*codec_ctx_ptr).sample_rate = 44100;
-
-            let supported_samplerates = (*codec_ptr).supported_samplerates;
-
-            if !supported_samplerates.is_null() {
-                (*codec_ctx_ptr).sample_rate = *supported_samplerates.offset(0);
-                let mut i = 0;
-                while *supported_samplerates.offset(i) != 0 {
-                    if *supported_samplerates.offset(i) == 44100 {
-                        (*codec_ctx_ptr).sample_rate = 44100;
-                    }
-                    i += 1;
-                }
-            }
         }
 
         let stereo_layout = AVChannelLayout {
