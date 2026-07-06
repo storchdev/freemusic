@@ -47,7 +47,15 @@ if (-not (Test-Path $msysBash)) {
 # disguised as a compiler failure. Putting MSYS2 last means cl.exe/link.exe from the Developer
 # shell are always found first, and MSYS2 is only consulted for tools (sh, make, nasm, pkgconf)
 # that don't exist in the Developer shell's own PATH at all.
-$env:PATH = "$env:PATH;$Msys2Dir\usr\bin"
+#
+# Strip out any pre-existing copy of this MSYS2 bin dir first: PowerShell's $env:PATH changes
+# persist for the life of the shell process, so re-running this script in a session where an
+# older/differently-ordered copy already got prepended (e.g. from a previous version of this
+# script) would otherwise leave that stale, wrongly-ordered entry in place ahead of anything we
+# add here, silently reintroducing the exact link.exe shadowing this is meant to prevent.
+$msysBinDir = Join-Path $Msys2Dir "usr\bin"
+$pathEntries = $env:PATH -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ne $msysBinDir.TrimEnd('\')) }
+$env:PATH = ($pathEntries + $msysBinDir) -join ';'
 
 # Deliberately `-c`, not `-lc` (login shell): a login shell re-sources MSYS2's own /etc/profile,
 # which resets PATH/INCLUDE/LIB/LIBPATH and can silently drop the vcvars environment this script's
@@ -104,6 +112,15 @@ if ((Test-Path $libx264) -and -not (Test-Path $x264Lib)) {
 # this flag onto every rustc invocation.
 $x264LibDir = Join-Path $x264Prefix "lib"
 $env:RUSTFLAGS = "-L native=$x264LibDir -l static=x264"
+
+# ffmpeg-sys-next's build.rs unconditionally adds `-march=native -mtune=native` to FFmpeg's
+# configure via --extra-cflags, with no awareness of MSVC — cl.exe doesn't understand that
+# GCC-style syntax at all and fails configure's C-compiler smoke test with "Command line error
+# D8043 : unknown option '-mtune=native'" (surfaced upstream as the more generic-sounding
+# "cl.exe is unable to create an executable file"). Setting these two env vars to empty strings
+# is the crate's own documented highest-priority override to omit both flags entirely.
+$env:FFMPEG_MARCH = ""
+$env:FFMPEG_MTUNE = ""
 
 Write-Host "== Building app (release, static-ffmpeg feature) =="
 cargo build --release -p app --features static-ffmpeg
