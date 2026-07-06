@@ -13,3 +13,10 @@ ffmpeg = { package = "ffmpeg-sys-next", version = "8", default-features = false,
     "swresample",
 ] }
 libc = "0.2"
+
+[features]
+# Vendors and statically compiles FFmpeg (plus libx264, for the H.264 encoder this crate prefers
+# by name in `video.rs`) from source at build time instead of linking the system's FFmpeg dev
+# libraries. Used for release binaries so end users don't need FFmpeg installed. See the
+# "Static/cross-platform builds" section of the top-level README for prerequisites per OS.
+static-ffmpeg = ["ffmpeg/build", "ffmpeg/build-lib-x264", "ffmpeg/build-license-gpl"]

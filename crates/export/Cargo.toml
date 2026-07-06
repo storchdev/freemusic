@@ -12,3 +12,7 @@ project = { version = "0.1.0", path = "../project" }
 render = { version = "0.1.0", path = "../render" }
 video-pipeline = { version = "0.1.0", path = "../video-pipeline" }
 wgpu = "29.0"
+
+[features]
+# See crates/mp4-encoder/Cargo.toml for what this does and why.
+static-ffmpeg = ["ffmpeg-next/build", "mp4-encoder/static-ffmpeg"]

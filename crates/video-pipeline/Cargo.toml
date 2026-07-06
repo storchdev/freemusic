@@ -6,3 +6,7 @@ license.workspace = true
 
 [dependencies]
 ffmpeg-next = "8.1.0"
+
+[features]
+# See crates/mp4-encoder/Cargo.toml for what this does and why.
+static-ffmpeg = ["ffmpeg-next/build"]

@@ -1,0 +1,153 @@
+name: Release
+
+# Builds standalone binaries (FFmpeg + libx264 statically linked in, via the `static-ffmpeg`
+# cargo feature — see the "Static/cross-platform builds" section of the README) for Linux,
+# Windows, and macOS, and attaches them to a GitHub Release.
+#
+# Trigger with either:
+#   - a pushed tag matching `v*` (e.g. `v0.1.0`) -> creates/updates a real GitHub Release
+#   - the Actions tab's "Run workflow" button -> builds and uploads artifacts without touching
+#     Releases, useful for testing this workflow itself
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: app
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: app.exe
+          - name: macos-x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+            bin: app
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            bin: app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # --- Linux ---
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            nasm pkg-config clang llvm libxkbcommon-x11-dev \
+            libvulkan-dev libasound2-dev
+          # Deliberately NOT installing libx264-dev: if a system libx264.so exists anywhere on
+          # the linker's default search path, it silently wins over our static libx264.a below
+          # (search-path order, not "prefer static") and the "static" binary quietly ends up
+          # dynamically linked against it. See the README's "Static/cross-platform builds"
+          # section for how this was found.
+
+      - name: Build libx264 (static, from source)
+        if: runner.os == 'Linux'
+        run: |
+          git clone --depth 1 https://code.videolan.org/videolan/x264.git /tmp/x264
+          cd /tmp/x264
+          ./configure --enable-static --disable-cli --enable-pic --prefix="$HOME/x264-static"
+          make -j"$(nproc)"
+          make install
+          echo "PKG_CONFIG_PATH=$HOME/x264-static/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      # --- macOS ---
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install nasm
+        # Deliberately NOT `brew install x264` — see the Linux step above for why.
+
+      - name: Build libx264 (static, from source)
+        if: runner.os == 'macOS'
+        run: |
+          git clone --depth 1 https://code.videolan.org/videolan/x264.git /tmp/x264
+          cd /tmp/x264
+          ./configure --enable-static --disable-cli --prefix="$HOME/x264-static"
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+          echo "PKG_CONFIG_PATH=$HOME/x264-static/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      # --- Windows ---
+      - name: Set up MSYS2 (provides sh/make/nasm/pkgconf for building libx264 and FFmpeg)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: true
+          install: make nasm diffutils pkgconf
+          path-type: inherit
+
+      - name: Set up MSVC dev environment (cl.exe/lib.exe/link.exe)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build libx264 (static, from source, MSVC)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          git clone --depth 1 https://code.videolan.org/videolan/x264.git /tmp/x264
+          cd /tmp/x264
+          CC=cl ./configure --enable-static --disable-cli --disable-asm --prefix="$HOME/x264-static"
+          make -j"$(nproc)"
+          make install
+          echo "PKG_CONFIG_PATH=$(cygpath -m "$HOME/x264-static/lib/pkgconfig")" >> "$GITHUB_ENV"
+
+      - name: Build (static-ffmpeg)
+        if: runner.os != 'Windows'
+        run: cargo build --release -p app --features static-ffmpeg --target ${{ matrix.target }}
+
+      # Run inside the MSYS2 shell so ffmpeg-sys-next's build script can find `sh.exe`/`make`/
+      # `nasm` on PATH; `msvc-dev-cmd` above exported the MSVC env vars into $GITHUB_ENV, which
+      # this shell inherits too.
+      - name: Build (static-ffmpeg, Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: cargo build --release -p app --features static-ffmpeg --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          src="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            dest="dist/freemusic-${{ matrix.name }}.exe"
+          else
+            dest="dist/freemusic-${{ matrix.name }}"
+          fi
+          cp "$src" "$dest"
+          chmod +x "$dest" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: freemusic-${{ matrix.name }}
+          path: dist/*
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          draft: true

@@ -160,6 +160,35 @@ Not vendored, must be present on the machine:
   without it winit panics at startup with "Library libxkbcommon-x11.so could not be loaded",
   it does not silently fall back further.
 
+### Static/cross-platform release builds
+
+Added a `static-ffmpeg` cargo feature (on `app`, `export`, `video-pipeline`, `audio-playback`,
+`mp4-encoder`) that vendors and statically links FFmpeg (via `ffmpeg-sys-next`'s `build` feature)
+plus `libx264` (since `mp4-encoder` prefers the `libx264` encoder by name), so release binaries
+run on machines with no FFmpeg installed — this is what lets Windows users get a working `.exe`
+without setting up a Rust/FFmpeg dev environment. `.github/workflows/release.yml` builds this for
+Linux/Windows/macOS (x86_64 + arm64) on a pushed `v*` tag or manual dispatch. Full prerequisites
+and rationale are in the README's "Static/cross-platform builds" section — read that before
+touching this, since the one non-obvious gotcha is load-bearing:
+
+**Never let a system/Homebrew/apt/vcpkg-shared `libx264` exist alongside the static one.**
+`ffmpeg-sys-next` links `libx264` by bare name (`-lx264`), not by embedding it, and if any
+`libx264.so`/dylib is reachable on the linker's default search path, the linker silently prefers
+it over a static `libx264.a` passed via an explicit `-L` dir — this is search-*order* behavior,
+not a "static always wins" rule, and neither cargo nor the linker warns about it. This was found
+by building the exact same `static-ffmpeg` build in a throwaway Docker container (`ubuntu:24.04`,
+nothing preinstalled) vs. this dev machine, which already had Arch's `x264` package installed for
+unrelated reasons: the container binary came out with zero FFmpeg/x264 dynamic deps (`ldd` showed
+only libc/libm/libgcc_s/libasound), while the exact same build on this machine still linked
+`libx264.so.165` — no error, no warning, just a silently-not-actually-static binary. The fix is to
+always build `libx264` from source as a static-only archive (`--enable-static`, never
+`--enable-shared`) and point `PKG_CONFIG_PATH` at it, so there's no shared alternative anywhere
+for the linker to find; see the README for the exact commands per OS. The Linux/macOS steps in
+`release.yml` are locally verified this way (fresh container, confirmed static via `ldd`); the
+Windows leg (MSYS2 + `ilammy/msvc-dev-cmd` + building `libx264` with `CC=cl` inside the MSYS2
+shell) follows the same documented pattern but could not be tested from this Linux sandbox — if
+it breaks in CI, that's the first thing to check.
+
 ## Architecture
 
 ### Workspace layout (current)

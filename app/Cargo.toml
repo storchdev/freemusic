@@ -18,3 +18,15 @@ rfd = "0.17"
 video-pipeline = { version = "0.1.0", path = "../crates/video-pipeline" }
 wgpu = "29.0"
 winit = "0.30.13"
+
+[features]
+# Builds a self-contained binary with FFmpeg (incl. libx264) vendored and statically linked in,
+# so it runs on a machine with no FFmpeg installed. See the "Static/cross-platform builds"
+# section of the top-level README for prerequisites per OS. Used by the release CI workflow
+# (.github/workflows/release.yml); local dev builds should keep using the default (dynamically
+# linked against the system's FFmpeg) since it's much faster to compile.
+static-ffmpeg = [
+    "video-pipeline/static-ffmpeg",
+    "export/static-ffmpeg",
+    "audio-playback/static-ffmpeg",
+]
