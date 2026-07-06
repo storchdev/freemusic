@@ -27,27 +27,26 @@ Cross-platform (Windows/macOS/Linux), and a free alternative to tools like SeeMu
 
 ## Building
 
-There are two different things "building this project" can mean, and they need different setups:
+There are two different things "building this project" can mean:
 
-- **Developing/running it yourself** (below): dynamically link against an FFmpeg you already have
-  (or download) — fast to compile, no third-party build tools beyond the FFmpeg package itself.
-  The resulting binary only runs on machines with those same FFmpeg libraries/DLLs available.
-- **Producing a standalone release binary** (see "Static/cross-platform builds" further down):
-  vendor and statically link FFmpeg + libx264 so the binary runs standalone on any machine, with
-  no FFmpeg install step for whoever downloads it. Slower to compile, more build-time tools, and
-  the whole point of the exercise is that *you* eat that cost so users don't have to. This is what
-  `.github/workflows/release.yml` uses to build the binaries attached to GitHub Releases — if you
-  just want a working `.exe`/binary and aren't modifying the code, download one from
-  [Releases](../../releases) instead of building anything at all.
+- **Developing/running it yourself**: dynamically link against an FFmpeg you already have (or
+  download) — fast to compile, no third-party build tools beyond the FFmpeg package itself. The
+  resulting binary only runs on machines with those same FFmpeg libraries/DLLs available.
+- **Producing a standalone release binary**: vendor and statically link FFmpeg + libx264 so the
+  binary runs standalone on any machine, with no FFmpeg install step for whoever downloads it. If
+  you just want a working `.exe`/binary and aren't modifying the code, download one from
+  [Releases](../../releases) instead of building anything at all. Otherwise, see
+  **[`docs/building.md`](docs/building.md)** for the Windows dev setup, the static-linking
+  gotchas, the `scripts/build-static-*` helper scripts, and how the GitHub Releases binaries get
+  built.
 
-### For development (dynamic linking)
-
-System dependencies (not vendored):
+System dependencies for development (not vendored):
 
 - FFmpeg dev libraries (`libavcodec`, `libavformat`, `libavutil`, `libswscale`, `libswresample`)
   plus `clang`/`llvm` (needed by `ffmpeg-sys-next`'s bindgen step)
 - A Vulkan loader and driver (or another `wgpu`-supported backend)
 - `libxkbcommon-x11` if running under X11 (native Wayland doesn't need it)
+- **Windows** has no package manager for these — see `docs/building.md` for the setup there.
 
 ```sh
 cargo build --release
@@ -55,106 +54,6 @@ cargo run --bin app -- [video-file] [midi-file]                      # both args
 cargo run --bin app -- project.fmproj.ron                            # or open a saved project directly
 cargo run --bin app -- project.fmproj.ron mystyle.fmstyle.ron        # or open a project and a style file
 ```
-
-**Windows** has no package manager for FFmpeg dev libraries, so the easiest path there is:
-
-1. Install [Rust](https://rustup.rs/) (defaults to the MSVC toolchain) and
-   [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) (C++ workload, for
-   the linker) and LLVM (`winget install LLVM.LLVM`, for `ffmpeg-sys-next`'s bindgen step).
-2. A Vulkan driver — normally already present via your GPU driver.
-3. Download a prebuilt FFmpeg **shared** dev package from
-   [BtbN/FFmpeg-Builds releases](https://github.com/BtbN/FFmpeg-Builds/releases) and extract it,
-   e.g. to `C:\ffmpeg` (it already has the `lib\`+`include\` layout `ffmpeg-sys-next` expects).
-   Any BtbN shared build (7.x or 8.x) should work — this repo vendors a patched copy of
-   `ffmpeg-next 8.1.0` (in `vendor/ffmpeg-next/`) that handles the deprecated API fields and enum
-   variants that BtbN builds omit (BtbN compiles with `--disable-deprecated`). If you already have
-   an FFmpeg 8.x SDK on your machine, point `FFMPEG_DIR` at it directly.
-4. Set `FFMPEG_DIR=C:\ffmpeg`, then `cargo build --release` (no extra features — this is the
-   default dynamic-linking path, not the static one below):
-   ```powershell
-   $env:FFMPEG_DIR = "C:\ffmpeg"    # PowerShell
-   ```
-   ```cmd
-   set FFMPEG_DIR=C:\ffmpeg         :: cmd.exe
-   ```
-5. Copy the DLLs from that package's `bin\` folder next to `target\release\app.exe` (or add that
-   `bin\` to `PATH`) so the binary can find them at runtime.
-
-No MSYS2, no compiling FFmpeg/libx264 from source, no MSVC-toolchain-in-a-shell setup — that's all
-only needed for the static/release path below, which exists to save *end users* from doing any of
-this, not developers building their own copy.
-
-### Static/cross-platform builds (standalone release binaries)
-
-By default `cargo build` dynamically links against FFmpeg dev libraries already installed on
-your system (see above) — fastest to compile, but the resulting binary only runs on machines that
-also have those libraries installed.
-
-Passing `--features static-ffmpeg` instead vendors FFmpeg's source (via `ffmpeg-sys-next`'s
-`build` feature) and compiles + statically links it — including `libx264`, since the exporter
-prefers the `libx264` encoder by name for MP4 output — straight into the binary. The result runs
-standalone on any machine, which is what release binaries (see below) are built with. It's much
-slower to compile (FFmpeg + libx264 get built from source on every clean build) and needs a few
-more build-time tools than the dynamic path:
-
-```sh
-cargo build --release -p app --features static-ffmpeg
-```
-
-FFmpeg's own configure step links `libx264` in by *name* (`-lx264`), not by embedding it — so it
-still needs a `libx264` it can find at final-link time, vendored FFmpeg or not. **Never install a
-system/Homebrew/apt `libx264`/`x264` package for this** — if a `libx264.so`/dylib is anywhere on
-the linker's default search path, the linker silently prefers it over a static `libx264.a` sitting
-in an explicit `-L` directory (search order, not "prefer static" wins), so the "statically linked"
-binary quietly ends up dynamically depending on that shared lib after all, with no warning from
-cargo or the linker. This was confirmed the hard way: the same build that came out fully static in
-a clean container (no system `libx264` present) still linked `libx264.so` on a dev machine that
-happened to already have the `x264` package installed. Always build `libx264` from source yourself
-as a static-only archive (`--enable-static`, no `--enable-shared`) and point `PKG_CONFIG_PATH` at
-it, so no shared alternative exists anywhere for the linker to prefer:
-
-```sh
-git clone --depth 1 https://code.videolan.org/videolan/x264.git
-cd x264
-./configure --enable-static --disable-cli --enable-pic --prefix="$HOME/x264-static"
-make -j"$(nproc)" && make install
-export PKG_CONFIG_PATH="$HOME/x264-static/lib/pkgconfig"
-```
-
-Per-OS prerequisites for the `static-ffmpeg` feature (on top of the Vulkan/`libxkbcommon-x11`
-requirements above, which are unrelated to FFmpeg and still apply, and the from-source `libx264`
-build above, which applies to every OS):
-
-- **Linux**: `nasm`, `pkg-config`, `clang`, `make`/`build-essential` (to build `libx264` and
-  FFmpeg itself).
-- **macOS**: Xcode Command Line Tools (`clang`, `make`), plus `nasm` from Homebrew
-  (`brew install nasm`) — again, don't `brew install x264`, build it from source per above.
-- **Windows**: this is the fussiest platform, since FFmpeg's build system is a `sh`/`configure`/
-  `make` script, not something MSVC or `cargo` understands natively:
-  - [MSYS2](https://www.msys2.org/), with `make`, `nasm`, `diffutils`, and `pkgconf` installed via
-    its `pacman` (`pacman -S make nasm diffutils pkgconf`) — its `usr/bin` needs to be on `PATH`
-    so `ffmpeg-sys-next`'s build script can find `sh.exe`.
-  - Visual Studio Build Tools (the MSVC C++ toolchain), with its environment set up (`cl.exe`,
-    `lib.exe`, `link.exe` on `PATH` — e.g. via a "Developer Command Prompt", or the
-    `ilammy/msvc-dev-cmd` GitHub Action in CI) *before* running `cargo build`. FFmpeg's configure
-    script auto-detects the MSVC toolchain from `rustc`'s target (`--toolchain=msvc`), so no extra
-    flags are needed once both of the above are on `PATH`.
-  - `libx264` built statically for MSVC — via the same MSYS2 shell (`sh`/`make`/`nasm` are all
-    already there), *not* vcpkg: unlike the from-source build above, vcpkg's `x264` port has no
-    shared-lib variant to worry about only if you use its `x64-windows-static` triplet
-    specifically, which is easy to get wrong; building it the same way as the other two platforms
-    keeps the recipe (and the "never let a shared libx264 exist" invariant) identical everywhere.
-
-  `.github/workflows/release.yml` (below) automates all of this for CI; it's the easiest
-  reference for the exact commands if you're setting this up by hand.
-
-### Release binaries
-
-`.github/workflows/release.yml` builds standalone (`static-ffmpeg`) binaries for Linux
-(x86_64), Windows (x86_64), and macOS (x86_64 and arm64) and attaches them to a GitHub Release.
-It runs on any pushed tag matching `v*` (e.g. `v0.1.0`), or manually via the Actions tab's
-"Run workflow" button (`workflow_dispatch`), which is useful for testing the build without
-cutting a real release.
 
 See `CLAUDE.md` and `docs/` for a full architecture writeup, including the phased build history
 and the design decisions behind each subsystem.

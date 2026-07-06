@@ -191,6 +191,27 @@ Linux/Windows/macOS (x86_64 + arm64) on a pushed `v*` tag or manual dispatch. Fu
 and rationale are in the README's "Static/cross-platform builds" section — read that before
 touching this, since the one non-obvious gotcha is load-bearing:
 
+`scripts/build-static-linux.sh` and `scripts/build-static-windows.ps1` let a developer reproduce
+the CI build locally (each only builds for the OS it's run on, no cross-compiling): both build
+static `libx264` into a cached prefix (`~/x264-static`, skipped on repeat runs), point
+`PKG_CONFIG_PATH` at it, then run `cargo build --release -p app --features static-ffmpeg` and
+copy the binary into `dist/`. The Windows script needs to run from a Developer PowerShell (for
+`cl.exe`/`lib.exe`/`link.exe`) and needs MSYS2 installed for `sh`/`make`/`nasm`/`pkgconf`; the
+Linux script checks for `nasm`/`pkg-config`/`clang`/`make` up front and fails fast with a clear
+message if any are missing. Neither script has a macOS counterpart yet — the release workflow's
+macOS steps are the reference until one is added. The Linux script also runs an `ldd` check after
+building and warns (not fails) if the binary still dynamically links FFmpeg/x264, to catch the
+search-order gotcha described next.
+
+Unlike the CI runners, a dev machine may already have a system `libx264` installed (this is
+exactly how the gotcha below was first found), so both scripts additionally set
+`RUSTFLAGS="-L native=<x264-static>/lib -l static=x264"` before invoking `cargo build`. `-l
+static=x264` isn't just another search path — it tells rustc the link kind must be a static
+archive, so it errors out rather than silently accepting a shared `.so`/import lib, closing the
+loophole described next regardless of what else is installed on the machine. `PKG_CONFIG_PATH`
+alone doesn't do this: it only steers FFmpeg's own build of `libavcodec`/etc., not the final
+link of the `app` binary itself.
+
 **Never let a system/Homebrew/apt/vcpkg-shared `libx264` exist alongside the static one.**
 `ffmpeg-sys-next` links `libx264` by bare name (`-lx264`), not by embedding it, and if any
 `libx264.so`/dylib is reachable on the linker's default search path, the linker silently prefers
