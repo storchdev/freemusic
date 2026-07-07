@@ -8,8 +8,6 @@
 //    stripe, and an optional outer glow — Phase C of the `.fmstyle.ron` milestone. All three are
 //    no-ops when their respective flag is 0, which is exactly what `Style::from_legacy` produces,
 //    so the default (no imported style) look is pixel-identical to Phase B.
-//  - the note's own fill goes white-hot as glow brightness climbs (`hot_color`, same concept
-//    `barrier.wgsl` uses for its opaque core) — post-Phase-K.
 //  - the halo itself is an additive multi-layer corona (Phase M), rendered by a second pipeline
 //    (`fs_glow`) sharing this file's `vs_main` — see `pipeline.rs`'s module doc comment and
 //    `barrier.wgsl`'s equivalent split for the full rationale.
@@ -41,27 +39,13 @@ struct StyleUniform {
     sheen_params: vec4<f32>,
     // xyz = halo color (linear), w unused.
     glow_color: vec4<f32>,
-    // x = glow brightness (the white-hot-core knob, now used only for the note's own fill), yzw unused.
+    // x = glow brightness (scales the corona's own additive light in `fs_glow`), yzw unused.
     glow_params: vec4<f32>,
     // Additive corona layers: x = layer[0].amplitude, y = layer[0].sigma_px, z = layer[1].amplitude,
     // w = layer[1].sigma_px.
     glow_layers_ab: vec4<f32>,
     // x = layer[2].amplitude, y = layer[2].sigma_px, z = precomputed glow margin (px), w unused.
     glow_layers_c: vec4<f32>,
-}
-
-// Desaturates `base` toward pure white as `brightness` climbs past 1.0 — see `barrier.wgsl`'s
-// identical copy for the full rationale (duplicated verbatim, each shader module is its own
-// standalone WGSL translation unit). `brightness <= 1.0` is a plain dimmer; `brightness == 1.0` is
-// an exact no-op. Since Phase M this is only used for the note's own opaque fill — the corona is
-// additive and whitens for free via saturation.
-fn hot_color(base: vec3<f32>, brightness: f32) -> vec3<f32> {
-    let b = max(brightness, 0.0);
-    if (b <= 1.0) {
-        return base * b;
-    }
-    let whiteness = 1.0 - 1.0 / b;
-    return mix(base, vec3<f32>(1.0), whiteness);
 }
 
 @group(0) @binding(0)
@@ -198,19 +182,24 @@ fn fill_color(in: VertexOutput) -> vec3<f32> {
     return color;
 }
 
-// Opaque core: the note's own fill (solid/gradient + optional sheen), going white-hot only in a
-// thin rim near the note's edge as glow brightness climbs — deep interior pixels keep their true
-// fill color untouched (unchanged from pre-Phase-M when glow is disabled — `rim_weight` is 0 there
-// regardless, and `hot_color` at `brightness == 1.0` is a no-op anyway).
+// Opaque core: the note's own fill (solid/gradient + optional sheen) — a note with `glow:
+// Some(..)` blends a thin rim near its own edge toward the corona's own color (never toward
+// white — an earlier "white-hot rim" that whitened the fill itself was removed because it read as
+// an unwanted artifact) so the fill's true color hands off into the corona's color continuously
+// instead of meeting it at a hard seam. Interior pixels (more than a few px from the edge) keep
+// their true fill color untouched, same as when `glow` is unset.
 //
 // `dist` saturates at 0 for the whole interior more than `in.radius` px from the note's true edge
 // (see its doc comment), so `in.radius - d` is a distance-from-edge measure that's exact within
-// that `radius`-px band and clamped (not extrapolated) beyond it — good enough for a rim that's
-// meant to be a few pixels wide. Falling off over the corona's own tightest layer sigma
-// (`glow_layers_ab.y`) makes the rim's brightest point (right at the edge, weight 1) hand off
-// continuously into `fs_glow`'s corona (also weight/strength 1 there) instead of the pre-fix look
-// of a flat whitened interior meeting a sharply different-colored halo at a 1px seam, which read
-// as an unwanted hard "border" ring rather than smooth radiance.
+// that `radius`-px band and clamped (not extrapolated) beyond it. `Glow::edge_blend_px` (falling
+// back to `glow_layers_ab.y`, the corona's own tightest layer sigma, when `0.0`) sets how far this
+// blend reaches inward — independent of the corona's own reach, so the rim's smoothness can be
+// tuned without changing the corona itself. The rim's *target* color is the corona's own strength
+// at `d_past_edge == 0` (the sum of all three layers' amplitudes, times brightness, clamped to a
+// displayable range) rather than just `color` on its own — matching `fs_glow`'s actual computed
+// brightness at that point instead of a dimmer flat color, which previously read as a visible dark
+// gap between the rim and the corona whenever `brightness`/`amplitude` pushed the corona brighter
+// than plain `color`.
 @fragment
 fn fs_core(in: VertexOutput) -> @location(0) vec4<f32> {
     let d: f32 = dist(in.position.xy, in.note_pos, in.size, in.radius);
@@ -219,9 +208,17 @@ fn fs_core(in: VertexOutput) -> @location(0) vec4<f32> {
     var out_color = fill_color(in);
     if style_uniform.fill_and_flags.z > 0.5 {
         let inward_dist = max(in.radius - d, 0.0);
-        let rim_sigma = max(style_uniform.glow_layers_ab.y, 0.5);
+        let edge_blend_px = style_uniform.glow_params.y;
+        let rim_sigma_source = select(style_uniform.glow_layers_ab.y, edge_blend_px, edge_blend_px > 0.0);
+        let rim_sigma = max(rim_sigma_source, 0.5);
         let rim_weight = exp(-inward_dist / rim_sigma);
-        out_color = mix(out_color, hot_color(out_color, style_uniform.glow_params.x), rim_weight);
+        let total_amplitude = style_uniform.glow_layers_ab.x + style_uniform.glow_layers_ab.z + style_uniform.glow_layers_c.x;
+        let rim_target = clamp(
+            style_uniform.glow_color.rgb * total_amplitude * style_uniform.glow_params.x,
+            vec3<f32>(0.0),
+            vec3<f32>(1.0)
+        );
+        out_color = mix(out_color, rim_target, rim_weight);
     }
 
     return vec4<f32>(clamp(out_color, vec3<f32>(0.0), vec3<f32>(1.0)), base_alpha);

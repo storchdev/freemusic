@@ -88,9 +88,11 @@ struct StyleUniform {
     sheen_params: [f32; 4],
     /// xyz = halo color (linear), w unused (was glow radius pre-Phase-M).
     glow_color: [f32; 4],
-    /// x = glow brightness (the "white-hot core" knob, now used only for the note's own opaque
-    /// fill — see `shader.wgsl`'s `hot_color`), yzw unused. Used to carry `Glow::intensity` too,
-    /// which was removed as a redundant axis once brightness alone drove the whole look.
+    /// x = glow brightness (scales the corona's own additive light in `fs_glow`, and the note-edge
+    /// rim's target color in `fs_core` — see that shader's comment), y = `Glow::edge_blend_px`
+    /// (`0.0` sentinel meaning "fall back to `glow_layers_ab.y`", see that field's doc comment),
+    /// zw unused. `x` used to also carry `Glow::intensity`, removed as a redundant axis once
+    /// brightness alone drove the whole look.
     glow_params: [f32; 4],
     /// Phase M additive corona layers: x = layer[0].amplitude, y = layer[0].sigma_px,
     /// z = layer[1].amplitude, w = layer[1].sigma_px.
@@ -143,6 +145,7 @@ impl StyleUniform {
                     color,
                     brightness,
                     layers,
+                    edge_blend_px,
                 }) => {
                     let [r, g, b] = srgb_to_linear(color.resolve_constant());
                     let margin = layers
@@ -152,7 +155,7 @@ impl StyleUniform {
                     (
                         1.0,
                         [r, g, b, 0.0],
-                        [*brightness, 0.0, 0.0, 0.0],
+                        [*brightness, *edge_blend_px, 0.0, 0.0],
                         [
                             layers[0].amplitude,
                             layers[0].sigma_px,

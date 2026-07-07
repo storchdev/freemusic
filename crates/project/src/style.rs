@@ -319,12 +319,22 @@ fn default_glow_layers() -> [GlowLayer; 3] {
 /// Soft outer halo around a note's silhouette (or, since Phase K, the barrier bar too — this
 /// struct is shared by `NoteLayer::glow` and `BarrierLayer::glow`). Since Phase M the halo itself
 /// is an **additive** sum of `layers` (see `GlowLayer`'s doc comment) rather than a single
-/// alpha-blended ring — this is what lets it read as light radiating from a white-hot core instead
-/// of a flat lighter color. `brightness` scales how much light the corona adds (and, on the
-/// glowing surface's own opaque fill, still drives the pre-existing `hot_color` desaturate-toward-
-/// white mix): `brightness <= 1.0` behaves as a plain dimmer, pushed past `1.0` the look reads as
-/// overexposure. `brightness = 1.0` is an exact no-op. Unlike before Phase M, `brightness` no
-/// longer widens how far the corona reaches — reach is purely `layers[i].sigma_px`-driven now.
+/// alpha-blended ring — this is what lets it read as light radiating from a bright core instead
+/// of a flat lighter color. `brightness` scales how much light the corona adds — for the barrier's
+/// own opaque bar (`BarrierLayer::glow`) it also still drives a `hot_color` desaturate-toward-white
+/// mix on the bar itself (`barrier.wgsl`'s `fs_core`). Notes (`NoteLayer::glow`) used to have that
+/// same white-hot-rim effect on their own opaque fill too; it was removed (see `shader.wgsl`'s
+/// `fs_core` comment) because whitening the note's own fill read as an unwanted artifact. What
+/// notes have instead: right at the boundary where the opaque fill meets the corona, the fill
+/// blends toward `color * (sum of layer amplitudes) * brightness` (clamped to a displayable 0–1
+/// range) — matching, not just this halo's raw color but its actual computed brightness right at
+/// the edge, which is what the corona (`fs_glow`) itself evaluates to there — over
+/// `edge_blend_px` pixels, so the fill's true color hands off continuously into the corona's
+/// color/brightness instead of meeting it at a seam. This isn't a separate toggle; it's just how
+/// `NoteLayer::glow` renders whenever `glow` is `Some(..)`. `brightness <= 1.0` behaves as a plain
+/// dimmer, pushed past `1.0` the look reads as overexposure. `brightness = 1.0` is an exact no-op.
+/// Unlike before Phase M, `brightness` no longer widens how far the corona reaches — reach is
+/// purely `layers[i].sigma_px`-driven now.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Glow {
     pub color: ColorBinding,
@@ -332,6 +342,17 @@ pub struct Glow {
     pub brightness: f32,
     #[serde(default = "default_glow_layers")]
     pub layers: [GlowLayer; 3],
+    /// Distance (px), past the glowing surface's opaque edge, over which the note-edge rim (see
+    /// this struct's own doc comment) blends from the note's true fill color to the corona's own
+    /// color/brightness — independent of `layers[0].sigma_px` (the corona's own innermost falloff
+    /// distance) so the rim's smoothness can be tuned without changing how far the corona itself
+    /// visually reaches. `0.0` (default) falls back to `layers[0].sigma_px`, matching the behavior
+    /// before this field existed. Larger values spread the handoff over more pixels (smoother,
+    /// more gradual); smaller values make it snap to the corona's color more abruptly. Renderer-
+    /// side: see `shader.wgsl`'s `fs_core` (notes) — not yet wired up for the barrier's own glow
+    /// (`barrier.wgsl`), even though `Glow` is shared between `NoteLayer`/`BarrierLayer`.
+    #[serde(default)]
+    pub edge_blend_px: f32,
 }
 
 impl Default for Glow {
@@ -340,6 +361,7 @@ impl Default for Glow {
             color: ColorBinding::default(),
             brightness: 1.0,
             layers: default_glow_layers(),
+            edge_blend_px: 0.0,
         }
     }
 }
@@ -687,6 +709,7 @@ mod tests {
             color: ColorBinding::Constant([255, 220, 120]),
             brightness: 3.0,
             layers: default_glow_layers(),
+            edge_blend_px: 0.0,
         });
         barrier.pulse = Some(Pulse {
             decay_seconds: 0.35,
@@ -756,6 +779,7 @@ mod tests {
         let glow: Glow = ron::from_str(text).unwrap();
         assert_eq!(glow.brightness, 1.0);
         assert_eq!(glow.layers, default_glow_layers());
+        assert_eq!(glow.edge_blend_px, 0.0);
     }
 
     #[test]
@@ -789,6 +813,7 @@ mod tests {
                     sigma_px: 6.0,
                 },
             ],
+            edge_blend_px: 3.0,
         };
         let text = ron::ser::to_string_pretty(&glow, ron::ser::PrettyConfig::new()).unwrap();
         assert!(

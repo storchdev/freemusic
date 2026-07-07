@@ -52,6 +52,7 @@ fn main() {
                 color: ColorBinding::Constant([120, 200, 255]),
                 brightness: 1.0,
                 layers: scaled_layers(12.0),
+                edge_blend_px: 0.0,
             }),
             roundedness: 1.0,
             fall_speed: 400.0,
@@ -73,6 +74,7 @@ fn main() {
                 color: ColorBinding::Constant([255, 220, 120]),
                 brightness: 1.0,
                 layers: scaled_layers(24.0),
+                edge_blend_px: 0.0,
             }),
             pulse: Some(Pulse {
                 decay_seconds: 0.35,
@@ -95,6 +97,7 @@ fn main() {
                 color: ColorBinding::Constant([120, 200, 255]),
                 brightness: 1.0,
                 layers: scaled_layers(18.0),
+                edge_blend_px: 0.0,
             }),
             pulse: None,
             wavy: Some(WavySpec {
@@ -223,6 +226,7 @@ fn main() {
                 color: ColorBinding::Constant([120, 200, 255]),
                 brightness: 1.4,
                 layers: scaled_layers(24.0),
+                edge_blend_px: 0.0,
             }),
             show_bar: false,
             ..BarrierLayer::default()

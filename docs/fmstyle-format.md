@@ -144,7 +144,7 @@ the note wide, blended in at `intensity`.
 ### `Glow`
 
 ```rust
-struct Glow { color: ColorBinding, brightness: f32, layers: [GlowLayer; 3] }
+struct Glow { color: ColorBinding, brightness: f32, layers: [GlowLayer; 3], edge_blend_px: f32 }
 struct GlowLayer { amplitude: f32, sigma_px: f32 }
 ```
 
@@ -153,21 +153,44 @@ inflated by `max(layer sigmas) * 5.0` pixels on every side so there are pixels t
 onto (an exact no-op when `glow` is `None` — the inflation margin is `0.0`). Shared by
 `NoteLayer::glow` and `BarrierLayer::glow` — the same struct drives both.
 
-`brightness` (default `1.0`) is the single knob for how much light the corona adds (and, on the
-glowing surface's own opaque fill, still drives the `hot_color` whitening mix) — see
-[Brightness/overexposure](#brightnessoverexposure) below. There used to be a separate `intensity`
-(halo opacity) field alongside `brightness` (**removed in Phase L**); a single `radius_px` field
-that controlled reach (**replaced by `layers` in Phase M** — see the changelog).
+`brightness` (default `1.0`) is the single knob for how much light the corona adds — see
+[Brightness/overexposure](#brightnessoverexposure) below. For the barrier's own opaque bar
+(`BarrierLayer::glow`) it also still drives a `hot_color` desaturate-toward-white mix on the bar
+itself. Notes (`NoteLayer::glow`) used to have the same white-hot-rim effect on their own opaque
+fill too — a thin edge band blended toward *white* as `brightness` climbed — but it was **removed**:
+whitening the note's own fill read as an unwanted artifact. A note with `glow: Some(..)` now instead
+blends a thin rim near its own edge toward the corona's own color/brightness (never toward white)
+— specifically `color * (layers[0].amplitude + layers[1].amplitude + layers[2].amplitude) *
+brightness`, clamped to a displayable 0–1 range, matching what `fs_glow` itself computes right at
+`d_past_edge == 0` rather than just `color` on its own. (An earlier version of this used plain
+`color * brightness` as the rim's target, which came out visibly *dimmer* than the corona whenever
+the layer amplitudes summed to more than 1 — the default is `2.6 + 1.1 + 0.38 = 4.08` — reading as
+a dark gap between the note and its glow; fixed by matching the corona's actual computed brightness
+instead.) This isn't a separate toggle, just how any `glow: Some(..)` note renders. There used to be
+a separate `intensity` (halo opacity) field alongside `brightness` (**removed in Phase L**); a
+single `radius_px` field that controlled reach (**replaced by `layers` in Phase M** — see the
+changelog).
 
 `layers` (default: tight/mid/wide — `[(amplitude: 2.6, sigma_px: 5.0), (1.1, 16.0), (0.38, 48.0)]`)
 is three `amplitude * exp(-d / sigma_px)` exponential falloff terms, `d` = distance outside the
 glowing surface's opaque edge, summed additively into a single light value — this is what makes
-the corona read as light genuinely radiating from a white-hot core rather than a single flat
+the corona read as light genuinely radiating from a bright core rather than a single flat
 (possibly whitened) color at one spatial scale. `sigma_px` sets how far each layer reaches (bigger
 = softer/wider spread), `amplitude` sets how bright that layer is. Unlike Phase K/L's `radius_px`,
 `brightness` no longer widens reach at all — reach is purely `layers[i].sigma_px`-driven now.
 **RON serializes a fixed-size `[GlowLayer; 3]` array with tuple parens `layers: (...)`, not
 brackets `layers: [...]`** — confirmed empirically, easy to get wrong hand-editing a file.
+
+`edge_blend_px` (default `0.0`, notes only — see below) is how many pixels inward from the note's
+edge the rim described above takes to fade back to the note's true fill color — independent of
+`layers[0].sigma_px` (the corona's own innermost falloff distance), so you can tune how gradual the
+handoff *looks* without changing how far the corona itself visually reaches. `0.0` falls back to
+`layers[0].sigma_px`, matching the behavior before this field existed. Larger values (try
+`4.0`–`10.0`) spread the blend over more pixels for a smoother, more gradual look; smaller values
+snap to the corona's color more abruptly, closer to a hard seam. **Only wired up for
+`NoteLayer::glow`** (`crates/render/src/notes/shader.wgsl`'s `fs_core`) — `BarrierLayer::glow`
+parses and round-trips the field (it's the same shared `Glow` struct) but `barrier.wgsl` doesn't
+read it yet, so it's currently a no-op there.
 
 ## Barrier layer (`BarrierLayer`)
 
