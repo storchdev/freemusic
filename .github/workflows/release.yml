@@ -175,7 +175,29 @@ jobs:
         shell: msys2 {0}
         run: |
           export PKG_CONFIG_PATH="$FREEMUSIC_X264_PKGCONFIG"
+          # Two failed guesses in a row (login-shell env clobbering, `-m` vs `-u`) without seeing
+          # what pkg-config itself actually observes — surface it directly instead of guessing a
+          # third time.
+          echo "FREEMUSIC_X264_PKGCONFIG=$FREEMUSIC_X264_PKGCONFIG"
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
+          command -v pkg-config || echo "pkg-config: not found on PATH"
+          pkg-config --version || true
+          ls -la "$FREEMUSIC_X264_PKGCONFIG" || echo "pkgconfig dir missing or empty"
+          cat "$FREEMUSIC_X264_PKGCONFIG/x264.pc" 2>/dev/null || echo "x264.pc missing"
+          pkg-config --debug --exists x264 || echo "pkg-config could not find x264"
           cargo build --release -p app --features static-ffmpeg --target ${{ matrix.target }}
+
+      - name: Show FFmpeg configure log on failure (Windows)
+        if: runner.os == 'Windows' && failure()
+        shell: bash
+        run: |
+          log=$(find target -path '*/ffmpeg-*/ffbuild/config.log' 2>/dev/null | head -n1)
+          if [ -n "$log" ]; then
+            echo "== tail of $log =="
+            tail -n 200 "$log"
+          else
+            echo "No ffbuild/config.log found."
+          fi
 
       - name: Package
         shell: bash
