@@ -146,7 +146,22 @@ jobs:
           CC=cl ./configure --enable-static --disable-cli --disable-asm --prefix="$HOME/x264-static"
           make -j"$(nproc)"
           make install
-          echo "PKG_CONFIG_PATH=$(cygpath -m "$HOME/x264-static/lib/pkgconfig")" >> "$GITHUB_ENV"
+          # `-u` (POSIX-style), not `-m`: PKG_CONFIG_PATH is colon-delimited, and pkgconf (an
+          # msys-runtime-linked binary, so it expects POSIX-style paths) reads a `-m`/mixed path
+          # like `D:/a/freemusic/.../pkgconfig` as two components split on the drive letter's own
+          # colon — neither of which resolves. x264.pc's own `prefix=` line is POSIX-style too,
+          # since `--prefix` above got `$HOME` as-is (already POSIX inside this shell). Same fix
+          # `scripts/build-static-windows.ps1` already applies locally.
+          #
+          # Not PKG_CONFIG_PATH directly, either: `msys2 {0}` steps are login shells
+          # (`bash -leo pipefail`, per msys2/setup-msys2's wrapper), so every subsequent
+          # msys2-shell step re-sources MSYS2's /etc/profile before running our script — and the
+          # pkgconf package's own profile snippet reassigns PKG_CONFIG_PATH to its own defaults
+          # there, clobbering whatever we'd exported here before the next step's commands even
+          # start (same class of bug as the link.exe PATH-shadowing one above, just hitting a
+          # different variable). Carry the value under a name MSYS2's profile has no reason to
+          # touch, and re-derive the real PKG_CONFIG_PATH explicitly at the point of use instead.
+          echo "FREEMUSIC_X264_PKGCONFIG=$(cygpath -u "$HOME/x264-static/lib/pkgconfig")" >> "$GITHUB_ENV"
 
       - name: Build (static-ffmpeg)
         if: runner.os != 'Windows'
@@ -158,7 +173,9 @@ jobs:
       - name: Build (static-ffmpeg, Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: cargo build --release -p app --features static-ffmpeg --target ${{ matrix.target }}
+        run: |
+          export PKG_CONFIG_PATH="$FREEMUSIC_X264_PKGCONFIG"
+          cargo build --release -p app --features static-ffmpeg --target ${{ matrix.target }}
 
       - name: Package
         shell: bash

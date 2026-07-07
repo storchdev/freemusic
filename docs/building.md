@@ -146,6 +146,31 @@ build`'s link step failing with `link.exe` "extra operand" errors while pointing
   searching `PATH` for `link.exe`, sidestepping whatever the MSYS2 shell does to `PATH` entirely.
   See the "Point cargo at the real MSVC link.exe" step in `release.yml`.
 
+**`cygpath -m` (mixed/drive-letter path) breaks `PKG_CONFIG_PATH`**: that env var is
+colon-delimited, and `pkgconf` (MSYS2's build is msys-runtime-linked, so it expects POSIX-style
+paths) reads a `-m` path like `D:/a/freemusic/.../pkgconfig` as two components split on the drive
+letter's own colon — neither of which resolves, which is exactly `x264 not found using
+pkg-config`. Use `cygpath -u` instead (POSIX-style, no drive-letter colon) — same convention
+`scripts/build-static-windows.ps1` already documents and uses (`-u`, "not `-m`" per its own
+comment). `x264.pc`'s own `prefix=` line is POSIX-style too, since `./configure --prefix=` in
+`release.yml` gets `$HOME` as-is (already POSIX inside an MSYS2 shell), so `-u` matches that.
+
+**MSYS2 login shells silently drop env vars set by an earlier CI step**, more generally than just
+the `link.exe` case above. `msys2/setup-msys2`'s `shell: msys2 {0}` wrapper invokes
+`bash -leo pipefail` — the `-l` makes it a *login* shell, which re-sources `/etc/profile` (and
+`/etc/profile.d/*.sh`) at the start of every single `msys2 {0}` step. Package-provided profile
+snippets (e.g. `pkgconf`'s) can unconditionally reassign variables like `PKG_CONFIG_PATH` to
+their own defaults there, clobbering whatever an earlier step wrote into `$GITHUB_ENV` — the
+symptom was FFmpeg's `configure` reporting `x264 not found using pkg-config` even though the
+static `libx264` + its `.pc` file were built successfully one step earlier. Same root cause
+`scripts/build-static-windows.ps1` already avoids locally by using `bash -c` (not `-lc`) for
+exactly this reason. In CI, since there's no way to drop `-l` from `msys2/setup-msys2`'s fixed
+wrapper, the fix is to never trust a variable a *later* `msys2 {0}` step needs to still hold its
+value from an *earlier* one: carry it under a different name (`FREEMUSIC_X264_PKGCONFIG`, which
+no MSYS2 profile script has a reason to touch) and re-derive the real variable
+(`export PKG_CONFIG_PATH="$FREEMUSIC_X264_PKGCONFIG"`) as the first line of the step that actually
+needs it, so it's set *after* that step's own profile-sourcing has already happened.
+
 Per-OS prerequisites for the `static-ffmpeg` feature (on top of the Vulkan/`libxkbcommon-x11`
 requirements above, which are unrelated to FFmpeg and still apply, and the from-source `libx264`
 build above, which applies to every OS):
