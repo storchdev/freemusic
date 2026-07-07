@@ -80,12 +80,13 @@ notes: Static((
     sheen: Some((intensity: 0.5, width: 0.8, angle_degrees: 45.0)),
     glow: Some((
         color: Constant((120, 200, 255)),
-        brightness: 1.0,
+        brightness: 0.8,
         layers: (
-            (amplitude: 2.6, sigma_px: 5.0),
-            (amplitude: 1.1, sigma_px: 16.0),
-            (amplitude: 0.38, sigma_px: 48.0),
+            (amplitude: 2.6, sigma_px: 2.0),
+            (amplitude: 1.1, sigma_px: 4.0),
+            (amplitude: 0.38, sigma_px: 10.0),
         ),
+        edge_blend_px: 6.0,
     )),
     roundedness: 1.0,
     fall_speed: 400.0,
@@ -151,6 +152,10 @@ the corona read as light genuinely radiating from a bright core rather than a si
 (possibly whitened) color at one spatial scale. `sigma_px` sets how far each layer reaches (bigger
 = softer/wider spread), `amplitude` sets how bright that layer is. `brightness` does not widen
 reach; reach is purely `layers[i].sigma_px`-driven.
+The defaults are intentionally broad compatibility values; authored styles usually look better
+with narrower sigmas like `2.0/4.0/8.0` for barriers, `2.0/4.0/10.0` for notes/flashes, and
+`0.5/1.0/2.0` for small particles. Large sigmas add light across the entire scene and can wash out
+the image instead of reading as a local glow.
 **RON serializes a fixed-size `[GlowLayer; 3]` array with tuple parens `layers: (...)`, not
 brackets `layers: [...]`**.
 
@@ -176,7 +181,7 @@ The horizontal line/bar where falling notes stop.
 | `glow` | `Option<Glow>` | `None` | Soft radiating halo around the bar; presence is the on/off switch. |
 | `pulse` | `Option<Pulse>` | `None` | Brief brighten-then-decay on each note arrival. |
 | `wavy` | `Option<WavySpec>` | `None` | Rippling "calm ocean" edge instead of a flat line. Drives off deterministic transport time (`time_seconds` after subtracting sync offset) — so it's frame-reproducible in export and freezes exactly on pause/scrub, not wall-clock/frame-count based. |
-| `show_bar` | `bool` | `false` | Whether the flat/opaque bar itself renders at all, independent of `glow` — a style with `glow: Some(..)` and `show_bar: false` renders pure additive corona with no visible opaque bar shape. Not present on `NoteLayer` — a note without its own fill isn't a sensible look. |
+| `show_bar` | `bool` | `false` | Whether the flat/opaque bar itself renders at all. Use `false` when `glow` is `Some(..)` so the barrier is pure glow; use `true` mainly as the fallback visible line when `glow` is `None`. |
 
 ```ron
 barrier: Static((
@@ -184,16 +189,16 @@ barrier: Static((
     thickness: 6.0,
     glow: Some((
         color: Constant((255, 220, 120)),
-        brightness: 1.0,
+        brightness: 1.5,
         layers: (
-            (amplitude: 2.6, sigma_px: 5.0),
-            (amplitude: 1.1, sigma_px: 16.0),
-            (amplitude: 0.38, sigma_px: 48.0),
+            (amplitude: 3.0, sigma_px: 2.0),
+            (amplitude: 2.0, sigma_px: 4.0),
+            (amplitude: 0.85, sigma_px: 8.0),
         ),
     )),
     pulse: Some((decay_seconds: 0.35, brightness: 1.6)),
     wavy: Some((amplitude_px: 6.0, wavelength_px: 220.0, speed: 18.0, mode: Edge)),
-    show_bar: true,
+    show_bar: false,
 )),
 ```
 
@@ -254,18 +259,18 @@ transition: Static((
         spread_degrees: 60.0, gravity_px: 300.0, color: Constant((255, 240, 200)),
         additive: true, emission: Burst, brightness: 1.0,
         layers: (
-            (amplitude: 2.6, sigma_px: 5.0),
-            (amplitude: 1.1, sigma_px: 16.0),
-            (amplitude: 0.38, sigma_px: 48.0),
+            (amplitude: 3.0, sigma_px: 0.5),
+            (amplitude: 2.0, sigma_px: 1.0),
+            (amplitude: 0.85, sigma_px: 2.0),
         ),
     )),
     flash: Some((
         radius_x_px: 40.0, radius_y_px: 40.0,
         color: Constant((255, 255, 255)), decay_seconds: 0.15, mode: Instant, brightness: 1.0,
         layers: (
-            (amplitude: 2.6, sigma_px: 5.0),
-            (amplitude: 1.1, sigma_px: 16.0),
-            (amplitude: 0.38, sigma_px: 48.0),
+            (amplitude: 2.6, sigma_px: 2.0),
+            (amplitude: 1.1, sigma_px: 5.0),
+            (amplitude: 0.38, sigma_px: 10.0),
         ),
     )),
 )),

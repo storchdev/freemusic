@@ -28,9 +28,9 @@
             mode: Instant,
             brightness: 1.0,
             layers: (
-                (amplitude: 2.6, sigma_px: 4.69),
-                (amplitude: 1.1, sigma_px: 15.0),
-                (amplitude: 0.38, sigma_px: 45.0),
+                (amplitude: 2.6, sigma_px: 2.0),
+                (amplitude: 1.1, sigma_px: 5.0),
+                (amplitude: 0.38, sigma_px: 10.0),
             ),
         )),
     )),

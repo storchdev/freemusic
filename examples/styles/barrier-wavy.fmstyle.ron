@@ -16,9 +16,9 @@
             color: Constant((120, 200, 255)),
             brightness: 1.5,
             layers: (
-                (amplitude: 2.0, sigma_px: 0.5),
-                (amplitude: 1.5, sigma_px: 1),
-                (amplitude: 1, sigma_px: 10.0),
+                (amplitude: 3.0, sigma_px: 2.0),
+                (amplitude: 2.0, sigma_px: 4.0),
+                (amplitude: 0.85, sigma_px: 8.0),
             ),
         )),
         pulse: None,

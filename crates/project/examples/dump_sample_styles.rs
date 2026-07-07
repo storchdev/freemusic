@@ -5,24 +5,41 @@
 //! corresponding files if the schema ever changes.
 
 use project::{
-    BarrierLayer, ColorBinding, Fill, FlashSpec, Glow, GlowLayer, NoteLayer, ParticleSpec, Pulse,
-    Sheen, Style, Timed, TransitionKind, TransitionLayer, WavySpec,
+    BarrierLayer, BlackKeyFill, ColorBinding, Fill, FlashMode, FlashSpec, Glow, GlowLayer,
+    NoteLayer, ParticleSpec, Pulse, Sheen, Style, Timed, TransitionKind, TransitionLayer, WavyMode,
+    WavySpec,
 };
 
-fn scaled_layers(old_radius_px: f32) -> [GlowLayer; 3] {
-    let scale = old_radius_px / 48.0;
+fn glow_layers(tight: f32, mid: f32, wide: f32) -> [GlowLayer; 3] {
     [
         GlowLayer {
             amplitude: 2.6,
-            sigma_px: 5.0 * scale,
+            sigma_px: tight,
         },
         GlowLayer {
             amplitude: 1.1,
-            sigma_px: 16.0 * scale,
+            sigma_px: mid,
         },
         GlowLayer {
             amplitude: 0.38,
-            sigma_px: 48.0 * scale,
+            sigma_px: wide,
+        },
+    ]
+}
+
+fn hot_layers(tight: f32, mid: f32, wide: f32) -> [GlowLayer; 3] {
+    [
+        GlowLayer {
+            amplitude: 3.0,
+            sigma_px: tight,
+        },
+        GlowLayer {
+            amplitude: 2.0,
+            sigma_px: mid,
+        },
+        GlowLayer {
+            amplitude: 0.85,
+            sigma_px: wide,
         },
     ]
 }
@@ -35,6 +52,13 @@ fn print_style(name: &str, style: &Style) {
     );
 }
 
+fn visible_barrier() -> BarrierLayer {
+    BarrierLayer {
+        show_bar: true,
+        ..BarrierLayer::default()
+    }
+}
+
 fn main() {
     let gradient_glow = Style {
         version: 1,
@@ -44,22 +68,22 @@ fn main() {
                 bottom: ColorBinding::Constant([30, 90, 200]),
             },
             sheen: Some(Sheen {
-                intensity: 0.6,
-                width: 0.25,
-                angle_degrees: 35.0,
+                intensity: 0.5,
+                width: 0.8,
+                angle_degrees: 45.0,
             }),
             glow: Some(Glow {
                 color: ColorBinding::Constant([120, 200, 255]),
-                brightness: 1.0,
-                layers: scaled_layers(12.0),
-                edge_blend_px: 0.0,
+                brightness: 0.8,
+                layers: glow_layers(2.0, 4.0, 10.0),
+                edge_blend_px: 6.0,
             }),
             roundedness: 1.0,
             fall_speed: 400.0,
             border: None,
-            black_key_fill: project::BlackKeyFill::Auto,
+            black_key_fill: BlackKeyFill::Auto,
         }),
-        barrier: Timed::Static(BarrierLayer::default()),
+        barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
     };
@@ -72,8 +96,8 @@ fn main() {
             thickness: 6.0,
             glow: Some(Glow {
                 color: ColorBinding::Constant([255, 220, 120]),
-                brightness: 1.0,
-                layers: scaled_layers(24.0),
+                brightness: 1.5,
+                layers: hot_layers(2.0, 4.0, 8.0),
                 edge_blend_px: 0.0,
             }),
             pulse: Some(Pulse {
@@ -81,7 +105,7 @@ fn main() {
                 brightness: 1.6,
             }),
             wavy: None,
-            show_bar: true,
+            show_bar: false,
         }),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -92,21 +116,46 @@ fn main() {
         notes: Timed::Static(NoteLayer::default()),
         barrier: Timed::Static(BarrierLayer {
             color: ColorBinding::Constant([120, 200, 255]),
+            thickness: 4.0,
+            glow: Some(Glow {
+                color: ColorBinding::Constant([120, 200, 255]),
+                brightness: 1.5,
+                layers: hot_layers(2.0, 4.0, 8.0),
+                edge_blend_px: 0.0,
+            }),
+            pulse: None,
+            wavy: Some(WavySpec {
+                amplitude_px: 10.0,
+                wavelength_px: 50.0,
+                speed: 2.0,
+                mode: WavyMode::Edge,
+            }),
+            show_bar: false,
+        }),
+        transition: Timed::Static(TransitionLayer::default()),
+        background: ColorBinding::Constant([0, 0, 0]),
+    };
+
+    let barrier_wavy_volume = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer::default()),
+        barrier: Timed::Static(BarrierLayer {
+            color: ColorBinding::Constant([120, 200, 255]),
             thickness: 5.0,
             glow: Some(Glow {
                 color: ColorBinding::Constant([120, 200, 255]),
-                brightness: 1.0,
-                layers: scaled_layers(18.0),
+                brightness: 1.4,
+                layers: hot_layers(2.0, 4.0, 8.0),
                 edge_blend_px: 0.0,
             }),
             pulse: None,
             wavy: Some(WavySpec {
                 amplitude_px: 6.0,
-                wavelength_px: 220.0,
+                wavelength_px: 50.0,
                 speed: 18.0,
-                mode: project::WavyMode::FullWave,
+                mode: WavyMode::FullWave,
             }),
-            show_bar: true,
+            show_bar: false,
         }),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -115,7 +164,7 @@ fn main() {
     let sparks = Style {
         version: 1,
         notes: Timed::Static(NoteLayer::default()),
-        barrier: Timed::Static(BarrierLayer::default()),
+        barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer {
             kind: TransitionKind::ParticlesAndFlash,
             particles: Some(ParticleSpec {
@@ -129,16 +178,16 @@ fn main() {
                 additive: true,
                 emission: project::EmissionMode::Burst,
                 brightness: 1.0,
-                layers: scaled_layers(4.0),
+                layers: hot_layers(0.5, 1.0, 2.0),
             }),
             flash: Some(FlashSpec {
                 radius_x_px: 40.0,
                 radius_y_px: 40.0,
                 color: ColorBinding::Constant([255, 255, 255]),
                 decay_seconds: 0.15,
-                mode: project::FlashMode::Instant,
+                mode: FlashMode::Instant,
                 brightness: 1.0,
-                layers: scaled_layers(40.0),
+                layers: glow_layers(2.0, 5.0, 10.0),
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -147,18 +196,18 @@ fn main() {
     let ellipse_flash = Style {
         version: 1,
         notes: Timed::Static(NoteLayer::default()),
-        barrier: Timed::Static(BarrierLayer::default()),
+        barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer {
             kind: TransitionKind::Flash,
             particles: None,
             flash: Some(FlashSpec {
                 radius_x_px: 70.0,
-                radius_y_px: 20.0,
+                radius_y_px: 40.0,
                 color: ColorBinding::Constant([255, 255, 255]),
                 decay_seconds: 0.2,
-                mode: project::FlashMode::Instant,
+                mode: FlashMode::Instant,
                 brightness: 1.0,
-                layers: scaled_layers(45.0),
+                layers: glow_layers(2.0, 5.0, 10.0),
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -167,7 +216,7 @@ fn main() {
     let grinding_particles = Style {
         version: 1,
         notes: Timed::Static(NoteLayer::default()),
-        barrier: Timed::Static(BarrierLayer::default()),
+        barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer {
             kind: TransitionKind::Particles,
             particles: Some(ParticleSpec {
@@ -183,7 +232,7 @@ fn main() {
                     rate_per_second: 30.0,
                 },
                 brightness: 1.0,
-                layers: scaled_layers(6.0),
+                layers: glow_layers(0.5, 1.0, 2.0),
             }),
             flash: None,
         }),
@@ -193,18 +242,18 @@ fn main() {
     let key_glow = Style {
         version: 1,
         notes: Timed::Static(NoteLayer::default()),
-        barrier: Timed::Static(BarrierLayer::default()),
+        barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer {
             kind: TransitionKind::Flash,
             particles: None,
             flash: Some(FlashSpec {
-                radius_x_px: 50.0,
-                radius_y_px: 30.0,
+                radius_x_px: 20.0,
+                radius_y_px: 5.0,
                 color: ColorBinding::Constant([255, 220, 140]),
-                decay_seconds: 0.6,
-                mode: project::FlashMode::Sustained,
-                brightness: 1.0,
-                layers: scaled_layers(40.0),
+                decay_seconds: 0.1,
+                mode: FlashMode::Sustained,
+                brightness: 0.5,
+                layers: glow_layers(2.0, 5.0, 10.0),
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -225,7 +274,7 @@ fn main() {
             glow: Some(Glow {
                 color: ColorBinding::Constant([120, 200, 255]),
                 brightness: 1.4,
-                layers: scaled_layers(24.0),
+                layers: glow_layers(2.0, 4.0, 8.0),
                 edge_blend_px: 0.0,
             }),
             show_bar: false,
@@ -235,12 +284,130 @@ fn main() {
         background: ColorBinding::Constant([8, 10, 24]),
     };
 
+    let showcase_blue_purple = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer {
+            fill: Fill::VerticalGradient {
+                top: ColorBinding::Constant([170, 235, 255]),
+                bottom: ColorBinding::Constant([95, 55, 255]),
+            },
+            sheen: Some(Sheen {
+                intensity: 0.42,
+                width: 0.8,
+                angle_degrees: 34.0,
+            }),
+            glow: Some(Glow {
+                color: ColorBinding::Constant([190, 190, 255]),
+                brightness: 0.3,
+                layers: [
+                    GlowLayer {
+                        amplitude: 2.0,
+                        sigma_px: 2.0,
+                    },
+                    GlowLayer {
+                        amplitude: 1.5,
+                        sigma_px: 4.0,
+                    },
+                    GlowLayer {
+                        amplitude: 0.7,
+                        sigma_px: 10.0,
+                    },
+                ],
+                edge_blend_px: 6.0,
+            }),
+            roundedness: 1.65,
+            fall_speed: 400.0,
+            border: None,
+            black_key_fill: BlackKeyFill::Custom(Fill::VerticalGradient {
+                top: ColorBinding::Constant([170, 235, 255]),
+                bottom: ColorBinding::Constant([95, 55, 255]),
+            }),
+        }),
+        barrier: Timed::Static(BarrierLayer {
+            color: ColorBinding::Constant([205, 245, 255]),
+            thickness: 4.0,
+            glow: Some(Glow {
+                color: ColorBinding::Constant([135, 90, 255]),
+                brightness: 1.5,
+                layers: hot_layers(2.0, 4.0, 8.0),
+                edge_blend_px: 0.0,
+            }),
+            pulse: Some(Pulse {
+                decay_seconds: 0.34,
+                brightness: 1.0,
+            }),
+            wavy: Some(WavySpec {
+                amplitude_px: 15.0,
+                wavelength_px: 150.0,
+                speed: 1.0,
+                mode: WavyMode::Edge,
+            }),
+            show_bar: false,
+        }),
+        transition: Timed::Static(TransitionLayer {
+            kind: TransitionKind::ParticlesAndFlash,
+            particles: Some(ParticleSpec {
+                count: 40,
+                lifetime_seconds: 1.0,
+                size_px: 1.0,
+                speed_px: 250.0,
+                spread_degrees: 60.0,
+                gravity_px: 220.0,
+                color: ColorBinding::Constant([150, 210, 255]),
+                additive: true,
+                emission: project::EmissionMode::Continuous {
+                    rate_per_second: 40.0,
+                },
+                brightness: 1.0,
+                layers: [
+                    GlowLayer {
+                        amplitude: 3.0,
+                        sigma_px: 0.5,
+                    },
+                    GlowLayer {
+                        amplitude: 1.45,
+                        sigma_px: 1.0,
+                    },
+                    GlowLayer {
+                        amplitude: 0.58,
+                        sigma_px: 2.0,
+                    },
+                ],
+            }),
+            flash: Some(FlashSpec {
+                radius_x_px: 16.0,
+                radius_y_px: 4.0,
+                color: ColorBinding::Constant([205, 190, 255]),
+                decay_seconds: 0.22,
+                mode: FlashMode::Sustained,
+                brightness: 1.0,
+                layers: [
+                    GlowLayer {
+                        amplitude: 1.4,
+                        sigma_px: 2.0,
+                    },
+                    GlowLayer {
+                        amplitude: 0.7,
+                        sigma_px: 5.0,
+                    },
+                    GlowLayer {
+                        amplitude: 0.1,
+                        sigma_px: 10.0,
+                    },
+                ],
+            }),
+        }),
+        background: ColorBinding::Constant([4, 2, 14]),
+    };
+
     print_style("gradient-glow", &gradient_glow);
     print_style("barrier-pulse", &barrier_pulse);
     print_style("barrier-wavy", &barrier_wavy);
+    print_style("barrier-wavy-volume", &barrier_wavy_volume);
     print_style("sparks", &sparks);
     print_style("ellipse-flash", &ellipse_flash);
     print_style("grinding-particles", &grinding_particles);
     print_style("key-glow", &key_glow);
     print_style("dark-background", &dark_background);
+    print_style("showcase_blue_purple", &showcase_blue_purple);
 }

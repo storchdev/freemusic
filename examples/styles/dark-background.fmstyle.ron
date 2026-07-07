@@ -17,13 +17,13 @@
             brightness: 1.4,
             layers: ((
                 amplitude: 2.6,
-                sigma_px: 2.5,
+                sigma_px: 2.0,
             ), (
                 amplitude: 1.1,
-                sigma_px: 8.0,
+                sigma_px: 4.0,
             ), (
                 amplitude: 0.38,
-                sigma_px: 24.0,
+                sigma_px: 8.0,
             )),
         )),
         pulse: None,
@@ -35,5 +35,5 @@
         particles: None,
         flash: None,
     )),
-    background: Constant((255, 255, 255)),
+    background: Constant((8, 10, 24)),
 )
