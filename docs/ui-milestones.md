@@ -637,6 +637,29 @@ cost of the original file always containing the "deleted" notes if opened elsewh
   checks — a change triggers the same full `compositor.resize` rebuild. This means a delete takes
   effect one frame after confirming (the next `apply_post_ui_updates`), same latency as every other
   calibration/style edit in this app.
+- **Fixed-height table**: the currently-playing table originally sized itself to its content, so it
+  grew/shrank every frame as notes started and stopped during playback. Fixed by wrapping it in an
+  `egui::ScrollArea` with a constant `max_height` (`NOTE_EDITOR_TABLE_HEIGHT = 160.0`) and
+  `auto_shrink([false, false])` (which otherwise collapses to fit shorter content instead of
+  reserving the full height) — a longer list now scrolls within that fixed area instead of resizing
+  it. The empty-state message ("No notes playing…") is rendered *inside* the same `ScrollArea`
+  rather than replacing it, so the 0-notes case doesn't collapse the section either.
+- **Real bug found from a real file** (`~/Downloads/valseexportsmall_final.mid`, reported: at
+  4:30.696 the video/highway was clearly showing 3 held notes — G#, D#, G# — but the editor said
+  "No notes playing"). Root cause: `ActiveNote::end_seconds` was built from the note's raw
+  `note.end.as_secs_f64()`, but the note *rendered* on the highway (`NoteInstance.size`) and
+  `NoteInterval::end_seconds` both use `note.duration.as_secs_f32().max(0.1)` — a 0.1s floor so
+  very short notes are still visible as a real bar rather than an invisible sliver. This file has
+  many staccato/ornament notes only 7–30ms long (confirmed by loading the actual file and dumping
+  every note near that timestamp); each visually persists on-screen for the full 100ms floor, but
+  the editor's window used to collapse back to the true ~10-30ms span, so it reported "nothing
+  playing" tens of milliseconds before the bar actually left the screen. Fixed by building
+  `ActiveNote::end_seconds` from the same `start_seconds + duration` (clamped) value as
+  `NoteInterval`, so the editor's notion of "currently playing" now matches what's actually
+  rendered. Verified by loading the real file directly in a throwaway test and confirming the
+  three reported notes (80, 87, 92 = G#, D#, G#) are now flagged active at t=270.696 (removed after
+  confirming; not kept as a permanent regression test since it depends on an external file not in
+  the repo).
 - **Stale-skip-list handling**: `AppState::load_midi` doc comment spells out the rule — it uses
   whatever's currently in `ui_state.skipped_notes` as-is and does not reset it, since a skip list
   keyed to one MIDI file's track/note/time structure is meaningless for a different file loaded

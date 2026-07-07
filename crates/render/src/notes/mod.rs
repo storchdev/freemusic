@@ -299,7 +299,14 @@ impl NotesRenderer {
                 channel: note.channel,
                 note: note.note,
                 start_seconds: note.start.as_secs_f64(),
-                end_seconds: note.end.as_secs_f64(),
+                // Same `duration.max(0.1)` floor as `note_intervals`/the rendered instance's own
+                // size above — not the note's raw (possibly much shorter) `note.end`. A very short
+                // MIDI note (e.g. a grace note a few milliseconds long) still renders as at least a
+                // 0.1s bar on the highway, so using the unclamped end here made the note editor's
+                // "currently playing" window collapse well before the bar visually passed the
+                // barrier — real bug found from a real file: three ~10-30ms notes that were
+                // visually still on-screen showed as "no notes playing" in the editor.
+                end_seconds: (start_seconds + duration) as f64,
             });
         }
 
