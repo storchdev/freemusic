@@ -193,6 +193,10 @@ jobs:
         run: |
           log=$(find target -path '*/ffmpeg-*/ffbuild/config.log' 2>/dev/null | head -n1)
           if [ -n "$log" ]; then
+            echo "== head of $log =="
+            head -n 60 "$log"
+            echo "== every PKG_CONFIG mention in $log =="
+            grep -n "PKG_CONFIG" "$log" || echo "(no mentions at all)"
             echo "== tail of $log =="
             tail -n 200 "$log"
           else

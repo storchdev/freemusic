@@ -659,6 +659,15 @@ fn build(sysroot: Option<&str>) -> io::Result<()> {
     // time on platforms like mac which spawns thousands of nullabilty complieance warnings
     configure.arg("--extra-cflags=-w");
 
+    // TEMPORARY DEBUG (freemusic): print exactly what this process sees for PKG_CONFIG_PATH right
+    // before spawning `configure`, to settle whether it's actually reaching the child process tree
+    // that runs pkg-config, or getting lost/altered somewhere between here and there. Remove once
+    // the Windows CI "x264 not found using pkg-config" investigation is resolved.
+    println!(
+        "cargo:warning=freemusic-debug: PKG_CONFIG_PATH (build.rs, pre-configure) = {:?}",
+        env::var("PKG_CONFIG_PATH")
+    );
+
     // run ./configure
     let output = configure
         .output()
