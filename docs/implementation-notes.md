@@ -78,3 +78,44 @@ well after ten seconds.
 `scripts/run-app.sh` forces the X11 backend under WSLg/Hyprland so `xdotool` and `import` can see
 the window. It intentionally runs the app in the foreground of the script; callers that need a
 background app should background the script invocation itself, not add `&` or `disown` inside it.
+
+## Static build troubleshooting history
+
+`docs/building.md` has the current build instructions. These are the historical failure modes that
+shaped the scripts and vendored FFmpeg patches.
+
+Static release builds must use a static-only `libx264` built from source and surfaced through
+`PKG_CONFIG_PATH`. Installing a system/Homebrew/apt `libx264` is unsafe for this project: if a
+shared `libx264.so`/dylib appears on the linker's default search path, the linker can silently
+prefer it over the explicit static archive. The build then looks "static" from cargo's point of
+view while still depending on a shared x264 library at runtime. The helper scripts force
+`-l static=x264` and the Linux script runs `ldd` as a final sanity check.
+
+The published `ffmpeg-sys-next 8.1.0` build script passed GCC-only `-march=native -mtune=native`
+flags to FFmpeg's `configure` even under MSVC. `cl.exe` rejects those flags, and FFmpeg reported
+the failure as the much less specific "C compiler test failed." The vendored
+`vendor/ffmpeg-sys-next/` patch skips those flags for `target_env = "msvc"`.
+
+The same build script also parsed MSVC `-libpath:DIR` flags as `-l` library-name flags because both
+start with `-l`. That produced invalid `cargo:rustc-link-lib=ibpath:...` output and rustc E0459.
+The vendored patch detects MSVC libpath flags case-insensitively and routes them into the
+link-search path handling instead.
+
+Static x264 must match rustc's target architecture, not just whichever Visual Studio shell happens
+to be open. Early Windows attempts reused a cached x86 x264 archive for x64 builds and later built
+x264 from an x86 Developer Shell while cargo still targeted `x86_64-pc-windows-msvc`. The current
+Windows script derives the required architecture from `rustc -vV`, keys the x264 cache by that
+architecture, and fails fast if the active MSVC environment does not match.
+
+The generic "Developer PowerShell for VS 2022" shortcut can start a 32-bit PowerShell host and
+therefore default to an x86 developer environment. `scripts/setup-msvc-x64.ps1` avoids that by
+calling `vcvars64.bat` directly.
+
+Running `vcvars64.bat` directly from PowerShell sets environment variables only inside a child
+`cmd.exe`, so the caller loses `PATH`, `INCLUDE`, `LIB`, and related variables as soon as the batch
+file exits. `setup-msvc-x64.ps1` runs `vcvars64.bat` under `cmd /c "... && set"`, captures the
+resulting environment, and applies it to the current PowerShell process.
+
+Windows PowerShell 5.1 reads BOM-less scripts through the system codepage rather than UTF-8. The
+PowerShell scripts are saved with a UTF-8 BOM so comments containing non-ASCII punctuation do not
+corrupt tokenization under PS 5.1; preserve that BOM when editing them.

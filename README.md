@@ -36,8 +36,8 @@ There are two different things "building this project" can mean:
   binary runs standalone on any machine, with no FFmpeg install step for whoever downloads it. If
   you just want a working `.exe`/binary and aren't modifying the code, download one from
   [Releases](../../releases) instead of building anything at all. Otherwise, see
-  **[`docs/building.md`](docs/building.md)** for the Windows dev setup, the static-linking
-  gotchas, the `scripts/build-static-*` helper scripts, and how the GitHub Releases binaries get
+  **[`docs/building.md`](docs/building.md)** for the Windows dev setup, static-linking release
+  builds, the `scripts/build-static-*` helper scripts, and how the GitHub Releases binaries get
   built.
 
 System dependencies for development (not vendored):
@@ -55,8 +55,7 @@ cargo run --bin app -- project.fmproj.ron                            # or open a
 cargo run --bin app -- project.fmproj.ron mystyle.fmstyle.ron        # or open a project and a style file
 ```
 
-See `CLAUDE.md` and `docs/` for architecture, verification, implementation notes, and the phased
-build history behind each subsystem.
+See `docs/` for architecture, verification, implementation notes, and format history.
 
 ## Roadmap
 
@@ -98,7 +97,7 @@ This project is licensed under the GNU General Public License v3.0 (GPL-3.0-only
   `docs/architecture.md` for the details of what changed.
 - `crates/render`'s note-highway shader and rendering approach were originally based on
   Neothesia's vendored `neothesia-core` waterfall renderer before being rewritten in-tree; see
-  `docs/fmstyle-milestone.md` for that history.
+  `docs/fmstyle-history.md` for style-format history.
 - All other dependencies are pulled from crates.io under their own published licenses (see
   `Cargo.lock` and each crate's own `Cargo.toml`/license file).
 
