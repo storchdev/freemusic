@@ -175,16 +175,20 @@ jobs:
         shell: msys2 {0}
         run: |
           export PKG_CONFIG_PATH="$FREEMUSIC_X264_PKGCONFIG"
-          # Two failed guesses in a row (login-shell env clobbering, `-m` vs `-u`) without seeing
-          # what pkg-config itself actually observes — surface it directly instead of guessing a
-          # third time.
-          echo "FREEMUSIC_X264_PKGCONFIG=$FREEMUSIC_X264_PKGCONFIG"
-          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
-          command -v pkg-config || echo "pkg-config: not found on PATH"
-          pkg-config --version || true
-          ls -la "$FREEMUSIC_X264_PKGCONFIG" || echo "pkgconfig dir missing or empty"
-          cat "$FREEMUSIC_X264_PKGCONFIG/x264.pc" 2>/dev/null || echo "x264.pc missing"
-          pkg-config --debug --exists x264 || echo "pkg-config could not find x264"
+          # MSYS2's runtime auto-converts POSIX-looking environment variable values to native
+          # Windows form when spawning a *native* (non-MSYS) child process — and `cargo build`
+          # here is exactly that. That silently turned our POSIX PKG_CONFIG_PATH back into a
+          # drive-letter path like `D:/a/_temp/msys64/home/.../pkgconfig` before cargo (and
+          # therefore FFmpeg's own nested `pkg-config` call) ever saw it, reintroducing the same
+          # colon-splits-the-path bug the `-u` cygpath fix above was meant to avoid — confirmed
+          # via a build.rs debug print that showed the mangled value already present at the point
+          # ffmpeg-sys-next's build script read it, i.e. before `configure` was even spawned, and
+          # by the fact that a manual `pkg-config --exists x264` run directly in this same shell
+          # (still POSIX PATH_CONFIG_PATH, no native exec boundary crossed yet) succeeded.
+          # `MSYS2_ENV_CONV_EXCL` (https://www.msys2.org/docs/filesystem-paths/) opts specific env
+          # vars out of that auto-conversion.
+          export MSYS2_ENV_CONV_EXCL='PKG_CONFIG_PATH'
+          pkg-config --exists x264 || echo "pkg-config could not find x264 before build"
           cargo build --release -p app --features static-ffmpeg --target ${{ matrix.target }}
 
       - name: Show FFmpeg configure log on failure (Windows)
