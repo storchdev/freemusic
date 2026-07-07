@@ -30,20 +30,16 @@ pub struct UiState {
     /// Canvas clear color for the legacy (no-imported-style) path — mirrors
     /// `project::Project::background_color`, edited by the Keyboard tab's "Background" picker.
     pub background_color: [u8; 3],
-    /// Confirmed skip list — notes excluded from rendering/playback, mirroring
-    /// `project::Project::skipped_notes`. Edited only by the note editor's confirm-delete flow
-    /// (`draw_note_editor`); the app loop dirty-checks this against `applied_skipped_notes` each
-    /// redraw (same pattern as `calibration`/the effective `NoteLayer`) and rebuilds the
-    /// compositor's note instances when it changes.
+    /// Skip list — notes excluded from rendering/playback, mirroring
+    /// `project::Project::skipped_notes`. Edited directly by the note editor's trash/restore
+    /// icons (`draw_note_editor`) with no staging/confirmation step; the app loop dirty-checks
+    /// this against `applied_skipped_notes` each redraw (same pattern as `calibration`/the
+    /// effective `NoteLayer`) and rebuilds the compositor's note instances when it changes.
     pub skipped_notes: Vec<project::SkippedNote>,
-    /// Notes staged for deletion but not yet confirmed — the "deletion queue" the note editor
-    /// shows above its table. Cleared on confirm (moved into `skipped_notes`) or cancel.
-    pub pending_delete_notes: Vec<project::SkippedNote>,
-    /// Whether the "this will exclude these notes" warning dialog is open.
-    pub confirm_delete_open: bool,
-    /// Notes whose window contains the current playback frame, mirrored from
-    /// `Compositor::notes_at` every redraw (see `main.rs`'s `update_midi_position`) regardless of
-    /// whether the keyboard tab is actually visible — cheap enough not to bother gating it.
+    /// Notes whose window contains the current playback frame (both skipped and not — see
+    /// `render::ActiveNote::skipped`), mirrored from `Compositor::notes_at` every redraw (see
+    /// `main.rs`'s `update_midi_position`) regardless of whether the keyboard tab is actually
+    /// visible — cheap enough not to bother gating it.
     pub notes_now: Vec<render::ActiveNote>,
     /// Path typed into the Save/Load text field; defaulted from the video path on first load.
     pub project_path_text: String,
@@ -363,78 +359,28 @@ fn skipped_note_key(note: &render::ActiveNote) -> project::SkippedNote {
     }
 }
 
-/// Lists notes currently playing at the frame the transport is on, each with a delete icon that
-/// stages it in a "pending deletion" queue; a "Confirm delete…" button above the queue opens a
-/// warning dialog, and only on that dialog's own confirmation are the staged notes moved into
-/// `state.skipped_notes` — the persisted list the compositor filters out of the note highway and
-/// playback everywhere (see `render::notes::rebuild_instances`). Nothing here ever touches the
-/// loaded `.mid` file on disk; the exclusion lives only in the project's own save file.
 /// Fixed pixel height of the note editor's currently-playing table (see `draw_note_editor`) —
 /// kept constant regardless of how many notes are playing so the section doesn't grow/shrink
 /// every frame as notes start and stop; a longer list scrolls within this instead.
 const NOTE_EDITOR_TABLE_HEIGHT: f32 = 160.0;
 
+/// Lists every note (both skipped and not — see `render::ActiveNote::skipped`) whose window
+/// contains the current playback frame, each with a single icon: 🗑 immediately excludes a
+/// playing note (straight into `state.skipped_notes`, no staging queue or confirmation step —
+/// since ♻ is always right there to undo it, a confirmation step would just be a second click for
+/// no added safety), ♻ restores an already-skipped one. The row itself never disappears when
+/// clicked — only its icon (and dimmed text, for a skipped note) flips — so every note at the
+/// current frame always shows as exactly one of the two states. Nothing here ever touches the
+/// loaded `.mid` file on disk; the exclusion lives only in the project's own save file (see
+/// `render::notes::rebuild_instances`).
 fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
     ui.heading("Note editor");
     ui.label(
-        "Notes currently playing at this frame. Deleting a note excludes it from the note \
-        highway and playback wherever this project is opened or exported — it never modifies \
-        your original MIDI file.",
+        "Notes at this frame. 🗑 excludes a note from the note highway and playback wherever \
+        this project is opened or exported; ♻ restores it. Neither ever modifies your original \
+        MIDI file.",
     );
-
-    if !state.pending_delete_notes.is_empty() {
-        ui.add_space(4.0);
-        ui.group(|ui| {
-            ui.label(format!(
-                "{} note(s) queued for deletion:",
-                state.pending_delete_notes.len()
-            ));
-            ui.horizontal_wrapped(|ui| {
-                for note in &state.pending_delete_notes {
-                    ui.label(note_name(note.note));
-                }
-            });
-            ui.horizontal(|ui| {
-                if ui.button("Confirm delete…").clicked() {
-                    state.confirm_delete_open = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    state.pending_delete_notes.clear();
-                }
-            });
-        });
-    }
-
-    if state.confirm_delete_open {
-        egui::Window::new("Delete notes?")
-            .collapsible(false)
-            .resizable(false)
-            .show(ui.ctx(), |ui| {
-                ui.label(format!(
-                    "This will exclude {} note(s) from the note highway and playback. This \
-                    does not modify your original MIDI file — the exclusion is saved with this \
-                    project instead. Continue?",
-                    state.pending_delete_notes.len()
-                ));
-                ui.horizontal(|ui| {
-                    if ui.button("Delete").clicked() {
-                        state.skipped_notes.append(&mut state.pending_delete_notes);
-                        state.confirm_delete_open = false;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        state.confirm_delete_open = false;
-                    }
-                });
-            });
-    }
-
     ui.add_space(4.0);
-    let visible: Vec<_> = state
-        .notes_now
-        .iter()
-        .filter(|note| !state.pending_delete_notes.contains(&skipped_note_key(note)))
-        .copied()
-        .collect();
 
     // Fixed height regardless of how many notes are currently playing — `auto_shrink` off keeps
     // this from collapsing to fit shorter content, which is what made the section constantly jump
@@ -445,8 +391,8 @@ fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
         .auto_shrink([false, false])
         .id_salt("note_editor_scroll")
         .show(ui, |ui| {
-            if visible.is_empty() {
-                ui.label("No notes playing at the current frame.");
+            if state.notes_now.is_empty() {
+                ui.label("No notes at the current frame.");
                 return;
             }
             egui::Grid::new("note_editor_grid")
@@ -458,17 +404,26 @@ fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
                     ui.label("");
                     ui.end_row();
 
-                    let mut newly_queued = None;
-                    for note in &visible {
-                        ui.label(note_name(note.note));
-                        ui.label(format!("{:.2}s", note.end_seconds - note.start_seconds));
-                        if ui.button("🗑").clicked() {
-                            newly_queued = Some(skipped_note_key(note));
+                    let notes_now = state.notes_now.clone();
+                    for note in &notes_now {
+                        let key = skipped_note_key(note);
+                        let duration_text =
+                            format!("{:.2}s", note.end_seconds - note.start_seconds);
+                        if note.skipped {
+                            let dim = ui.visuals().weak_text_color();
+                            ui.colored_label(dim, note_name(note.note));
+                            ui.colored_label(dim, duration_text);
+                            if ui.button("♻").on_hover_text("Restore").clicked() {
+                                state.skipped_notes.retain(|skip| *skip != key);
+                            }
+                        } else {
+                            ui.label(note_name(note.note));
+                            ui.label(duration_text);
+                            if ui.button("🗑").on_hover_text("Delete").clicked() {
+                                state.skipped_notes.push(key);
+                            }
                         }
                         ui.end_row();
-                    }
-                    if let Some(key) = newly_queued {
-                        state.pending_delete_notes.push(key);
                     }
                 });
         });

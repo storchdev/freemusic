@@ -440,8 +440,6 @@ impl AppState {
                 note_style: project::NoteStyle::default(),
                 background_color: [0, 0, 0],
                 skipped_notes: Vec::new(),
-                pending_delete_notes: Vec::new(),
-                confirm_delete_open: false,
                 notes_now: Vec::new(),
                 project_path_text: String::new(),
                 save_requested: false,
@@ -746,8 +744,6 @@ impl AppState {
         self.ui_state.style = None;
         self.ui_state.style_path = None;
         self.ui_state.skipped_notes = Vec::new();
-        self.ui_state.pending_delete_notes = Vec::new();
-        self.ui_state.confirm_delete_open = false;
         self.ui_state.notes_now = Vec::new();
         self.ui_state.project_path_text = String::new();
         self.ui_state.export_path_text = String::new();
@@ -779,8 +775,6 @@ impl AppState {
                 self.ui_state.style = project.style.clone();
                 self.ui_state.style_path = None;
                 self.ui_state.skipped_notes = project.skipped_notes.clone();
-                self.ui_state.pending_delete_notes = Vec::new();
-                self.ui_state.confirm_delete_open = false;
                 if let Some(video_path) = project.video_path.clone() {
                     self.load_video(&video_path);
                 }
@@ -1139,8 +1133,6 @@ impl AppState {
                 // A skip list keyed to the *previous* MIDI file's track/note/time structure is
                 // meaningless for a different one — see `load_midi`'s doc comment.
                 self.ui_state.skipped_notes = Vec::new();
-                self.ui_state.pending_delete_notes = Vec::new();
-                self.ui_state.confirm_delete_open = false;
                 self.load_midi(&path);
             }
         }
@@ -1579,8 +1571,6 @@ impl ApplicationHandler for App {
                         // See `load_midi`'s doc comment: a skip list keyed to the previous MIDI
                         // file's structure is meaningless for a different one.
                         state.ui_state.skipped_notes = Vec::new();
-                        state.ui_state.pending_delete_notes = Vec::new();
-                        state.ui_state.confirm_delete_open = false;
                         state.load_midi(path);
                     }
                     _ => state.load_video(path),

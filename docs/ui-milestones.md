@@ -616,22 +616,31 @@ cost of the original file always containing the "deleted" notes if opened elsewh
 - **"Currently playing" query**: alongside the existing `NoteInterval` (x-position only, no note
   number — used by `effects::EffectsRenderer` for particles/flashes), `rebuild_instances` now also
   builds a parallel `active_notes: Vec<ActiveNote>` carrying the identifying fields
-  (`track_id`/`channel`/`note`/`start_seconds`/`end_seconds`). `NotesRenderer::notes_at(time)` /
-  `Compositor::notes_at(time)` linearly scans it for notes whose window contains `time` — same
-  "currently held" pattern already used by `effects.rs`'s continuous-particle check, just against
-  the richer struct. `AppState::update_midi_position` (`app/src/main.rs`) calls this every redraw
-  (cheap — a few hundred notes at most) and stashes the result in `UiState.notes_now`, since
-  `ui.rs`'s drawing functions only ever see plain `UiState` data, never the compositor directly.
-- **Delete flow, entirely inside `ui.rs`** (no new "request" flags need `main.rs` involvement,
-  unlike most other UI actions in this app — see below for why): each row in the note table has a
-  🗑 button; clicking it pushes a `SkippedNote` key into `UiState.pending_delete_notes` (the
-  "deletion queue"), which shows as a small list above the table with "Confirm delete…"/"Cancel".
-  "Confirm delete…" opens an `egui::Window` warning ("This will exclude N note(s)... does not
-  modify your original MIDI file..."); only its own "Delete" button actually moves
-  `pending_delete_notes` into `skipped_notes` (`Vec::append`). This can all happen inline because
-  `ui::draw` already receives `&mut UiState` — no round-trip through `main.rs` is needed the way
-  e.g. `save_requested`/`open_midi_requested` need one (those trigger real I/O — file dialogs,
-  disk writes — that `ui.rs` has no access to).
+  (`track_id`/`channel`/`note`/`start_seconds`/`end_seconds`/`skipped`). Unlike `note_intervals`
+  (built only for non-skipped notes, since a skipped note gets no rendered instance and shouldn't
+  trigger barrier/particle effects), `active_notes` includes **every** in-range/non-drum note
+  regardless of skip status, each tagged with `ActiveNote::skipped` — this is what lets the note
+  editor list an already-skipped note with a restore option instead of it just vanishing.
+  `NotesRenderer::notes_at(time)` / `Compositor::notes_at(time)` linearly scans it for notes whose
+  window contains `time` — same "currently held" pattern already used by `effects.rs`'s
+  continuous-particle check, just against the richer struct. `AppState::update_midi_position`
+  (`app/src/main.rs`) calls this every redraw (cheap — a few hundred notes at most) and stashes the
+  result in `UiState.notes_now`, since `ui.rs`'s drawing functions only ever see plain `UiState`
+  data, never the compositor directly.
+- **Delete/restore flow, entirely inside `ui.rs`, no staging or confirmation**: each row in the
+  note table has a single icon reflecting `ActiveNote::skipped` — 🗑 for a still-playing note
+  (clicking it pushes a `SkippedNote` key straight into `UiState.skipped_notes`) or ♻ for an
+  already-skipped one (clicking it `Vec::retain`s that key back out). There is no queue, no
+  "confirm delete" step, and the row never disappears — only its icon (and its text color, dimmed
+  via `ui.visuals().weak_text_color()` for a skipped note) changes, so every note at the current
+  frame always shows as exactly one of the two states and is always one click from being undone.
+  An earlier version of this feature staged deletions in a `pending_delete_notes` queue behind a
+  warning dialog; removed per explicit feedback that the immediate-toggle-with-undo design (𝑖.𝑒.
+  the skip list itself, always right there to reverse, *is* the safety net) is simpler and doesn't
+  need a second confirmation click. This can all happen inline because `ui::draw` already receives
+  `&mut UiState` — no round-trip through `main.rs` is needed the way e.g.
+  `save_requested`/`open_midi_requested` need one (those trigger real I/O — file dialogs, disk
+  writes — that `ui.rs` has no access to).
 - **Compositor rebuild**: `AppState` gained `applied_skipped_notes: Vec<SkippedNote>`, dirty-checked
   in `apply_post_ui_updates` alongside the existing `applied_calibration`/`applied_note_layer`
   checks — a change triggers the same full `compositor.resize` rebuild. This means a delete takes
@@ -664,10 +673,10 @@ cost of the original file always containing the "deleted" notes if opened elsewh
   whatever's currently in `ui_state.skipped_notes` as-is and does not reset it, since a skip list
   keyed to one MIDI file's track/note/time structure is meaningless for a different file loaded
   later. The two sites that load an *unrelated* MIDI file (the Project tab's "Open MIDI…" button,
-  and dropping a `.mid` file onto the window) explicitly clear `skipped_notes`/
-  `pending_delete_notes`/`confirm_delete_open` immediately before calling `load_midi`.
-  `load_project_from_path` instead sets `skipped_notes` from the loaded project just before its own
-  `load_midi` call, so the project's own skip list survives that same reload.
+  and dropping a `.mid` file onto the window) explicitly clear `skipped_notes` immediately before
+  calling `load_midi`. `load_project_from_path` instead sets `skipped_notes` from the loaded
+  project just before its own `load_midi` call, so the project's own skip list survives that same
+  reload.
 - Verified by `cargo build`/`scripts/check.sh` (fmt+clippy clean) only — not yet manually exercised
   in the running app. Worth checking next time someone has hands on it: deleting a note actually
   removes it from the highway next frame, the confirm dialog's "Cancel" leaves it playing, deleting

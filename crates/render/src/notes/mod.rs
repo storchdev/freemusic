@@ -64,11 +64,14 @@ impl NoteInterval {
     }
 }
 
-/// One currently-rendered note's full identity (track/channel/number) plus its start/end time in
-/// seconds — everything the keyboard tab's note editor (`ui::draw_note_editor`) needs to list
-/// "what's playing right now" and to build a `project::SkippedNote` key if the user deletes it.
-/// Unlike `NoteInterval` (x-position, no note number — used by particle/flash effects), this
-/// carries the identifying fields and drops the x-span, since the editor has no use for layout.
+/// One note's full identity (track/channel/number) plus its start/end time in seconds —
+/// everything the keyboard tab's note editor (`ui::draw_note_editor`) needs to list "what's
+/// playing right now" and to build a `project::SkippedNote` key to delete or restore it. Unlike
+/// `NoteInterval` (x-position, no note number — used by particle/flash effects), this carries the
+/// identifying fields and drops the x-span, since the editor has no use for layout. Built for
+/// every in-range/non-drum note regardless of `skipped` status (unlike `NoteInterval`/the
+/// rendered `NoteInstance`s, which only exist for non-skipped notes) so the editor can still list
+/// a skipped note with a restore option.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ActiveNote {
     pub track_id: usize,
@@ -76,6 +79,9 @@ pub struct ActiveNote {
     pub note: u8,
     pub start_seconds: f64,
     pub end_seconds: f64,
+    /// Whether this note is currently in the project's `skipped_notes` list (excluded from the
+    /// note highway and playback).
+    pub skipped: bool,
 }
 
 struct Loaded {
@@ -87,8 +93,10 @@ struct Loaded {
     /// Sorted (ascending start time, matching `note_starts`) intervals for the notes actually
     /// drawn (in-range, non-drum, non-skipped) — see `NoteInterval`.
     note_intervals: Vec<NoteInterval>,
-    /// Same filtering and ordering as `note_intervals`, built alongside it in `rebuild_instances`
-    /// — see `ActiveNote`. Kept as a separate vec (rather than folding fields into
+    /// Same in-range/non-drum filter and ordering as `note_intervals`, built alongside it in
+    /// `rebuild_instances` — see `ActiveNote`. Unlike `note_intervals`, this also includes
+    /// skipped notes (flagged via `ActiveNote::skipped`), since the note editor needs to offer a
+    /// restore option for them. Kept as a separate vec (rather than folding fields into
     /// `NoteInterval`) since `NoteInterval` is on the hot path for every particle/flash frame
     /// update and callers there have no use for the identifying fields.
     active_notes: Vec<ActiveNote>,
@@ -127,12 +135,12 @@ impl NotesRenderer {
             .unwrap_or(&[])
     }
 
-    /// Notes from the currently-rendered set (in-range, non-drum, non-skipped — same filter as
-    /// `rebuild_instances`) whose `[start, end]` window contains `time_seconds`; empty if nothing
-    /// is loaded. Used by the keyboard tab's note editor to list what's playing at the current
-    /// frame. Linear scan over `active_notes`, same pattern as
-    /// `effects::EffectsRenderer::update`'s "currently held" check — cheap enough to call once
-    /// per UI redraw.
+    /// In-range, non-drum notes (both skipped and not — see `ActiveNote::skipped`) whose
+    /// `[start, end]` window contains `time_seconds`; empty if nothing is loaded. Used by the
+    /// keyboard tab's note editor to list what's playing at the current frame, including already-
+    /// skipped notes so they can be offered a restore option. Linear scan over `active_notes`,
+    /// same pattern as `effects::EffectsRenderer::update`'s "currently held" check — cheap enough
+    /// to call once per UI redraw.
     pub fn notes_at(&self, time_seconds: f32) -> Vec<ActiveNote> {
         let Some(loaded) = self.loaded.as_ref() else {
             return Vec::new();
@@ -253,14 +261,6 @@ impl NotesRenderer {
             .iter()
             .flat_map(|track| track.notes.iter())
             .filter(|note| range.contains(note.note) && note.channel != 9)
-            .filter(|note| {
-                !skipped.iter().any(|skip| {
-                    skip.track_id == note.track_id
-                        && skip.channel == note.channel
-                        && skip.note == note.note
-                        && skip.start_seconds == note.start.as_secs_f64()
-                })
-            })
             .collect();
         // Render newer notes on top of older ones, matching Neothesia's own convention.
         notes.sort_by_key(|note| note.start);
@@ -269,6 +269,13 @@ impl NotesRenderer {
         let mut active_notes = Vec::with_capacity(notes.len());
         let instances = self.pipeline.instances();
         for note in notes {
+            let is_skipped = skipped.iter().any(|skip| {
+                skip.track_id == note.track_id
+                    && skip.channel == note.channel
+                    && skip.note == note.note
+                    && skip.start_seconds == note.start.as_secs_f64()
+            });
+
             let key = &keys[note.note as usize - range_start];
             let (color_top, color_bottom) = if key.is_sharp {
                 (top_dark, bottom_dark)
@@ -279,21 +286,27 @@ impl NotesRenderer {
             let note_x = key.x + left_x;
             let start_seconds = note.start.as_secs_f32();
 
-            instances.push(NoteInstance {
-                position: [note_x, start_seconds],
-                size: [key.width - 1.0, duration - 0.01],
-                color_top,
-                color_bottom,
-                radius: key.width * 0.2 * note_layer.roundedness,
-                velocity: note.velocity as f32 / 127.0,
-                track_index: note.track_id as f32,
-            });
-            note_intervals.push(NoteInterval {
-                start_seconds,
-                end_seconds: start_seconds + duration,
-                x_left: note_x,
-                x_right: note_x + key.width,
-            });
+            // A skipped note gets neither a rendered instance nor a `NoteInterval` (so it never
+            // draws on the highway and never triggers barrier/particle effects) — but it still
+            // gets an `ActiveNote` below, so the note editor can list it (with a restore icon)
+            // even while it's excluded from playback.
+            if !is_skipped {
+                instances.push(NoteInstance {
+                    position: [note_x, start_seconds],
+                    size: [key.width - 1.0, duration - 0.01],
+                    color_top,
+                    color_bottom,
+                    radius: key.width * 0.2 * note_layer.roundedness,
+                    velocity: note.velocity as f32 / 127.0,
+                    track_index: note.track_id as f32,
+                });
+                note_intervals.push(NoteInterval {
+                    start_seconds,
+                    end_seconds: start_seconds + duration,
+                    x_left: note_x,
+                    x_right: note_x + key.width,
+                });
+            }
             active_notes.push(ActiveNote {
                 track_id: note.track_id,
                 channel: note.channel,
@@ -307,6 +320,7 @@ impl NotesRenderer {
                 // barrier — real bug found from a real file: three ~10-30ms notes that were
                 // visually still on-screen showed as "no notes playing" in the editor.
                 end_seconds: (start_seconds + duration) as f64,
+                skipped: is_skipped,
             });
         }
 
