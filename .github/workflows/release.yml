@@ -14,34 +14,51 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      only:
+        description: "Limit this run to a single platform leg"
+        type: choice
+        options: [all, linux-x86_64, windows-x86_64, macos-x86_64, macos-arm64]
+        default: all
 
 permissions:
   contents: write
 
 jobs:
+  # `matrix` isn't available in `jobs.<job_id>.if`, so filtering the matrix down to the `only`
+  # leg has to happen as a separate job producing JSON, rather than a per-leg `if` on `build`.
+  configure:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        run: |
+          only="${{ inputs.only }}"
+          only="${only:-all}"
+
+          row_linux='{"name":"linux-x86_64","os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","bin":"app"}'
+          row_windows='{"name":"windows-x86_64","os":"windows-latest","target":"x86_64-pc-windows-msvc","bin":"app.exe"}'
+          row_macos_x86='{"name":"macos-x86_64","os":"macos-13","target":"x86_64-apple-darwin","bin":"app"}'
+          row_macos_arm='{"name":"macos-arm64","os":"macos-latest","target":"aarch64-apple-darwin","bin":"app"}'
+
+          case "$only" in
+            linux-x86_64) rows="$row_linux" ;;
+            windows-x86_64) rows="$row_windows" ;;
+            macos-x86_64) rows="$row_macos_x86" ;;
+            macos-arm64) rows="$row_macos_arm" ;;
+            *) rows="$row_linux,$row_windows,$row_macos_x86,$row_macos_arm" ;;
+          esac
+
+          echo "matrix={\"include\":[$rows]}" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: configure
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: linux-x86_64
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            bin: app
-          - name: windows-x86_64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            bin: app.exe
-          - name: macos-x86_64
-            os: macos-13
-            target: x86_64-apple-darwin
-            bin: app
-          - name: macos-arm64
-            os: macos-latest
-            target: aarch64-apple-darwin
-            bin: app
+      matrix: ${{ fromJson(needs.configure.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v4
