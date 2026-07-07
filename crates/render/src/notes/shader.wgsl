@@ -32,7 +32,9 @@ struct TimeUniform {
 // CLAUDE.md for `mat3x3<f32>` uniforms — every field here is already vec4-aligned so there's no
 // implicit padding for the Rust side to get wrong.
 struct StyleUniform {
-    // x = fill_kind (0 = solid, 1 = vertical gradient), y = sheen_enabled, z = glow_enabled, w unused.
+    // x unused (was a style-wide solid-vs-gradient flag; `fill_color` now always blends
+    // `color_top`/`color_bottom` per note instead, see its own comment for why),
+    // y = sheen_enabled, z = glow_enabled, w unused.
     fill_and_flags: vec4<f32>,
     // x = sheen intensity, y = sheen width (fraction of the note's diagonal span), z = sheen angle
     // (radians), w unused.
@@ -173,14 +175,13 @@ fn dist(
 // separate from `dist`'s edge-distance math so `fs_glow` doesn't need to duplicate it, and vice
 // versa.
 fn fill_color(in: VertexOutput) -> vec3<f32> {
-    // Solid fill (default): color_top == color_bottom, so this mix is a no-op and matches Phase
-    // B's flat color exactly. Vertical gradient blends by the fragment's position within the
-    // note's true (unpadded) box.
-    var color = in.color_top;
-    if style_uniform.fill_and_flags.x > 0.5 {
-        let shape_uv_y = clamp((in.position.y - in.note_pos.y) / max(in.size.y, 0.0001), 0.0, 1.0);
-        color = mix(in.color_top, in.color_bottom, shape_uv_y);
-    }
+    // Always blend by the fragment's position within the note's true (unpadded) box. For a solid
+    // fill (default), `color_top == color_bottom` per instance, so this mix is a no-op and matches
+    // Phase B's flat color exactly — this must stay a per-instance equality check rather than a
+    // style-wide flag, since `BlackKeyFill::Custom` can give sharp-key notes a gradient (or vice
+    // versa) independently of whether the natural-key `fill` itself is solid or a gradient.
+    let shape_uv_y = clamp((in.position.y - in.note_pos.y) / max(in.size.y, 0.0001), 0.0, 1.0);
+    var color = mix(in.color_top, in.color_bottom, shape_uv_y);
 
     // Diagonal specular stripe, swept across the note's fill at a fixed angle.
     if style_uniform.fill_and_flags.y > 0.5 {

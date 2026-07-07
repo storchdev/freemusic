@@ -8,7 +8,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use project::{Fill, Glow, NoteLayer, Sheen};
+use project::{Glow, NoteLayer, Sheen};
 
 use super::instance::NoteInstance;
 
@@ -78,6 +78,12 @@ struct QuadVertex {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct StyleUniform {
+    /// x unused (was a style-wide solid-vs-gradient flag; removed because it was derived only
+    /// from the white-key `fill`, so the shader ignored `color_bottom` for every note — including
+    /// a `BlackKeyFill::Custom` gradient on the sharp keys — whenever the white-key fill was
+    /// `Solid`. The shader now always blends `color_top`/`color_bottom` per note instead, which is
+    /// an exact no-op for any note whose two colors are equal), y = sheen_enabled,
+    /// z = glow_enabled, w unused.
     fill_and_flags: [f32; 4],
     sheen_params: [f32; 4],
     /// xyz = halo color (linear), w unused (was glow radius pre-Phase-M).
@@ -123,10 +129,6 @@ fn srgb_to_linear([r, g, b]: [u8; 3]) -> [f32; 3] {
 
 impl StyleUniform {
     fn from_note_layer(note_layer: &NoteLayer) -> Self {
-        let fill_kind = match note_layer.fill {
-            Fill::Solid(_) => 0.0,
-            Fill::VerticalGradient { .. } => 1.0,
-        };
         let (sheen_enabled, sheen_params) = match note_layer.sheen {
             Some(Sheen {
                 intensity,
@@ -163,7 +165,7 @@ impl StyleUniform {
                 None => (0.0, [0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4]),
             };
         Self {
-            fill_and_flags: [fill_kind, sheen_enabled, glow_enabled, 0.0],
+            fill_and_flags: [0.0, sheen_enabled, glow_enabled, 0.0],
             sheen_params,
             glow_color,
             glow_params,

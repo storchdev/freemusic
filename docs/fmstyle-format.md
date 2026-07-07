@@ -112,6 +112,26 @@ enum BlackKeyFill { Auto, Same, Custom(Fill) }
 Legacy mapping (`Style::from_legacy`, from `NoteStyle::black_key_color: BlackKeyColorMode`):
 `Auto`→`Auto`, `Same`→`Same`, `Custom(color)`→`Custom(Fill::Solid(Constant(color)))`.
 
+**Bug fixed:** `BlackKeyFill::Custom(Fill::VerticalGradient { .. })`'s `bottom` color used to be
+silently dropped (every sharp-key note rendered flat at its gradient's `top` color only) whenever
+the *natural*-key `fill` was `Solid` — see `crates/render/src/notes/shader.wgsl`'s `fill_color`
+and `crates/render/src/notes/pipeline.rs`'s `StyleUniform::from_note_layer` for the fix. The root
+cause: whether the shader blended a note's `color_top`/`color_bottom` at all was gated by a single
+style-wide `fill_kind` uniform derived only from the natural-key `fill`'s variant, not per-note —
+so a `Solid` natural-key fill forced every note (including gradient-filled sharp keys) through the
+"flat color" branch. Fixed by always blending per-note instead (an exact no-op when the two colors
+are equal, which is what a solid fill already bakes in) rather than gating on a global flag; the
+now-unused uniform slot is documented in place in both files rather than repacking the struct.
+
+Fixing this required changing `fill_color`'s `var color` (mutated below by the sheen block) to be
+computed via `mix(...)` unconditionally rather than defaulted then conditionally reassigned — an
+initial pass wrongly changed the declaration to `let`, which `cargo build`/`cargo clippy` both
+happily accept since neither type-checks embedded WGSL source strings at Rust-compile time; the
+mismatch (assigning to an immutable binding) only surfaced as a runtime `wgpu::Device::
+create_shader_module` validation panic the first time the app actually ran. Any future edit to
+`shader.wgsl` needs an actual app run (or at least a shader-module-creation smoke test) to catch
+parse/validation errors — `cargo build`/`clippy` passing is not sufficient signal on its own.
+
 ### `Sheen`
 
 ```rust
