@@ -1303,13 +1303,8 @@ impl AppState {
         let egui_buffers_elapsed = stage_start.elapsed();
 
         let stage_start = Instant::now();
-        // The compositor now renders into the offscreen preview texture, not the swapchain
-        // directly — the egui pass below displays it via `egui::Image` in the central panel
-        // (see CLAUDE.md's milestone 6c notes). This also sidesteps the old two-pass split that
-        // was needed only because `WaterfallRenderer::render` ties its `&mut self` borrow to the
-        // render pass's invariant lifetime parameter: this pass has a real (non-`'static`)
-        // lifetime, same as the old "scene_pass" did, so `WaterfallRenderer` is still fine with
-        // it even though it's a different render target now.
+        // Render the compositor into the offscreen preview texture; egui displays it below via
+        // `egui::Image` in the central panel.
         {
             let background = srgb_to_linear(effective_background_color(&self.ui_state));
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

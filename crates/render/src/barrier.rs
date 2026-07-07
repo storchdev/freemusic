@@ -1,32 +1,10 @@
-//! Renders the barrier where falling notes stop: a full-canvas-width horizontal bar, optionally
-//! with a soft glow falloff (`BarrierLayer::glow`) and a decaying brightness pulse when a note
-//! arrives (Phase D of the `.fmstyle.ron` milestone; glow unified onto the shared `Glow` struct in
-//! Phase K — see CLAUDE.md). A real wgpu pass rather than the plain `egui` overlay milestone 6a
-//! used — see CLAUDE.md — so the barrier now shows up in exported video too; `ui::
-//! draw_barrier_handle` keeps only the drag hit-region for editing.
+//! Renders the barrier where falling notes stop: a full-canvas-width horizontal bar with optional
+//! glow, wavy edges, and note-arrival pulse. `ui::draw_barrier_handle` keeps only the drag
+//! hit-region for editing.
 //!
 //! Self-contained quad pass, structured like `video_quad.rs`: no vertex buffer (six hardcoded
 //! unit-quad corners, positioned/sized in the vertex shader from a uniform), one bind group.
-//!
-//! **"White-hot pipe" redesign (post-Phase-K)**: `brightness` used to be a plain color multiplier
-//! applied only to the glow *halo*, with a separate `intensity` knob controlling the halo's
-//! opacity — the bar's own core color never changed, so a bright glow read as a colored ring
-//! stuck to the edges rather than the bar itself heating up. Both `Glow::intensity` and
-//! `Pulse::intensity` are gone now (redundant with `brightness`); `brightness` alone drives the
-//! core bar's own color, desaturating toward pure white as brightness climbs past `1.0`
-//! (`barrier.wgsl`'s `hot_color`, shared with `notes/shader.wgsl`'s and `effects.rs`'s identical
-//! logic).
-//!
-//! **Additive multi-layer corona (Phase M)**: the halo used to be a single alpha-blended ring at
-//! one spatial scale, which read as "a lighter flat color" rather than a real light source. It's
-//! now an *additive* sum of three exponential falloff terms (`Glow::layers`, tight/mid/wide),
-//! drawn with a separate render pipeline (`glow_pipeline`, `ONE`/`ONE` blend) *before* the existing
-//! opaque core pipeline (`core_pipeline`, unchanged `ALPHA_BLENDING`) — additive light can't also
-//! occlude what's under it, so the two looks need two passes, with the core drawn second so it
-//! correctly occludes the glow directly beneath it. `show_bar` (also Phase M) independently
-//! controls whether the opaque core pipeline draws at all, decoupled from whether `glow` is set —
-//! a barrier can be a pure glow with no visible bar, a bar with no glow, both, or neither. See
-//! `barrier.wgsl` for the actual math.
+//! Historical glow/pulse rationale lives in `docs/implementation-notes.md`.
 
 use bytemuck::{Pod, Zeroable};
 

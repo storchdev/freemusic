@@ -1,14 +1,6 @@
-// Renders the transition pass: a fixed pool of particles plus decaying flashes spawned when a
-// note arrives at the barrier (Phase E of the `.fmstyle.ron` milestone). No external texture asset
-// — every sprite is a procedural shape computed in the fragment shader from the quad's local
-// pixel-space offset from its center, same "signed distance in the fragment shader" spirit as
-// `notes/shader.wgsl`'s rounded-rect and `barrier.wgsl`'s glow falloff.
-//
-// Two fragment entry points (Phase M, replacing the old single `fs_main` with its
-// `mix(hard_edge, soft_glow, softness)` blend): `fs_puff` (non-additive particles, unchanged
-// hard-edged dot) and `fs_glow` (flashes and additive particles, additive exponential-layered-sum
-// corona — see `barrier.wgsl`'s `fs_glow` for the identical mechanism). One instanced draw per
-// blend mode (see `effects.rs`): additive (`fs_glow`) and premultiplied-alpha (`fs_puff`).
+// Transition sprites are procedural shapes computed from each quad's local pixel offset.
+// `fs_puff` handles premultiplied-alpha particles; `fs_glow` handles additive particles/flashes.
+// Historical rationale for the split lives in `docs/implementation-notes.md`.
 
 struct ViewUniform {
     transform: mat4x4<f32>,

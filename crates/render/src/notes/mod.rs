@@ -1,11 +1,7 @@
 //! Loads a MIDI file and renders its falling-notes "note highway" above the video quad.
 //!
-//! Vendored in-tree (own shader, own pipeline, own instance-building loop) rather than reusing
-//! Neothesia's `WaterfallRenderer` — see CLAUDE.md's "Vendor note pipeline" section for the
-//! rationale (mirrors how `mp4-encoder` was forked from `ffmpeg-encoder`) and for why this
-//! deletes the fragile `virtual_canvas_height` viewport/scissor trick the previous
-//! `neothesia_core`-backed version needed: owning the shader means `barrier_fraction` can be a
-//! real uniform instead of an indirect remap of a hardcoded 80% constant.
+//! Vendored in-tree with its own shader, pipeline, and instance-building loop. Owning the shader
+//! keeps `barrier_fraction` as a real uniform instead of a viewport/scissor remap.
 //!
 //! Note lanes are aligned to the real keyboard visible in the footage via `KeyboardCalibration`
 //! (left/right fractions of window width, set by the user dragging guide handles — see
@@ -312,13 +308,8 @@ impl NotesRenderer {
                 channel: note.channel,
                 note: note.note,
                 start_seconds: note.start.as_secs_f64(),
-                // Same `duration.max(0.1)` floor as `note_intervals`/the rendered instance's own
-                // size above — not the note's raw (possibly much shorter) `note.end`. A very short
-                // MIDI note (e.g. a grace note a few milliseconds long) still renders as at least a
-                // 0.1s bar on the highway, so using the unclamped end here made the note editor's
-                // "currently playing" window collapse well before the bar visually passed the
-                // barrier — real bug found from a real file: three ~10-30ms notes that were
-                // visually still on-screen showed as "no notes playing" in the editor.
+                // Match the rendered note duration floor so the editor's active-note window
+                // matches what is visible. See `docs/implementation-notes.md`.
                 end_seconds: (start_seconds + duration) as f64,
                 skipped: is_skipped,
             });
@@ -439,19 +430,8 @@ fn keyboard_layout(
             .white_count()
             .max(1) as f32;
         let neutral_width = segment_width / white_count;
-        // `KeyboardLayout::from_range` (vendored `piano_layout`) chunks by octave via
-        // `split_range_by_octaves`, which computes a truncated chunk's end as an *absolute* note
-        // count from the query's start rather than octave-relative — only correct when the
-        // truncated chunk happens to start at a C (index 0 in `Octave`'s table). That's always
-        // true for the real keyboard's own final chunk (the range this crate was ever actually
-        // exercised with: `KeyboardRange::standard_88_keys()`), but querying a segment's own
-        // narrow end directly (e.g. `21..24` for the A0-B0 segment, which starts mid-octave at
-        // index 9) hits that bug and panics on an invalid slice. Querying through to the real
-        // keyboard end instead makes every one of these calls an exact suffix of that one
-        // known-safe range — the same sequence of chunks `split_range_by_octaves` would produce
-        // partway through the original whole-keyboard call — so the bug's precondition (a
-        // mid-octave truncation) never occurs; the extra trailing keys are simply discarded via
-        // `take(segment_len)`.
+        // Query through the real keyboard end, then discard trailing keys, to avoid a
+        // `piano_layout` mid-octave truncation edge case. See `docs/implementation-notes.md`.
         let full_range = KeyboardRange::new(segment_start..KEYBOARD_END);
         let layout =
             KeyboardLayout::from_range(Sizing::new(neutral_width, neutral_height), full_range);

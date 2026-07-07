@@ -124,11 +124,9 @@ pub struct DecodeTimings {
     pub copy: std::time::Duration,
 }
 
-/// Default frame-decode worker count: the number of logical CPUs, capped at 4. The cap is the fix
-/// for the mouse-move playback-lag bug (see `VideoPipeline::open`) — 4 workers stay resident on a
-/// hybrid CPU's performance cores instead of oversubscribing/spilling onto slow efficiency cores,
-/// while still decoding typical footage comfortably in real time. Overridden by
-/// `FREEMUSIC_DECODE_THREADS`.
+/// Default frame-decode worker count, capped to avoid oversubscribing hybrid CPUs during
+/// interactive playback. Overridden by `FREEMUSIC_DECODE_THREADS`; see
+/// `docs/implementation-notes.md`.
 fn default_decode_threads() -> usize {
     std::thread::available_parallelism()
         .map(usize::from)
@@ -171,20 +169,9 @@ impl VideoPipeline {
         // frames concurrently instead, at the cost of a few frames of decode latency — irrelevant
         // for a scrub/playback pipeline that's never decoding "live".
         //
-        // Thread count is CAPPED (default `min(available_parallelism, 4)`), NOT left at `count: 0`
-        // (libavcodec's own choice = roughly one thread per logical CPU). On the dev machine — an
-        // 8-core Intel Lunar Lake with 4 fast P-cores + 4 slow LP-E cores — `count: 0` spawned 8+
-        // frame-decode workers, and under the ~1000Hz `CursorMoved` event/system churn from moving
-        // the mouse the scheduler descheduled those workers onto (or off) the LP-E island while the
-        // main thread kept a P-core. The stall surfaced as `avcodec_send_packet` blocking on a
-        // not-yet-free worker slot: measured ~150x (200us → 20-30ms/frame), i.e. multi-second
-        // playback lag for as long as the mouse moved, while the main thread's own swscale/copy
-        // stayed fast (the tell that it was worker starvation, not global load — see the full
-        // investigation in CLAUDE.md). Capping to 4 workers keeps them resident on the 4 P-cores
-        // and off the LP-E cores: `send` then stays at its ~150us baseline even during mouse-move,
-        // with no loss of steady-state throughput (4 frame-threads decode 1080p30 well within
-        // real-time). `FREEMUSIC_DECODE_THREADS=N` overrides for tuning; `=0` restores libavcodec's
-        // pick-everything behaviour (i.e. reproduces the old pathology on such a CPU).
+        // Keep the default capped instead of using libavcodec's "all logical CPUs" choice; the
+        // history behind that cap is in `docs/implementation-notes.md`. `=0` restores libavcodec's
+        // own pick for tuning/comparison.
         let thread_count = std::env::var("FREEMUSIC_DECODE_THREADS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -248,27 +235,9 @@ impl VideoPipeline {
     /// milliseconds at a time; in that case no seek happens at all, and if the currently held
     /// frame is still the correct one to display, the decoder isn't touched either. Only a
     /// backward jump or a forward jump bigger than [`MAX_FORWARD_STEP_SECONDS`] causes a real
-    /// seek — this is meant to catch actual scrubs, but it also fires for something that isn't a
-    /// scrub at all: a redraw-cadence stall (a slow frame from system load, a blocked GPU call,
-    /// anything that makes real wall-clock time jump by more than a second between redraws while
-    /// `target_seconds` was simply advancing via elapsed time, not an explicit seek).
-    ///
-    /// `exact` controls what happens *after* one of those reseeks, and callers should set it
-    /// based on which of those two cases they're actually in — this distinction used to not
-    /// exist, and conflating them was a real bug (reported as "playback jumps back and gets
-    /// stuck looping ~20 frames" once redraw cadence on real hardware turned out to be less
-    /// metronomic than initially assumed): `exact = false` (an explicit scrub — the interactive
-    /// timeline being dragged/clicked) returns the first frame decoded after the seek, which
-    /// lands on/near the nearest preceding keyframe — cheap but approximate, and fine for that
-    /// case since the user is actively dragging and will settle on a final position themselves.
-    /// `exact = true` (export, and — critically — ordinary playback ticks too, even though those
-    /// don't otherwise look like they need "exactness") keeps decoding forward until the frame's
-    /// timestamp reaches `target_seconds`. For ordinary playback this matters specifically for
-    /// the stall case: without it, a stall-triggered reseek would land on a stale, up-to-2-second
-    /// old keyframe and just sit there — every following redraw would see the same
-    /// still-uncaught-up gap, trigger *another* reseek to essentially the same spot, and repeat,
-    /// which looks exactly like the video jumping back and stuttering through the same handful
-    /// of frames instead of smoothly continuing forward.
+    /// seek. `exact` controls whether post-seek decode may stop at the first frame after the
+    /// keyframe (`false`, for live scrubs) or must advance to `target_seconds` (`true`, for export
+    /// and ordinary playback ticks). See `docs/implementation-notes.md`.
     pub fn seek_and_decode(
         &mut self,
         target_seconds: f64,

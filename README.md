@@ -55,8 +55,8 @@ cargo run --bin app -- project.fmproj.ron                            # or open a
 cargo run --bin app -- project.fmproj.ron mystyle.fmstyle.ron        # or open a project and a style file
 ```
 
-See `CLAUDE.md` and `docs/` for a full architecture writeup, including the phased build history
-and the design decisions behind each subsystem.
+See `CLAUDE.md` and `docs/` for architecture, verification, implementation notes, and the phased
+build history behind each subsystem.
 
 ## Roadmap
 

@@ -1,28 +1,6 @@
 //! Renders barrier-hit transitions: a fixed-pool CPU particle simulation plus decaying flashes,
-//! spawned when a note's arrival crosses the transport position (Phase E of the `.fmstyle.ron`
-//! milestone — see CLAUDE.md). Structured like `notes/pipeline.rs`: own shader, own instance
-//! buffer(s), no vertex-buffer-per-frame reallocation unless the pool outgrows its capacity.
-//!
-//! **Stateful, unlike the barrier's pulse** (`barrier.rs`'s `pulse_intensity`, which recomputes
-//! cleanly from time alone): a particle's position is the integral of its velocity/gravity since
-//! spawn, so it cannot be derived from `time_seconds` alone without also knowing every particle's
-//! spawn time, initial velocity, and RNG draw. `update` therefore tracks `last_time_seconds` and
-//! advances the pool by `time_seconds - last_time_seconds` each call, spawning one burst per
-//! `NoteInterval` whose start falls in `(last_time_seconds, time_seconds]` (plus, for
-//! `EmissionMode::Continuous`, streaming particles for every interval currently held — see Phase
-//! I of the style-extensibility continuation in CLAUDE.md). A big jump (forward or backward — a
-//! scrub, not ordinary playback) clears the pool instead of trying to catch up or rewind it,
-//! since these are transient effects with no "correct" mid-scrub state to reconstruct.
-//!
-//! **Additive multi-layer corona (Phase M)**: flashes and additive-mode particles now use the
-//! same additive exponential-layered-sum formula as `barrier.rs`/`notes/pipeline.rs` (`fs_glow`)
-//! instead of the old `mix(hard_edge, soft_glow, softness)` blend — `softness` is gone. Unlike
-//! barrier/notes, this file needs **no second render pipeline for occlusion**: additively-blended
-//! effects never sit on top of opaque geometry the way an opaque core does, so "hard dot +
-//! additive halo" can just be the same additive draw. The existing two-pipeline split
-//! (`additive_pipeline`/`alpha_pipeline`) stays exactly as it was, just routing to different
-//! fragment entry points (`fs_glow`/`fs_puff`) — non-additive "puff" particles are completely
-//! unchanged pixel-for-pixel.
+//! spawned when note arrivals cross the transport position. The simulation is stateful and uses
+//! separate additive and premultiplied-alpha pipelines; see `docs/implementation-notes.md`.
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;

@@ -5,14 +5,8 @@ struct Uniforms {
     crop_uv_min: vec2<f32>,
     crop_uv_max: vec2<f32>,
     brightness: f32,
-    // Non-zero when the render target is a plain (non-sRGB) format, e.g. the interactive preview's
-    // `Rgba8Unorm` offscreen texture (egui's `register_native_texture` requires exactly that
-    // format). `video_texture` is sampled from an `Bgra8UnormSrgb` source, so `textureSample`
-    // already decoded it to linear; a `*Srgb` render target would auto-encode back to gamma on
-    // store, but a plain `Unorm` target does not, so without this the stored bytes are linear
-    // values read back as if they were gamma-encoded — i.e. every midtone comes out darker than it
-    // should (the video-looks-darker-than-mpv bug). Export renders straight to a `Bgra8UnormSrgb`
-    // target instead, which auto-encodes correctly, so this stays 0 there.
+    // Non-zero when the render target is plain `Unorm`, so the shader must sRGB-encode the
+    // sampled linear video color before storing. See `docs/implementation-notes.md`.
     manual_srgb_encode: f32,
 };
 

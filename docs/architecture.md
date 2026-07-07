@@ -1,7 +1,8 @@
 # Architecture
 
 Detailed architecture notes for freemusic, split out of CLAUDE.md to keep that file short.
-See also `docs/ui-milestones.md`, `docs/fmstyle-milestone.md`, `docs/verification.md`, and `docs/fmstyle-format.md`.
+See also `docs/ui-milestones.md`, `docs/fmstyle-milestone.md`, `docs/verification.md`,
+`docs/fmstyle-format.md`, and `docs/implementation-notes.md`.
 
 ### Workspace layout (current)
 

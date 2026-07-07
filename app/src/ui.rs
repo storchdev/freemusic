@@ -1440,9 +1440,8 @@ const BARRIER_MAX_FRACTION: f32 = 0.98;
 
 /// Drag hit-region for `calibration.barrier_fraction`, editor-only — same `Sense::drag()` +
 /// accumulated `drag_delta()` pattern as `draw_calibration_handles`, rotated 90°. The barrier
-/// itself is now a real wgpu pass (`render::barrier::BarrierRenderer`, Phase D of the
-/// `.fmstyle.ron` milestone — see CLAUDE.md) baked into the preview image and export alike, so
-/// this no longer paints anything; it only owns the invisible drag target over the rendered bar.
+/// itself is rendered by `render::barrier::BarrierRenderer`; this only owns the invisible drag
+/// target over the rendered bar.
 fn draw_barrier_handle(
     ui: &egui::Ui,
     screen: egui::Rect,
