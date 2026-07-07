@@ -404,7 +404,11 @@ fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
                     ui.label("");
                     ui.end_row();
 
-                    let notes_now = state.notes_now.clone();
+                    // `state.notes_now` comes back ordered by start time (see
+                    // `render::notes::NotesRenderer::notes_at`); re-sort by pitch so the table
+                    // reads like a keyboard, lowest note first.
+                    let mut notes_now = state.notes_now.clone();
+                    notes_now.sort_by_key(|note| note.note);
                     for note in &notes_now {
                         let key = skipped_note_key(note);
                         let duration_text =
