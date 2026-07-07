@@ -121,6 +121,22 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      # Resolved here, in the plain (non-MSYS2) shell, right after msvc-dev-cmd puts the real
+      # link.exe on PATH — the `msys2 {0}` shell used below always puts MSYS2's own usr/bin
+      # (which ships a coreutils `link.exe`, the `link(1)` hard-link tool, not a linker) ahead of
+      # it regardless of step order, so a plain `cargo build` inside that shell picks the wrong
+      # one and fails with "extra operand" errors. Exporting the resolved absolute path via
+      # CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER makes rustc invoke it directly instead of
+      # searching PATH, sidestepping the shadowing entirely (an earlier attempt to just reorder
+      # PATH inside the msys2 shell didn't work: path-type: inherit keeps PATH in native
+      # semicolon/backslash form, which a POSIX-style PATH edit there silently didn't match).
+      - name: Point cargo at the real MSVC link.exe
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $link = (Get-Command link.exe).Source
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$link"
+
       - name: Build libx264 (static, from source, MSVC)
         if: runner.os == 'Windows'
         shell: msys2 {0}
@@ -142,15 +158,7 @@ jobs:
       - name: Build (static-ffmpeg, Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: |
-          # The `msys2 {0}` shell always puts MSYS2's own usr/bin ahead of whatever `msvc-dev-cmd`
-          # put on PATH, regardless of the order these steps ran in. MSYS2 ships a coreutils
-          # `link.exe` (the `link(1)` hard-link tool, not a linker) under usr/bin, which shadows
-          # MSVC's real `link.exe` there and breaks the final `cargo build` link step with
-          # "extra operand" errors. Move usr/bin to the end of PATH so MSVC's link.exe is found
-          # first — same fix `scripts/build-static-windows.ps1` already applies locally.
-          export PATH="${PATH/\/usr\/bin:/}:/usr/bin"
-          cargo build --release -p app --features static-ffmpeg --target ${{ matrix.target }}
+        run: cargo build --release -p app --features static-ffmpeg --target ${{ matrix.target }}
 
       - name: Package
         shell: bash

@@ -126,15 +126,25 @@ The current scripts and vendored patches handle the known MSVC/static-build trap
 architecture setup, PowerShell environment propagation, and Windows PowerShell 5.1 script encoding.
 Historical details live in `docs/implementation-notes.md`.
 
-**MSYS2's own `link.exe` shadowing MSVC's**, inside any `shell: msys2 {0}` step (CI) or a raw
-MSYS2 bash invocation (local): MSYS2 ships a coreutils `link.exe` (the `link(1)` hard-link tool,
-unrelated to linking object files) under `usr/bin`, and that shell type always puts `usr/bin`
-ahead of whatever `msvc-dev-cmd`/a Developer Shell already put on `PATH` — regardless of what
-order the setup steps ran in. The symptom is `cargo build`'s link step failing with `link.exe`
-"extra operand" errors while pointing at a path under `...\msys64\usr\bin\link.exe` instead of
-the real MSVC linker. Fix: reorder `PATH` so `usr/bin` comes *after* the MSVC dirs, right before
-the `cargo build`/link invocation, e.g. `export PATH="${PATH/\/usr\/bin:/}:/usr/bin"` in bash.
-Both `release.yml`'s Windows `cargo build` step and `scripts/build-static-windows.ps1` do this.
+**MSYS2's own `link.exe` shadowing MSVC's**: MSYS2 ships a coreutils `link.exe` (the `link(1)`
+hard-link tool, unrelated to linking object files) under `usr/bin`. The symptom is `cargo
+build`'s link step failing with `link.exe` "extra operand" errors while pointing at a path under
+`...\msys64\usr\bin\link.exe` instead of the real MSVC linker. The fix differs by context:
+
+- **Locally** (`scripts/build-static-windows.ps1`, plain PowerShell): reordering `PATH` so
+  `usr\bin` comes *after* the MSVC dirs works fine, since PowerShell's `PATH` is just a normal
+  semicolon-joined string you can append to directly.
+- **In CI**, inside a `shell: msys2 {0}` step: that shell always puts MSYS2's `usr/bin` ahead of
+  whatever `msvc-dev-cmd` put on `PATH`, regardless of what order the setup steps ran in or how
+  `PATH` looks going in — a bash-side `PATH` reorder inside that shell was tried first and had no
+  effect (turned out `path-type: inherit` keeps `PATH` in native semicolon/backslash form, so a
+  POSIX-style `${PATH/\/usr\/bin:/}` edit silently never matched). The fix that actually works:
+  resolve MSVC's `link.exe` absolute path in a plain (non-MSYS2) `pwsh` step right after
+  `msvc-dev-cmd` runs, via `(Get-Command link.exe).Source`, and export it as
+  `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` (a `$GITHUB_ENV` var, so it reaches every later
+  step regardless of shell type). That makes `rustc` invoke the resolved path directly instead of
+  searching `PATH` for `link.exe`, sidestepping whatever the MSYS2 shell does to `PATH` entirely.
+  See the "Point cargo at the real MSVC link.exe" step in `release.yml`.
 
 Per-OS prerequisites for the `static-ffmpeg` feature (on top of the Vulkan/`libxkbcommon-x11`
 requirements above, which are unrelated to FFmpeg and still apply, and the from-source `libx264`
