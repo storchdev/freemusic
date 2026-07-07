@@ -142,7 +142,15 @@ jobs:
       - name: Build (static-ffmpeg, Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: cargo build --release -p app --features static-ffmpeg --target ${{ matrix.target }}
+        run: |
+          # The `msys2 {0}` shell always puts MSYS2's own usr/bin ahead of whatever `msvc-dev-cmd`
+          # put on PATH, regardless of the order these steps ran in. MSYS2 ships a coreutils
+          # `link.exe` (the `link(1)` hard-link tool, not a linker) under usr/bin, which shadows
+          # MSVC's real `link.exe` there and breaks the final `cargo build` link step with
+          # "extra operand" errors. Move usr/bin to the end of PATH so MSVC's link.exe is found
+          # first — same fix `scripts/build-static-windows.ps1` already applies locally.
+          export PATH="${PATH/\/usr\/bin:/}:/usr/bin"
+          cargo build --release -p app --features static-ffmpeg --target ${{ matrix.target }}
 
       - name: Package
         shell: bash

@@ -126,6 +126,16 @@ The current scripts and vendored patches handle the known MSVC/static-build trap
 architecture setup, PowerShell environment propagation, and Windows PowerShell 5.1 script encoding.
 Historical details live in `docs/implementation-notes.md`.
 
+**MSYS2's own `link.exe` shadowing MSVC's**, inside any `shell: msys2 {0}` step (CI) or a raw
+MSYS2 bash invocation (local): MSYS2 ships a coreutils `link.exe` (the `link(1)` hard-link tool,
+unrelated to linking object files) under `usr/bin`, and that shell type always puts `usr/bin`
+ahead of whatever `msvc-dev-cmd`/a Developer Shell already put on `PATH` — regardless of what
+order the setup steps ran in. The symptom is `cargo build`'s link step failing with `link.exe`
+"extra operand" errors while pointing at a path under `...\msys64\usr\bin\link.exe` instead of
+the real MSVC linker. Fix: reorder `PATH` so `usr/bin` comes *after* the MSVC dirs, right before
+the `cargo build`/link invocation, e.g. `export PATH="${PATH/\/usr\/bin:/}:/usr/bin"` in bash.
+Both `release.yml`'s Windows `cargo build` step and `scripts/build-static-windows.ps1` do this.
+
 Per-OS prerequisites for the `static-ffmpeg` feature (on top of the Vulkan/`libxkbcommon-x11`
 requirements above, which are unrelated to FFmpeg and still apply, and the from-source `libx264`
 build above, which applies to every OS):
