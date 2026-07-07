@@ -403,6 +403,26 @@ no effect).
   `!surface_format.is_srgb()`) and a `linear_to_srgb` function in `shader.wgsl`, applied in
   `fs_main` only when the flag is set — so the interactive preview now gets a manual gamma encode
   and export keeps relying on its target's automatic one.
+- **Fixed: exported notes/barrier/particles looked blown-out/washed-white compared to the
+  interactive preview** (reported directly by comparing an editor screenshot against the
+  corresponding exported frame — notes lost their distinct per-key color and rounded shape, the
+  green barrier line and falling particles disappeared entirely into the glow). Root cause: unlike
+  `video_quad` above, `notes/pipeline.rs`/`barrier.rs`/`effects.rs` have no `manual_srgb_encode`
+  compensation at all — they convert their hex colors sRGB→linear once on upload and then blend
+  many overlapping additive draws (note fill/glow, particles, barrier glow) directly against
+  whatever format the render target is, relying on the target itself being non-sRGB (so the
+  linear-ish blended sums land in the output bytes unmodified, matching how the interactive
+  preview's `Rgba8Unorm` offscreen texture already behaves). Export's offscreen texture was
+  `Bgra8UnormSrgb` though (`crates/export/src/lib.rs`, chosen when export was first added, before
+  milestone 6c's preview even existed to compare against) — a real sRGB target auto round-trips
+  every blended draw through a decode/blend/encode cycle, and because many notes/glow/particle
+  layers stack per frame, that round-trip compounds each time, pushing highlights toward clipping
+  and crushing the thinner barrier/particle layers into the blown-out background. Fixed by
+  changing export's offscreen format to `Bgra8Unorm` (the non-sRGB sibling, matching the
+  interactive preview's format exactly) instead of adding per-shader compensation to three more
+  pipelines — this also flips `video_quad`'s existing `manual_srgb_encode` flag on for export
+  (since `!format.is_srgb()` is now true there too), so every layer now blends identically in both
+  places by construction rather than by parallel-maintained flags.
 - `AppState::redraw` in `main.rs` is the per-frame orchestrator: advance/clamp the transport
   position and decode → update MIDI → run egui (`ui::draw`) → if egui queued a seek, consume and
   decode it immediately in that same redraw → apply calibration/project/export changes → sync

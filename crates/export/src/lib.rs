@@ -96,7 +96,18 @@ fn run_inner(
     let total_frames = ((duration_seconds * fps as f64).ceil() as u64).max(1);
 
     let gpu = HeadlessGpu::new();
-    let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+    // Must be the non-sRGB sibling of the interactive preview's own offscreen format
+    // (`PREVIEW_TEXTURE_FORMAT` in `app/src/main.rs`, forced to `Rgba8Unorm` by egui's
+    // `register_native_texture`). `notes::pipeline`/`barrier`/`effects` write already-blended
+    // linear-ish color straight to this target with no compensating encode step of their own
+    // (only `video_quad` has one, gated on `!surface_format.is_srgb()`) — so if this were an
+    // `*Srgb` format instead, the hardware would auto gamma-encode on every blended draw (notes,
+    // glow, particles, barrier), and since those layer many overlapping additive draws per frame,
+    // each blend's decode/encode round-trip compounds, blowing highlights out to white and
+    // crushing the barrier/particles into the background. Matching interactive's format here
+    // makes every layer blend identically in both places; `video_quad`'s existing manual-encode
+    // flag flips on for export exactly as it already does for the interactive preview.
+    let format = wgpu::TextureFormat::Bgra8Unorm;
     let handles = GpuHandles {
         instance: &gpu.instance,
         adapter: &gpu.adapter,
