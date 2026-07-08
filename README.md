@@ -68,6 +68,8 @@ Ideas being considered for future work, roughly grouped:
 - Custom note textures and background textures, both compatible with note alpha — alpha would
   let a note "see through" into a static background
 - Octave lines
+- Experiment with more barrier settings
+- Experiment with more wispy/bubbly particles
 - Reflectivity settings, for a metal-bar look
 - Key-property-based styles (e.g. driven by pitch or velocity)
 - Custom shaders
@@ -76,6 +78,8 @@ Ideas being considered for future work, roughly grouped:
 - Better slider input/dragging mechanics
 - More export options
 - Broader `.fmstyle.ron` feature support in the UI
+- Edit note durations in note editor
+- Add new notes at current frame in note editor
 
 **End-to-end**
 - Multiple styles within the same timeline (would require reworking the timeline UI and the
