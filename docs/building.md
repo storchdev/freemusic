@@ -105,71 +105,103 @@ scripts/build-static-linux.sh
 ```
 
 Both scripts are exactly what `.github/workflows/release.yml` does per-OS (see below), just
-runnable locally instead of in CI. Unlike the CI runners (which start from a clean image), a dev
-machine may well already have a system `libx264` installed, so both scripts also set
-`RUSTFLAGS="-L native=<x264-static>/lib -l static=x264"` before the `cargo build` step — this
-forces rustc to require a static `x264` archive and outright refuse a shared/import lib, so the
-search-order issue above can't silently reintroduce a dynamic dependency even if one exists on
-the system. The Linux script still runs an `ldd` check afterwards as a belt-and-suspenders
-sanity check. There's no equivalent macOS script yet — follow the manual recipe above (or read
-the release workflow's macOS steps) until one is added.
+runnable locally instead of in CI. Both also set
+`RUSTFLAGS="-L native=<x264-static>/lib -l static=x264"` before the `cargo build` step. On
+Linux/macOS this is defensive (a dev machine, unlike a clean CI image, may already have a system
+`libx264` installed, and this forces rustc to require a static archive and refuse a shared/import
+lib so the search-order issue above can't reintroduce a dynamic dependency) — the Linux script
+also runs an `ldd` check afterwards as a belt-and-suspenders sanity check. **On Windows it's not
+just defensive, it's required**: see "FFmpeg finds x264 but the final link doesn't" below. There's
+no equivalent macOS script yet — follow the manual recipe above (or read the release workflow's
+macOS steps) until one is added.
 
 ### Windows troubleshooting pointers
 
 FFmpeg's `configure` often collapses unrelated Windows failures into generic messages like
 `C compiler test failed`, `x264 not found using pkg-config`, or unresolved x264 symbols. When that
 happens, check `ffbuild/config.log` under
-`target\release\build\ffmpeg-sys-next-*\out\ffmpeg-*\ffbuild\` for the real compiler/linker error.
+`target\release\build\ffmpeg-sys-next-*\out\ffmpeg-*\ffbuild\` for the real compiler/linker error
+(`release.yml`'s "Show FFmpeg configure log on failure" step dumps this automatically in CI).
 
 The current scripts and vendored patches handle the known MSVC/static-build traps: MSVC-incompatible
 `ffmpeg-sys-next` flags, MSVC `-libpath:` parsing, x264 architecture mismatches, Developer Shell
 architecture setup, PowerShell environment propagation, and Windows PowerShell 5.1 script encoding.
 Historical details live in `docs/implementation-notes.md`.
 
-**MSYS2's own `link.exe` shadowing MSVC's**: MSYS2 ships a coreutils `link.exe` (the `link(1)`
-hard-link tool, unrelated to linking object files) under `usr/bin`. The symptom is `cargo
-build`'s link step failing with `link.exe` "extra operand" errors while pointing at a path under
-`...\msys64\usr\bin\link.exe` instead of the real MSVC linker. The fix differs by context:
+**Why CI hit bugs the local script never did.** `scripts/build-static-windows.ps1` runs almost
+entirely as one plain PowerShell session — it drops into MSYS2 only briefly, via a *non-login*
+`bash -c`, to build x264 from source, converting any path crossing that boundary by hand
+(`cygpath -u`/`-w`) exactly where it's used, then returns to plain PowerShell for the actual
+`cargo build`. `release.yml` can't do that: `msys2/setup-msys2`'s `shell: msys2 {0}` wrapper is a
+fixed *login* shell (`bash -leo pipefail`, no way to drop the `-l`), and env vars have to hop
+between step types repeatedly — plain `pwsh` → MSYS2 login shell → back out to `cargo` (a *native*
+process) → FFmpeg's own `configure` (an MSYS `sh` child of that native process). Each hop is a
+place a path can get lost or silently rewritten, and each one below was hit for real in CI even
+though the equivalent local step never needed a workaround:
 
-- **Locally** (`scripts/build-static-windows.ps1`, plain PowerShell): reordering `PATH` so
-  `usr\bin` comes *after* the MSVC dirs works fine, since PowerShell's `PATH` is just a normal
-  semicolon-joined string you can append to directly.
-- **In CI**, inside a `shell: msys2 {0}` step: that shell always puts MSYS2's `usr/bin` ahead of
-  whatever `msvc-dev-cmd` put on `PATH`, regardless of what order the setup steps ran in or how
-  `PATH` looks going in — a bash-side `PATH` reorder inside that shell was tried first and had no
-  effect (turned out `path-type: inherit` keeps `PATH` in native semicolon/backslash form, so a
-  POSIX-style `${PATH/\/usr\/bin:/}` edit silently never matched). The fix that actually works:
-  resolve MSVC's `link.exe` absolute path in a plain (non-MSYS2) `pwsh` step right after
-  `msvc-dev-cmd` runs, via `(Get-Command link.exe).Source`, and export it as
-  `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` (a `$GITHUB_ENV` var, so it reaches every later
-  step regardless of shell type). That makes `rustc` invoke the resolved path directly instead of
-  searching `PATH` for `link.exe`, sidestepping whatever the MSYS2 shell does to `PATH` entirely.
-  See the "Point cargo at the real MSVC link.exe" step in `release.yml`.
+- **MSYS2's own `link.exe` shadowing MSVC's.** MSYS2 ships a coreutils `link.exe` (the `link(1)`
+  hard-link tool, unrelated to linking object files) under `usr/bin`, and inside a `msys2 {0}`
+  step it always sits ahead of whatever `msvc-dev-cmd` put on `PATH`, regardless of step order —
+  `cargo build`'s link step fails with `link.exe` "extra operand" errors pointing at
+  `...\msys64\usr\bin\link.exe` instead of the real linker. Locally this doesn't come up, since
+  PowerShell's `PATH` is a normal semicolon-joined string the script can just reorder directly. A
+  first attempt to do the same PATH reordering *inside* the msys2 shell had no effect (`path-type:
+  inherit` keeps `PATH` in native semicolon/backslash form, so a POSIX-style
+  `${PATH/\/usr\/bin:/}` edit silently never matched it). The fix that works: resolve MSVC's
+  `link.exe` absolute path in a plain (non-MSYS2) `pwsh` step right after `msvc-dev-cmd` runs, via
+  `(Get-Command link.exe).Source`, and export it as `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` —
+  a `$GITHUB_ENV` var reaching every later step regardless of shell type — so `rustc` invokes that
+  resolved path directly instead of searching `PATH` at all. See "Point cargo at the real MSVC
+  link.exe" in `release.yml`.
 
-**`cygpath -m` (mixed/drive-letter path) breaks `PKG_CONFIG_PATH`**: that env var is
-colon-delimited, and `pkgconf` (MSYS2's build is msys-runtime-linked, so it expects POSIX-style
-paths) reads a `-m` path like `D:/a/freemusic/.../pkgconfig` as two components split on the drive
-letter's own colon — neither of which resolves, which is exactly `x264 not found using
-pkg-config`. Use `cygpath -u` instead (POSIX-style, no drive-letter colon) — same convention
-`scripts/build-static-windows.ps1` already documents and uses (`-u`, "not `-m`" per its own
-comment). `x264.pc`'s own `prefix=` line is POSIX-style too, since `./configure --prefix=` in
-`release.yml` gets `$HOME` as-is (already POSIX inside an MSYS2 shell), so `-u` matches that.
+- **`PKG_CONFIG_PATH` had to survive three separate hazards before FFmpeg's `configure` ever saw
+  it correctly**, each only reachable because of the pwsh → login-shell → native-process chain
+  above:
+  1. *Mixed/drive-letter paths break it outright.* `PKG_CONFIG_PATH` is colon-delimited, and
+     `pkgconf` (MSYS2's build is msys-runtime-linked, so it expects POSIX-style paths) reads a
+     `cygpath -m` path like `D:/a/freemusic/.../pkgconfig` as two components split on the drive
+     letter's own colon — neither of which resolves. `cygpath -u` (POSIX-style, no drive-letter
+     colon) is the fix, matching `x264.pc`'s own `prefix=` line, which is POSIX-style too since
+     `./configure --prefix=` gets `$HOME` as-is inside the MSYS2 shell.
+  2. *Login shells re-source `/etc/profile` on every step.* The `-l` in `msys2/setup-msys2`'s
+     `bash -leo pipefail` means every `msys2 {0}` step re-sources `/etc/profile.d/*.sh` before
+     running anything else, and `pkgconf`'s own profile snippet unconditionally reassigns
+     `PKG_CONFIG_PATH` to its defaults there — clobbering whatever an earlier step wrote to
+     `$GITHUB_ENV` before the next step's own commands even start. `build-static-windows.ps1`
+     avoids this entirely by using `bash -c` (no `-l`) locally. In CI, since the wrapper's `-l`
+     can't be dropped, the fix is to never trust a variable to survive a step boundary under its
+     real name: carry it as `FREEMUSIC_X264_PKGCONFIG` (a name no MSYS2 profile script has a
+     reason to touch) and re-export the real `PKG_CONFIG_PATH` as the first line of the step that
+     needs it, *after* that step's own profile-sourcing has already run.
+  3. *MSYS2 auto-converts env vars crossing into a native child process.* Even with (1) and (2)
+     both fixed, `configure` still failed with `x264 not found using pkg-config` — and a debug
+     print in `vendor/ffmpeg-sys-next/build.rs` showed the mangled `D:/a/_temp/msys64/home/.../
+     pkgconfig` form was already present the moment the build script read `PKG_CONFIG_PATH`,
+     before `configure` was even spawned. MSYS2's runtime silently converts certain env vars from
+     POSIX to native Windows form when it execs a *native* (non-MSYS) child — and `cargo build`,
+     launched from the `msys2 {0}` step, is exactly that — reintroducing the same colon-splitting
+     problem from (1) one step later, entirely outside the workflow file's control. This has no
+     local equivalent because the local script never execs a native process *from inside* MSYS2 —
+     it's MSYS2 that gets shelled out to from PowerShell, not the other way around.
+     [`MSYS2_ENV_CONV_EXCL`](https://www.msys2.org/docs/filesystem-paths/) opts a named variable
+     out of that conversion; `export MSYS2_ENV_CONV_EXCL='PKG_CONFIG_PATH'` before `cargo build`
+     is the fix.
 
-**MSYS2 login shells silently drop env vars set by an earlier CI step**, more generally than just
-the `link.exe` case above. `msys2/setup-msys2`'s `shell: msys2 {0}` wrapper invokes
-`bash -leo pipefail` — the `-l` makes it a *login* shell, which re-sources `/etc/profile` (and
-`/etc/profile.d/*.sh`) at the start of every single `msys2 {0}` step. Package-provided profile
-snippets (e.g. `pkgconf`'s) can unconditionally reassign variables like `PKG_CONFIG_PATH` to
-their own defaults there, clobbering whatever an earlier step wrote into `$GITHUB_ENV` — the
-symptom was FFmpeg's `configure` reporting `x264 not found using pkg-config` even though the
-static `libx264` + its `.pc` file were built successfully one step earlier. Same root cause
-`scripts/build-static-windows.ps1` already avoids locally by using `bash -c` (not `-lc`) for
-exactly this reason. In CI, since there's no way to drop `-l` from `msys2/setup-msys2`'s fixed
-wrapper, the fix is to never trust a variable a *later* `msys2 {0}` step needs to still hold its
-value from an *earlier* one: carry it under a different name (`FREEMUSIC_X264_PKGCONFIG`, which
-no MSYS2 profile script has a reason to touch) and re-derive the real variable
-(`export PKG_CONFIG_PATH="$FREEMUSIC_X264_PKGCONFIG"`) as the first line of the step that actually
-needs it, so it's set *after* that step's own profile-sourcing has already happened.
+- **FFmpeg finds x264, but the final `app` link doesn't ("unresolved external symbol
+  x264_param_default" etc).** This one isn't a shell/path-crossing bug — it's a gap in vendored
+  `ffmpeg-sys-next`'s own build script. FFmpeg's `configure` links `libx264` in by *name*
+  (`x264.lib`, MSVC's spelling of `-lx264`), so `build.rs` tries to auto-derive the equivalent
+  `cargo:rustc-link-lib` directive from FFmpeg's own `config.mak` `EXTRALIBS`, filtering for
+  tokens starting with `-l`. Under MSVC, FFmpeg's own toolchain translation rewrites `-lx264` into
+  a bare `x264.lib` token with no `-l` prefix, so that filter silently drops it — no link
+  directive for x264 is ever emitted, and the final link fails despite FFmpeg itself having found
+  and built against x264 just fine one step earlier. This *does* affect the local script too, but
+  it never surfaces there because `build-static-windows.ps1` already unconditionally sets
+  `RUSTFLAGS="-L native=<dir> -l static=x264"` before every build (see above) — originally
+  reasoned about purely as a defensive "refuse a shared lib" measure, but it turns out to also be
+  the only thing that makes x264 link under MSVC at all. `release.yml` needed the same RUSTFLAGS
+  line added explicitly (plus copying `libx264.lib` to `x264.lib`, since rustc's `-l static=x264`
+  looks for that exact name) for the same reason.
 
 Per-OS prerequisites for the `static-ffmpeg` feature (on top of the Vulkan/`libxkbcommon-x11`
 requirements above, which are unrelated to FFmpeg and still apply, and the from-source `libx264`
