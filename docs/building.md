@@ -233,8 +233,8 @@ build above, which applies to every OS):
 
 ## Release binaries
 
-`.github/workflows/release.yml` builds standalone (`static-ffmpeg`) binaries for Linux
-(x86_64), Windows (x86_64), and macOS (x86_64 and arm64) and attaches them to a GitHub Release.
+`.github/workflows/release.yml` builds standalone (`static-ffmpeg`) binaries for Linux (x86_64),
+Windows (x86_64), and macOS (arm64) and attaches them to a GitHub Release.
 It runs on any pushed tag matching `v*` (e.g. `v0.1.0`), or manually via the Actions tab's
 "Run workflow" button (`workflow_dispatch`), which is useful for testing the build without
 cutting a real release.

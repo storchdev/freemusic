@@ -201,8 +201,10 @@ remove `vendor/ffmpeg-sys-next/` and its patch entry the same way as `ffmpeg-nex
 Added a `static-ffmpeg` cargo feature (on `app`, `export`, `video-pipeline`, `audio-playback`,
 `mp4-encoder`) that vendors and statically links FFmpeg (via `ffmpeg-sys-next`'s `build` feature)
 plus `libx264` (since `mp4-encoder` prefers the `libx264` encoder by name), so release binaries
-run on machines with no FFmpeg installed. `.github/workflows/release.yml` builds this for
-Linux/Windows/macOS (x86_64 + arm64) on a pushed `v*` tag or manual dispatch.
+run on machines with no FFmpeg installed. `.github/workflows/release.yml` builds this for Linux
+(x86_64), Windows (x86_64), and macOS (arm64 only — x86_64/Intel macOS was dropped from the
+matrix) on a pushed `v*` tag or manual dispatch (`workflow_dispatch`'s `only` input can also
+trigger a single platform leg, useful for debugging one leg without a full release run).
 `scripts/build-static-linux.sh`/`scripts/build-static-windows.ps1` reproduce that build locally,
 with `scripts/setup-msvc-x64.ps1` to load a correct x64 MSVC dev environment first on Windows.
 Full prerequisites, the from-source-static-libx264 recipe, and every gotcha found getting this
