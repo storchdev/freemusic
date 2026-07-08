@@ -256,7 +256,7 @@
     cursor: pointer;
   }
 
-  #export-overlay {
+  .modal-overlay {
     position: fixed;
     inset: 0;
     background: rgba(5, 4, 10, 0.65);
@@ -265,9 +265,9 @@
     justify-content: center;
     z-index: 10;
   }
-  #export-overlay.open { display: flex; }
+  .modal-overlay.open { display: flex; }
 
-  #export-panel {
+  .modal-panel {
     width: min(560px, 90vw);
     max-height: 80vh;
     background: var(--panel);
@@ -280,7 +280,7 @@
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
   }
 
-  #export-panel-header {
+  .modal-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -291,7 +291,7 @@
     color: var(--text-dim);
   }
 
-  #export-close {
+  .modal-close {
     background: none;
     border: none;
     color: var(--text-dim);
@@ -300,10 +300,10 @@
     cursor: pointer;
     padding: 2px 6px;
   }
-  #export-close:hover { color: var(--text); }
-  #export-close:focus-visible { outline: 2px solid var(--accent); }
+  .modal-close:hover { color: var(--text); }
+  .modal-close:focus-visible { outline: 2px solid var(--accent); }
 
-  #export-text {
+  .modal-text {
     width: 100%;
     min-height: 320px;
     background: #0d0c16;
@@ -316,13 +316,38 @@
     padding: 10px;
     resize: vertical;
   }
-  #export-text:focus-visible { outline: 2px solid var(--accent); }
+  .modal-text:focus-visible { outline: 2px solid var(--accent); }
 
-  #export-hint {
+  .modal-hint {
     margin: 0;
     font-size: 11px;
     color: var(--text-dim);
   }
+
+  .modal-error {
+    margin: 0;
+    font-size: 11px;
+    color: #ff8a8a;
+  }
+
+  .modal-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+
+  .modal-actions button {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 700;
+    border: none;
+    border-radius: 6px;
+    padding: 7px 14px;
+    cursor: pointer;
+  }
+  #import-apply { background: var(--accent); color: #1a1206; }
+  #import-cancel { background: var(--panel-2); color: var(--text); border: 1px solid var(--border) !important; }
+  .modal-actions button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 </style>
 
 <div id="stage">
@@ -341,21 +366,37 @@
       <label class="auto-pulse"><input type="checkbox" id="auto-pulse" /> auto, every</label>
       <span class="val" id="auto-pulse-val" style="font-family: var(--mono); font-size:11px; color:var(--text-dim);">0.5s</span>
     </div>
-    <div class="action-row" style="border-top: none; margin-top: 6px; padding-top: 0;">
-      <button id="export-btn" type="button" class="preset-btn" style="width: 100%;">Export settings (JSON)</button>
+    <div class="action-row" style="border-top: none; margin-top: 6px; padding-top: 0; gap: 6px;">
+      <button id="export-btn" type="button" class="preset-btn" style="width: 100%;">Export JSON</button>
+      <button id="import-btn" type="button" class="preset-btn" style="width: 100%;">Import JSON</button>
     </div>
   </div>
   <div id="groups"></div>
 </div>
 
-<div id="export-overlay">
-  <div id="export-panel">
-    <div id="export-panel-header">
+<div id="export-overlay" class="modal-overlay">
+  <div class="modal-panel">
+    <div class="modal-header">
       <span>Current settings</span>
-      <button id="export-close" type="button" aria-label="Close">&times;</button>
+      <button id="export-close" type="button" class="modal-close" aria-label="Close">&times;</button>
     </div>
-    <textarea id="export-text" readonly spellcheck="false"></textarea>
-    <p id="export-hint">Copied to clipboard if your browser allows it &mdash; otherwise select all (Ctrl/Cmd+A) and copy.</p>
+    <textarea id="export-text" class="modal-text" readonly spellcheck="false"></textarea>
+    <p class="modal-hint">Copied to clipboard if your browser allows it &mdash; otherwise select all (Ctrl/Cmd+A) and copy.</p>
+  </div>
+</div>
+
+<div id="import-overlay" class="modal-overlay">
+  <div class="modal-panel">
+    <div class="modal-header">
+      <span>Import settings</span>
+      <button id="import-close" type="button" class="modal-close" aria-label="Close">&times;</button>
+    </div>
+    <textarea id="import-text" class="modal-text" spellcheck="false" placeholder="Paste an exported settings JSON here (either the flat params object, or a saved preset file's { name, description, params } shape)..."></textarea>
+    <p id="import-error" class="modal-error" hidden></p>
+    <div class="modal-actions">
+      <button id="import-cancel" type="button">Cancel</button>
+      <button id="import-apply" type="button">Apply</button>
+    </div>
   </div>
 </div>
 
@@ -398,7 +439,7 @@ const SCHEMA = [
   { key: "strandJitter", group: "wave", type: "range", label: "Strand independence", min: 0, max: 1, step: 0.01, default: 0.75 },
   { key: "strandThickness", group: "wave", type: "range", label: "Strand thinness", min: 0.4, max: 6, step: 0.1, unit: "px", default: 1.4 },
   { key: "strandHaloAmp", group: "wave", type: "range", label: "Strand halo amp", min: 0, max: 3, step: 0.02, default: 1.0 },
-  { key: "strandHaloSigma", group: "wave", type: "range", label: "Strand halo sigma", min: 0.5, max: 40, step: 0.5, unit: "px", default: 6 },
+  { key: "strandHaloSigma", group: "wave", type: "range", label: "Strand halo sigma", min: 0, max: 40, step: 0.5, unit: "px", default: 6 },
   { key: "strandGlow", group: "wave", type: "range", label: "Strand glow", min: 0, max: 3, step: 0.02, default: 1.3 },
   { key: "strandFlicker", group: "wave", type: "range", label: "Strand flicker speed", min: 0, max: 5, step: 0.02, default: 1.8 },
 
@@ -637,8 +678,68 @@ document.getElementById("export-close").addEventListener("click", closeExport);
 exportOverlay.addEventListener("click", (e) => {
   if (e.target === exportOverlay) closeExport();
 });
+
+// ---------------------------------------------------------------------------
+// Import: accepts either a bare params object (what Export produces) or a
+// saved preset file's { name, description, params } shape (what
+// explorations/barrier-fx-lab/presets/*.json uses) -- unwraps the latter
+// automatically. Unknown keys are ignored; only known SCHEMA keys are copied,
+// so a partial or slightly-stale paste can't corrupt params with garbage.
+// ---------------------------------------------------------------------------
+const importOverlay = document.getElementById("import-overlay");
+const importText = document.getElementById("import-text");
+const importError = document.getElementById("import-error");
+
+function openImport() {
+  importText.value = "";
+  importError.hidden = true;
+  importOverlay.classList.add("open");
+  importText.focus();
+}
+function closeImport() { importOverlay.classList.remove("open"); }
+
+document.getElementById("import-btn").addEventListener("click", openImport);
+document.getElementById("import-cancel").addEventListener("click", closeImport);
+importOverlay.addEventListener("click", (e) => {
+  if (e.target === importOverlay) closeImport();
+});
+
+document.getElementById("import-apply").addEventListener("click", () => {
+  let parsed;
+  try {
+    parsed = JSON.parse(importText.value);
+  } catch (err) {
+    importError.textContent = "Invalid JSON: " + err.message;
+    importError.hidden = false;
+    return;
+  }
+  const data = parsed && typeof parsed.params === "object" ? parsed.params : parsed;
+  if (!data || typeof data !== "object") {
+    importError.textContent = "Expected a settings object (or a { params: {...} } wrapper).";
+    importError.hidden = false;
+    return;
+  }
+  let applied = 0;
+  for (const s of SCHEMA) {
+    if (Object.prototype.hasOwnProperty.call(data, s.key)) {
+      params[s.key] = data[s.key];
+      applied++;
+    }
+  }
+  if (applied === 0) {
+    importError.textContent = "No recognized settings found in that JSON.";
+    importError.hidden = false;
+    return;
+  }
+  syncControlsFromParams();
+  if (activeBtn) { activeBtn.classList.remove("active"); activeBtn = null; }
+  closeImport();
+});
+
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && exportOverlay.classList.contains("open")) closeExport();
+  if (e.key !== "Escape") return;
+  if (importOverlay.classList.contains("open")) closeImport();
+  else if (exportOverlay.classList.contains("open")) closeExport();
 });
 
 // ---------------------------------------------------------------------------
