@@ -162,6 +162,15 @@ jobs:
           # different variable). Carry the value under a name MSYS2's profile has no reason to
           # touch, and re-derive the real PKG_CONFIG_PATH explicitly at the point of use instead.
           echo "FREEMUSIC_X264_PKGCONFIG=$(cygpath -u "$HOME/x264-static/lib/pkgconfig")" >> "$GITHUB_ENV"
+          # x264 installs its archive as `libx264.lib` even under MSVC, but link.exe/`-l
+          # static=x264` (below) expect exactly `x264.lib` (no prefix) — make both names resolve.
+          # Same as scripts/build-static-windows.ps1.
+          cp "$HOME/x264-static/lib/libx264.lib" "$HOME/x264-static/lib/x264.lib"
+          # Native (backslash, drive-letter) form for RUSTFLAGS below: unlike PKG_CONFIG_PATH,
+          # RUSTFLAGS isn't on MSYS2's env-var auto-conversion list (see the note in the next
+          # step), so a POSIX path here would reach link.exe unmangled but also unusable — it
+          # doesn't understand `/home/...` paths. Convert it ourselves instead.
+          echo "FREEMUSIC_X264_LIBDIR_WIN=$(cygpath -w "$HOME/x264-static/lib")" >> "$GITHUB_ENV"
 
       - name: Build (static-ffmpeg)
         if: runner.os != 'Windows'
@@ -189,6 +198,15 @@ jobs:
           # vars out of that auto-conversion.
           export MSYS2_ENV_CONV_EXCL='PKG_CONFIG_PATH'
           pkg-config --exists x264 || echo "pkg-config could not find x264 before build"
+          # FFmpeg's own configure step links libx264 in by *name* (`x264.lib`, MSVC's
+          # `--toolchain=msvc` spelling of `-lx264`), not by embedding it — vendored
+          # ffmpeg-sys-next's build.rs tries to auto-derive the link flags for it from FFmpeg's
+          # own config.mak `EXTRALIBS`, but under MSVC that variable holds bare `x264.lib`-style
+          # tokens rather than `-lx264`, which build.rs's `-l`-prefix filter doesn't match — so no
+          # `cargo:rustc-link-lib` for x264 ever gets emitted here, and the final `app` link fails
+          # with unresolved x264 symbols despite FFmpeg itself having found and built against it
+          # fine. Same explicit RUSTFLAGS scripts/build-static-windows.ps1 already needs locally.
+          export RUSTFLAGS="-L native=$FREEMUSIC_X264_LIBDIR_WIN -l static=x264"
           cargo build --release -p app --features static-ffmpeg --target ${{ matrix.target }}
 
       - name: Show FFmpeg configure log on failure (Windows)
