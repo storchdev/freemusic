@@ -220,7 +220,10 @@ point, not derived from anything; adjust per style if it looks too subtle or too
 ### `WavySpec`
 
 ```rust
-struct WavySpec { amplitude_px: f32, wavelength_px: f32, speed: f32, mode: WavyMode }
+struct WavySpec {
+    amplitude_px: f32, wavelength_px: f32, speed: f32, mode: WavyMode,
+    strands: Option<StrandSpec>,
+}
 ```
 
 - `amplitude_px`: peak vertical displacement in canvas pixels. The waveform is a sum of three
@@ -240,6 +243,61 @@ struct WavySpec { amplitude_px: f32, wavelength_px: f32, speed: f32, mode: WavyM
     swelling at wave crests.
 
 `None` (the default) means a perfectly flat edge.
+
+### `StrandSpec`
+
+```rust
+struct StrandSpec {
+    count: u32, spread_px: f32, jitter: f32, thickness_px: f32,
+    halo_amplitude: f32, halo_sigma_px: f32, glow_intensity: f32, flicker_speed: f32,
+}
+```
+
+Independent thin filament threads fraying off the wavy top edge — the SeeMusic-style look where
+the top edge doesn't read as one smooth wavy line but several fine threads scattered just above
+it. Ported from `explorations/barrier-fx-lab/barrier-fx-lab.html`'s "Wavy edge" strand controls
+(that lab's separate sliding-filament/wisp controls are a different, not-yet-ported experiment).
+
+```ron
+wavy: Some((
+    amplitude_px: 7.0, wavelength_px: 55.0, speed: 3.5, mode: Edge,
+    strands: Some((
+        count: 6, spread_px: 16.0, jitter: 0.8, thickness_px: 1.3,
+        halo_amplitude: 1.0, halo_sigma_px: 6.0, glow_intensity: 1.5, flicker_speed: 2.0,
+    )),
+)),
+```
+
+- `count` (default `5`): number of independent threads, capped at 8 (`barrier.wgsl`'s loop bound —
+  extra strands beyond 8 are silently ignored).
+- `spread_px` (default `14.0`): height (canvas px) of the furthest-out strand above the real top
+  edge; strands in between are spaced evenly from `0` (riding the edge) to this value.
+- `jitter` (default `0.75`, range `0..1`): `0.0` makes every strand ripple in lockstep with the
+  main edge, just offset in height; `1.0` fully decorrelates each strand's ripple from the others
+  and from the main edge.
+- `thickness_px` (default `1.4`): thread thinness — smaller reads as a finer wire (`exp(-dist_px /
+  thickness_px)` falloff around each strand's centerline).
+- `halo_amplitude` / `halo_sigma_px` (defaults `1.0` / `6.0`): a soft additive halo around each
+  thread, same falloff shape `GlowLayer` uses, but one shared amplitude/sigma pair applied
+  identically to every strand rather than per-strand values.
+- `glow_intensity` (default `1.3`): overall multiplier on the strand bundle's contribution to the
+  corona.
+- `flicker_speed` (default `1.8`): how fast each strand's brightness flickers over transport time.
+
+Two restrictions worth calling out explicitly:
+
+- **Strands are tinted by the barrier's own `Glow::color`/brightness — there is no separate strand
+  color.** They render inside the corona (`fs_glow`) pass, so `BarrierLayer::glow` must be
+  `Some(..)` for strands to be visible; `strands: Some(..)` with `glow: None` parses and
+  round-trips but renders nothing, since no corona pass runs to draw them in.
+- **Only meaningful when `mode` is `Edge`.** `TopWave`/`FullWave` describe the bar's own solid
+  cross-section (its thickness rippling/swelling), not a bundle of independent threads riding
+  alongside a rigidly-translating edge — `barrier.wgsl`'s `fs_glow` checks the live `mode` uniform
+  and skips the whole strand loop outside `Edge`, even if `strands` is `Some(..)`. This is the
+  single source of truth: there is no matching CPU-side gate, `BarrierRenderer::set_style` uploads
+  strand params unconditionally whenever `strands` is `Some(..)`.
+
+See `examples/styles/barrier-strands.fmstyle.ron` for a complete, renderable example.
 
 ## Transition layer (`TransitionLayer`)
 

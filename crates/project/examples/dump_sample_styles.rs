@@ -6,8 +6,8 @@
 
 use project::{
     BarrierLayer, BlackKeyFill, ColorBinding, Fill, FlashMode, FlashSpec, Glow, GlowLayer,
-    NoteLayer, ParticleSpec, Pulse, Sheen, Style, Timed, TransitionKind, TransitionLayer, WavyMode,
-    WavySpec,
+    NoteLayer, ParticleSpec, Pulse, Sheen, StrandSpec, Style, Timed, TransitionKind,
+    TransitionLayer, WavyMode, WavySpec,
 };
 
 fn glow_layers(tight: f32, mid: f32, wide: f32) -> [GlowLayer; 3] {
@@ -129,6 +129,7 @@ fn main() {
                 wavelength_px: 50.0,
                 speed: 2.0,
                 mode: WavyMode::Edge,
+                strands: None,
             }),
             show_bar: false,
         }),
@@ -154,6 +155,49 @@ fn main() {
                 wavelength_px: 50.0,
                 speed: 18.0,
                 mode: WavyMode::FullWave,
+                strands: None,
+            }),
+            show_bar: false,
+        }),
+        transition: Timed::Static(TransitionLayer::default()),
+        background: ColorBinding::Constant([0, 0, 0]),
+    };
+
+    // Phase O: the strand bundle ported from `explorations/barrier-fx-lab` — several thin,
+    // independently-flickering filament threads fraying off the wavy top edge, rather than one
+    // smooth wavy line. `mode: Edge` is required for strands to render at all (see `StrandSpec`'s
+    // doc comment); values here are close to the lab's own "SeeMusic gold" preset.
+    let barrier_strands = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer::default()),
+        barrier: Timed::Static(BarrierLayer {
+            color: ColorBinding::Constant([255, 180, 84]),
+            thickness: 4.0,
+            glow: Some(Glow {
+                color: ColorBinding::Constant([255, 217, 160]),
+                brightness: 1.0,
+                layers: glow_layers(5.0, 16.0, 48.0),
+                edge_blend_px: 0.0,
+            }),
+            pulse: Some(Pulse {
+                decay_seconds: 0.35,
+                brightness: 1.9,
+            }),
+            wavy: Some(WavySpec {
+                amplitude_px: 7.0,
+                wavelength_px: 55.0,
+                speed: 3.5,
+                mode: WavyMode::Edge,
+                strands: Some(StrandSpec {
+                    count: 6,
+                    spread_px: 16.0,
+                    jitter: 0.8,
+                    thickness_px: 1.3,
+                    halo_amplitude: 1.0,
+                    halo_sigma_px: 6.0,
+                    glow_intensity: 1.5,
+                    flicker_speed: 2.0,
+                }),
             }),
             show_bar: false,
         }),
@@ -341,6 +385,7 @@ fn main() {
                 wavelength_px: 150.0,
                 speed: 1.0,
                 mode: WavyMode::Edge,
+                strands: None,
             }),
             show_bar: false,
         }),
@@ -404,6 +449,7 @@ fn main() {
     print_style("barrier-pulse", &barrier_pulse);
     print_style("barrier-wavy", &barrier_wavy);
     print_style("barrier-wavy-volume", &barrier_wavy_volume);
+    print_style("barrier-strands", &barrier_strands);
     print_style("sparks", &sparks);
     print_style("ellipse-flash", &ellipse_flash);
     print_style("grinding-particles", &grinding_particles);

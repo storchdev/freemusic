@@ -8,7 +8,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use project::{BarrierLayer, Pulse, WavyMode, WavySpec};
+use project::{BarrierLayer, Pulse, StrandSpec, WavyMode, WavySpec};
 
 /// Cutoff distance past which a `GlowLayer`'s `exp(-d / sigma_px)` contribution is treated as
 /// invisible (`exp(-5) ≈ 0.0067`, well below 8-bit display precision) — used to size how far past
@@ -45,6 +45,16 @@ struct Uniforms {
     /// opaque core's footprint (only correct when that core is actually drawn) or shine straight
     /// through instead (`show_bar: false`, see `fs_glow`'s doc comment).
     glow_layers_c: [f32; 4],
+    /// Strand bundle (Phase O — `project::StrandSpec`), part a: x = strand count (0 = disabled,
+    /// otherwise capped at 8 by `barrier.wgsl`'s loop), y = `spread_px`, z = `jitter` (0..1),
+    /// w = `thickness_px`. Uploaded unconditionally whenever `WavySpec::strands` is `Some(..)`,
+    /// regardless of `mode` — `barrier.wgsl`'s `fs_glow` is the sole place that gates actual
+    /// rendering to `WavyMode::Edge`, matching `strand_params_a.x`/`strand_params_b`'s own doc
+    /// comment in `barrier.wgsl`.
+    strand_params_a: [f32; 4],
+    /// Strand bundle, part b: x = `halo_amplitude`, y = `halo_sigma_px`, z = `glow_intensity`,
+    /// w = `flicker_speed`.
+    strand_params_b: [f32; 4],
 }
 
 impl Default for Uniforms {
@@ -58,6 +68,8 @@ impl Default for Uniforms {
             glow_brightness_pulse: [1.0, 1.0, 0.0, 0.0],
             glow_layers_ab: [0.0, 0.0, 0.0, 0.0],
             glow_layers_c: [0.0, 0.0, 0.0, 0.0],
+            strand_params_a: [0.0, 0.0, 0.0, 0.0],
+            strand_params_b: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -261,6 +273,7 @@ impl BarrierRenderer {
                 wavelength_px,
                 speed,
                 mode,
+                strands,
             }) => {
                 self.data.flags[2] = 1.0;
                 self.data.flags[3] = match mode {
@@ -271,6 +284,39 @@ impl BarrierRenderer {
                 self.data.wave[0] = amplitude_px.max(0.0);
                 self.data.wave[1] = *wavelength_px;
                 self.data.wave[2] = *speed;
+                // Uploaded unconditionally regardless of `mode` — `barrier.wgsl`'s `fs_glow` is
+                // the single place that gates strand rendering to `WavyMode::Edge` (see its own
+                // comment); no matching gate here, so this stays in lockstep with the shader
+                // rather than encoding the same restriction twice and risking drift.
+                match strands {
+                    Some(StrandSpec {
+                        count,
+                        spread_px,
+                        jitter,
+                        thickness_px,
+                        halo_amplitude,
+                        halo_sigma_px,
+                        glow_intensity,
+                        flicker_speed,
+                    }) => {
+                        self.data.strand_params_a = [
+                            *count as f32,
+                            spread_px.max(0.0),
+                            jitter.clamp(0.0, 1.0),
+                            thickness_px.max(0.01),
+                        ];
+                        self.data.strand_params_b = [
+                            halo_amplitude.max(0.0),
+                            halo_sigma_px.max(0.01),
+                            glow_intensity.max(0.0),
+                            flicker_speed.max(0.0),
+                        ];
+                    }
+                    None => {
+                        self.data.strand_params_a = [0.0; 4];
+                        self.data.strand_params_b = [0.0; 4];
+                    }
+                }
             }
             None => {
                 self.data.flags[2] = 0.0;
@@ -278,6 +324,8 @@ impl BarrierRenderer {
                 self.data.wave[0] = 0.0;
                 self.data.wave[1] = 0.0;
                 self.data.wave[2] = 0.0;
+                self.data.strand_params_a = [0.0; 4];
+                self.data.strand_params_b = [0.0; 4];
             }
         }
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.data]));

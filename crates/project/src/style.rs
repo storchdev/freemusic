@@ -449,6 +449,107 @@ pub enum WavyMode {
     FullWave,
 }
 
+/// Independent thin filament threads fraying off the barrier's wavy top edge, rendered inside the
+/// corona (`fs_glow`) pass alongside the ordinary 3-layer glow — the SeeMusic-style look where the
+/// top edge doesn't read as one smooth wavy line but several fine threads scattered just above it.
+/// Ported from `explorations/barrier-fx-lab/barrier-fx-lab.html`'s "Wavy edge" strand controls
+/// (the sliding-filament and wisp controls in that lab are a separate, not-yet-ported experiment —
+/// see the lab's own `README.md`).
+///
+/// Each strand re-samples the same stochastic ripple (`barrier.wgsl`'s `wavy_offset_seeded`) with
+/// its own seed derived from `jitter` — `0.0` makes every strand an identical copy of the main
+/// edge, just offset in height; `1.0` fully decorrelates each strand's wiggle from the others and
+/// from the main edge — and sits at its own fixed height above the real top edge, evenly spaced
+/// from `0` (riding the edge itself) up to `spread_px` (the furthest-out strand). Each thread
+/// renders as a thin exponential falloff (`thickness_px`) plus its own soft additive halo, using
+/// one shared `halo_amplitude`/`halo_sigma_px` pair applied identically to every strand rather than
+/// per-strand values.
+///
+/// Strands are tinted by the barrier's own `Glow::color`/brightness — there is no separate strand
+/// color — and are rendered inside the corona pass, so **`BarrierLayer::glow` must be
+/// `Some(..)` for strands to be visible**; `strands: Some(..)` with `glow: None` parses and
+/// round-trips but renders nothing (no corona pass runs to draw them in).
+///
+/// **Only meaningful when `WavySpec::mode` is `Edge`.** `TopWave`/`FullWave` describe the bar's own
+/// solid cross-section (its thickness rippling/swelling), not a bundle of independent threads
+/// riding alongside a rigidly-translating edge — `barrier.wgsl`'s `fs_glow` checks the live `mode`
+/// uniform and skips the whole strand loop outside `Edge`, even if `strands` is `Some(..)`; this is
+/// the single source of truth — there is no matching CPU-side gate; `BarrierRenderer::set_style`
+/// uploads strand params unconditionally whenever `strands` is `Some(..)`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StrandSpec {
+    /// Number of independent threads, capped at 8 (`barrier.wgsl`'s loop bound — extra strands
+    /// beyond 8 are silently ignored).
+    #[serde(default = "default_strand_count")]
+    pub count: u32,
+    /// Height (canvas px) of the furthest-out strand above the real top edge; strands in between
+    /// are spaced evenly from `0` (riding the edge) to this value.
+    #[serde(default = "default_strand_spread_px")]
+    pub spread_px: f32,
+    /// `0.0` = every strand ripples in lockstep with the main edge, just offset in height; `1.0` =
+    /// each strand's ripple is independently seeded and reads as fully decorrelated wiggle.
+    #[serde(default = "default_strand_jitter")]
+    pub jitter: f32,
+    /// Thread thinness in px — smaller reads as a finer wire (`exp(-dist_px / thickness_px)`
+    /// falloff around each strand's centerline).
+    #[serde(default = "default_strand_thickness_px")]
+    pub thickness_px: f32,
+    /// Additive halo amplitude around each thread — same `amplitude * exp(-d / sigma)` falloff
+    /// shape `GlowLayer` uses, but one shared pair applied identically to every strand rather than
+    /// per-strand values.
+    #[serde(default = "default_strand_halo_amplitude")]
+    pub halo_amplitude: f32,
+    /// Halo falloff distance in px.
+    #[serde(default = "default_strand_halo_sigma_px")]
+    pub halo_sigma_px: f32,
+    /// Overall multiplier on the strand bundle's contribution to the corona.
+    #[serde(default = "default_strand_glow_intensity")]
+    pub glow_intensity: f32,
+    /// How fast each strand's brightness flickers over transport time.
+    #[serde(default = "default_strand_flicker_speed")]
+    pub flicker_speed: f32,
+}
+
+impl Default for StrandSpec {
+    fn default() -> Self {
+        Self {
+            count: default_strand_count(),
+            spread_px: default_strand_spread_px(),
+            jitter: default_strand_jitter(),
+            thickness_px: default_strand_thickness_px(),
+            halo_amplitude: default_strand_halo_amplitude(),
+            halo_sigma_px: default_strand_halo_sigma_px(),
+            glow_intensity: default_strand_glow_intensity(),
+            flicker_speed: default_strand_flicker_speed(),
+        }
+    }
+}
+
+fn default_strand_count() -> u32 {
+    5
+}
+fn default_strand_spread_px() -> f32 {
+    14.0
+}
+fn default_strand_jitter() -> f32 {
+    0.75
+}
+fn default_strand_thickness_px() -> f32 {
+    1.4
+}
+fn default_strand_halo_amplitude() -> f32 {
+    1.0
+}
+fn default_strand_halo_sigma_px() -> f32 {
+    6.0
+}
+fn default_strand_glow_intensity() -> f32 {
+    1.3
+}
+fn default_strand_flicker_speed() -> f32 {
+    1.8
+}
+
 /// A calm, stochastic-looking (not a single literal sine) wavy edge for the barrier — three
 /// incommensurate-frequency sine terms summed with weights 0.6/0.3/0.1 (see `barrier.wgsl`'s
 /// `wavy_offset`), so `|offset| <= amplitude_px` always holds exactly.
@@ -464,6 +565,11 @@ pub struct WavySpec {
     /// Which edges ripple and how. See `WavyMode`'s own doc comments.
     #[serde(default)]
     pub mode: WavyMode,
+    /// Independent filament threads riding just above the wavy top edge. See `StrandSpec`'s own
+    /// doc comment for the full picture — in particular, only meaningful (rendered) when `mode` is
+    /// `Edge`, and requires the barrier's `glow` to be `Some(..)` to actually be visible.
+    #[serde(default)]
+    pub strands: Option<StrandSpec>,
 }
 
 /// The horizontal barrier where falling notes stop. `glow` (Phase K) replaced the earlier

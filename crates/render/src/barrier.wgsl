@@ -27,6 +27,13 @@ struct Uniforms {
     glow_layers_ab: vec4<f32>,
     // x = layer[2].amplitude, y = layer[2].sigma_px, z = precomputed glow margin (px), w unused.
     glow_layers_c: vec4<f32>,
+    // Strand bundle (Phase O), part a: x = strand count (0 = disabled), y = spread_px, z = jitter
+    // (0..1), w = thickness_px. Uploaded unconditionally whenever `WavySpec::strands` is `Some(..)`
+    // — `fs_glow` is the sole place that gates rendering to `Edge` mode, see its own comment.
+    strand_params_a: vec4<f32>,
+    // Strand bundle, part b: x = halo_amplitude, y = halo_sigma_px, z = glow_intensity,
+    // w = flicker_speed.
+    strand_params_b: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -98,9 +105,17 @@ fn noise2(p: vec2<f32>) -> f32 {
 // to `[1, WAVE_ENVELOPE_MAX]`, and shaping keeps `|n| <= 1`, so the overall result is bounded to
 // `amp * WAVE_ENVELOPE_MAX`, which is what the vertex shader's inflation margin below must account
 // for. Returns 0 (flat edge, today's only look) when wavy is disabled.
+// `seed` decorrelates one strand's ripple from another's (Phase O — see the strand-bundle loop in
+// `fs_glow`) by shifting which region of the noise field gets sampled; `seed == 0.0` reproduces
+// `wavy_offset`'s original single-edge behavior exactly, which is the only way `wavy_offset` itself
+// is still called below.
 const WAVE_ENVELOPE_MAX: f32 = 2.6;
 const NOISE_SHAPE_POWER: f32 = 2.2;
-fn wavy_offset(x: f32) -> f32 {
+// Same "past this, an exponential falloff is invisible at 8-bit precision" cutoff `barrier.rs`'s
+// `GLOW_CUTOFF_SIGMAS` uses for the ordinary corona layers, applied to the strand halo's own
+// `exp(-d / halo_sigma_px)` reach so `vs_main`'s inflation margin has pixels to paint onto.
+const STRAND_HALO_CUTOFF_SIGMAS: f32 = 5.0;
+fn wavy_offset_seeded(x: f32, seed: f32) -> f32 {
     if (uniforms.flags.z < 0.5) {
         return 0.0;
     }
@@ -109,8 +124,8 @@ fn wavy_offset(x: f32) -> f32 {
     let speed = uniforms.wave.z;
     let t = uniforms.wave.w;
 
-    let sx = x / wavelength;
-    let st = t * speed;
+    let sx = x / wavelength + seed * 3.7;
+    let st = t * speed + seed * 5.3;
 
     var n = 0.0;
     n += 0.55 * noise2(vec2<f32>(sx * 1.00, st * 1.00));
@@ -122,6 +137,9 @@ fn wavy_offset(x: f32) -> f32 {
     let envelope = 1.0 + (WAVE_ENVELOPE_MAX - 1.0) * envelope_n * envelope_n;
 
     return amp * n * envelope;
+}
+fn wavy_offset(x: f32) -> f32 {
+    return wavy_offset_seeded(x, 0.0);
 }
 
 struct VertexOutput {
@@ -156,7 +174,19 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     // zero margin when disabled, same exact-no-op guarantee.
     let glow_margin = select(0.0, uniforms.glow_layers_c.z, uniforms.flags.x > 0.5);
     let wavy_margin = select(0.0, uniforms.wave.x * WAVE_ENVELOPE_MAX, uniforms.flags.z > 0.5);
-    let half_extent = thickness * 0.5 + glow_margin + wavy_margin;
+    // Strand bundle (Phase O): only reachable through `fs_glow`, which only runs when glow is
+    // enabled and is the sole place mode is checked against `Edge` — mirror both conditions here so
+    // an unused margin isn't paid for `TopWave`/`FullWave` styles that happen to carry leftover
+    // `strands: Some(..)` params, and so strands get pixels to paint their halo onto out to
+    // `spread_px + halo_sigma_px * STRAND_HALO_CUTOFF_SIGMAS` past the base wavy margin above.
+    let edge_mode = uniforms.flags.z > 0.5 && uniforms.flags.w > 0.5 && uniforms.flags.w < 1.5;
+    let strands_active = uniforms.flags.x > 0.5 && edge_mode && uniforms.strand_params_a.x >= 1.0;
+    let strand_margin = select(
+        0.0,
+        uniforms.strand_params_a.y + uniforms.strand_params_b.y * STRAND_HALO_CUTOFF_SIGMAS,
+        strands_active,
+    );
+    let half_extent = thickness * 0.5 + glow_margin + wavy_margin + strand_margin;
 
     let corner = corners[vertex_index];
     let pixel_x = corner.x * width;
@@ -174,10 +204,15 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 // Shared by both fragment entry points: the wavy top/bottom edges and the resulting `core_alpha`
 // shape (1.0 inside the bar, smoothly falling to 0.0 at its edges), plus how far outside those
-// edges the current fragment sits (`edge_dist`, 0 inside the bar).
+// edges the current fragment sits (`edge_dist`, 0 inside the bar). `top_edge`/`base_wave` (Phase O)
+// are only consumed by `fs_glow`'s strand-bundle loop, which needs the wavy top edge's own y
+// position and the un-seeded wave value it was built from to compute each strand's own offset
+// relative to it — see that loop's comment.
 struct EdgeShape {
     core_alpha: f32,
     edge_dist: f32,
+    top_edge: f32,
+    base_wave: f32,
 }
 
 fn edge_shape(frag_y: f32, frag_x: f32) -> EdgeShape {
@@ -241,6 +276,8 @@ fn edge_shape(frag_y: f32, frag_x: f32) -> EdgeShape {
     var out: EdgeShape;
     out.core_alpha = core_alpha;
     out.edge_dist = edge_dist;
+    out.top_edge = top_edge;
+    out.base_wave = wave;
     return out;
 }
 
@@ -287,6 +324,63 @@ fn fs_glow(in: VertexOutput) -> @location(0) vec4<f32> {
     // Only applies when the core is actually drawn (`show_bar`); otherwise there's nothing to
     // avoid double-painting under, so the corona is left at full strength (see above).
     let occlusion = select(0.0, shape.core_alpha, show_bar_flag > 0.5);
-    let light = uniforms.glow_style.rgb * strength * brightness * (1.0 - occlusion);
+    var light = uniforms.glow_style.rgb * strength * brightness * (1.0 - occlusion);
+
+    // Strand bundle (Phase O, ported from `explorations/barrier-fx-lab`): independent thin
+    // filament threads fraying off the wavy top edge, rather than one smooth wavy line — see
+    // `StrandSpec`'s doc comment in `crates/project/src/style.rs`. **Only meaningful in `Edge`
+    // mode** (`flags.w` in `(0.5, 1.5)`) — `TopWave`/`FullWave` describe the bar's own solid
+    // cross-section, not a bundle of threads riding alongside a rigidly-translating edge. This
+    // `edge_mode` check is the single source of truth for that restriction: `BarrierRenderer::
+    // set_style` uploads `strand_params_a`/`strand_params_b` unconditionally whenever
+    // `WavySpec::strands` is `Some(..)`, with no matching CPU-side gate on `mode`.
+    let edge_mode = uniforms.flags.z > 0.5 && uniforms.flags.w > 0.5 && uniforms.flags.w < 1.5;
+    let n_strands_f = uniforms.strand_params_a.x;
+    if (edge_mode && n_strands_f >= 1.0) {
+        let n_strands = i32(n_strands_f + 0.5);
+        let strand_spread = uniforms.strand_params_a.y;
+        let strand_jitter = uniforms.strand_params_a.z;
+        let strand_thickness = max(uniforms.strand_params_a.w, 0.01);
+        let halo_amp = uniforms.strand_params_b.x;
+        let halo_sigma = max(uniforms.strand_params_b.y, 0.01);
+        let strand_glow = uniforms.strand_params_b.z;
+        let flicker_speed = uniforms.strand_params_b.w;
+        let t = uniforms.wave.w;
+
+        var strand_light = vec3<f32>(0.0);
+        for (var i: i32 = 0; i < 8; i = i + 1) {
+            if (i >= n_strands) {
+                break;
+            }
+            let fi = f32(i);
+            // `jitter` blends from "identical copy of the main edge, just offset in height" (seed
+            // 0 reproduces `shape.base_wave` exactly, so `d_wave` below is 0) toward "fully
+            // decorrelated wiggle per strand" as it approaches 1.
+            let seed = mix(0.0, (fi + 1.0) * 13.7, strand_jitter);
+            let d_wave = wavy_offset_seeded(in.position.x, seed) - shape.base_wave;
+            // Evenly spaced from 0 (riding the edge) to `strand_spread` (the furthest-out strand);
+            // `top_edge` already decreases (moves further from the bar) as its own offset grows
+            // more negative, so subtracting `baseline` here moves each successive strand further
+            // away from the bar, same direction the wavy edge's own displacement already moves it.
+            var baseline = 0.0;
+            if (n_strands > 1) {
+                baseline = (fi / f32(n_strands - 1)) * strand_spread;
+            }
+            let edge_y_i = shape.top_edge - baseline + d_wave;
+            let dist_y = abs(in.position.y - edge_y_i);
+
+            var flick = noise2(vec2<f32>(seed * 7.0 + in.position.x * 0.01, t * flicker_speed + seed * 3.0));
+            flick = pow(clamp(flick * 0.5 + 0.5, 0.0, 1.0), 1.4);
+
+            let core = exp(-dist_y / strand_thickness);
+            let halo = halo_amp * exp(-dist_y / halo_sigma);
+            strand_light += vec3<f32>((core + halo) * flick);
+        }
+        // Tinted by the same corona color/brightness as the ordinary glow layers above — there is
+        // no separate strand color, so strands are invisible whenever `glow` itself is `None`
+        // (this whole fragment shader isn't even invoked in that case, see `barrier.rs::render`).
+        light += uniforms.glow_style.rgb * strand_light * strand_glow * brightness * (1.0 - occlusion);
+    }
+
     return vec4<f32>(light, 1.0);
 }

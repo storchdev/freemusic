@@ -1110,3 +1110,60 @@ formula, so it should, but worth a real ffprobe/frame-extraction check); confirm
 `.fmstyle.ron` with a `background` field overrides the legacy picker as expected, and that removing
 the import falls back to the legacy color again, not black.
 
+### Phase O: barrier strand bundle, ported from `explorations/barrier-fx-lab`
+
+`explorations/barrier-fx-lab/barrier-fx-lab.html` (a standalone WebGL2 playground, not built/wired
+into the app — see its own `README.md`) had prototyped several barrier looks beyond what
+`barrier.wgsl` actually implemented: a "strand bundle" (several thin, independently-flickering
+filament threads fraying off the wavy top edge, rather than one smooth wavy line — the closest
+match found so far to the real SeeMusic edge, see `sm-ex.png`), plus a separate "sliding electric
+filament" and "wisps" experiment. This phase ports **only the strand bundle** into the real
+renderer/schema; the filament/wisp controls remain lab-only, unported.
+
+- **Schema** (`crates/project/src/style.rs`): new `StrandSpec` struct (`count`, `spread_px`,
+  `jitter`, `thickness_px`, `halo_amplitude`, `halo_sigma_px`, `glow_intensity`, `flicker_speed`,
+  all `#[serde(default = ...)]` so existing `.fmstyle.ron` files without the field keep parsing
+  unchanged) and a new `strands: Option<StrandSpec>` field on `WavySpec`. Defaults are the lab's
+  own generic `SCHEMA` defaults (count 5, spread 14px, jitter 0.75, thickness 1.4px, halo amp
+  1.0/sigma 6px, glow intensity 1.3, flicker speed 1.8), not any one preset's tuned values.
+  Deliberately **not** its own color: strands render inside the corona (`fs_glow`) pass and are
+  tinted by the barrier's own `Glow::color`/brightness, so `glow: Some(..)` is required for
+  strands to actually be visible — `strands: Some(..)` with `glow: None` parses/round-trips but
+  renders nothing. Re-exported from `crates/project/src/lib.rs`.
+- **Renderer** (`crates/render/src/barrier.wgsl` + `barrier.rs`): `Uniforms` gained two more vec4s
+  (`strand_params_a`/`strand_params_b`, packing count/spread/jitter/thickness and halo-amplitude/
+  halo-sigma/glow-intensity/flicker-speed) uploaded unconditionally by `BarrierRenderer::set_style`
+  whenever `WavySpec::strands` is `Some(..)`, regardless of `mode` — there is **no CPU-side gate**
+  on `WavyMode::Edge`. `wavy_offset` was generalized to `wavy_offset_seeded(x, seed)` (a `seed`
+  parameter shifts which region of the noise field gets sampled, decorrelating one strand's ripple
+  from another's; `seed == 0.0` reproduces the original single-edge behavior exactly, which is all
+  `wavy_offset` itself — kept as a thin wrapper — ever needs), and `EdgeShape` gained `top_edge`/
+  `base_wave` fields so `fs_glow`'s new strand loop can compute each strand's own offset relative
+  to the edge `fs_core`/the base corona already use. **`fs_glow` is the single place that actually
+  gates strand rendering to `Edge` mode** (`flags.w` in `(0.5, 1.5)`) — this was a deliberate
+  choice to avoid encoding the "only in Edge mode" restriction in two places (Rust and WGSL) that
+  could drift; ported line-for-line from the lab's own `edgeMode`/strand-loop logic, adjusted only
+  for wgsl's y-down vs. the lab's WebGL y-up fragment-coordinate convention (see the wgsl file's
+  own comments on `edge_y_i`'s sign). `vs_main`'s quad-inflation margin also grew a
+  `strand_margin` term (`spread_px + halo_sigma_px * 5`, same `exp(-d/sigma)` 8-bit-invisibility
+  cutoff `barrier.rs`'s `GLOW_CUTOFF_SIGMAS` already uses for the ordinary corona layers) gated on
+  the same `glow enabled && edge mode && count >= 1` condition, so strand halos actually have
+  pixels to paint onto without inflating the quad for styles that don't use strands.
+- **Sample style**: left the existing `barrier-wavy`/`barrier-wavy-volume`/`showcase_blue_purple`
+  samples alone (`strands: None`, unchanged look) and added a new, dedicated
+  `examples/styles/barrier-strands.fmstyle.ron` (generated the same way every other sample is, via
+  `crates/project/examples/dump_sample_styles.rs`) — values close to the lab's own "SeeMusic gold"
+  preset (`explorations/barrier-fx-lab/presets/seemusic-found.json` is a *different*, more extreme
+  hand-tuned preset also using strands, not this one).
+- **No UI editor.** Like every other `.fmstyle.ron` field, there's no slider for this in `app/src/
+  ui.rs` — styles are edited as RON text and imported via the Project tab's "Import style…" button,
+  same as every field documented in `docs/fmstyle-format.md`.
+
+**Not yet manually run**: load `barrier-strands.fmstyle.ron` and confirm the strand bundle actually
+renders and reads as several independent flickering threads (not, say, one thick blurred band);
+confirm strands disappear when switching a style's `mode` to `TopWave`/`FullWave` without touching
+`strands` itself; confirm a style with `strands: Some(..)` but `glow: None` renders with no visible
+strands (silent no-op, not a crash); confirm the pulse brightness and wavy ripple still read
+correctly with strands layered on top, at both low and high `strandCount`/`jitter` (up to the
+8-strand cap).
+

@@ -254,16 +254,20 @@ touching that area of the code:
   waveform/scroll/collapsible-panel polish pass, the slider-validation fix, and the widened
   rotation/roundedness ranges.
 - **`explorations/barrier-fx-lab/`** — a standalone WebGL2 HTML page (no build step, no app
-  dependency) for prototyping new barrier looks — glow sigmas, wavy-edge modes, and new
+  dependency) for prototyping new barrier looks — glow sigmas, wavy-edge modes, strand bundles, and
   electric/wispy filament/wisp effects not yet in `barrier.wgsl` — before committing any of it to
   the real renderer. Its `presets/` holds exported JSON snapshots of looks worth keeping, notably
   `seemusic-found.json`, the closest match found so far to the SeeMusic edge in `sm-ex.png`; see
-  the directory's own `README.md`.
-- **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–L) of the
+  the directory's own `README.md`. **The strand bundle has since been ported into the real app**
+  (Phase O, `project::StrandSpec`/`WavySpec::strands`, gated to `WavyMode::Edge` — see
+  `docs/fmstyle-format.md` and `docs/fmstyle-milestone.md`); the sliding-filament/wisp controls in
+  the lab remain unported experiments.
+- **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–O) of the
   `.fmstyle.ron` extensible visual style format: schema/plumbing, the vendored note pipeline
   (dropping the `neothesia-core` dependency), note fill effects (gradient/sheen/glow), barrier
   glow/pulse, transition particles/flash, per-key-color/wavy-barrier/elliptical-flash/continuous-
-  particle follow-ups, and the brightness/overexposure + white-hot-corona redesign.
+  particle follow-ups, the brightness/overexposure + white-hot-corona redesign, canvas background
+  color, and the barrier strand bundle ported from `explorations/barrier-fx-lab`.
 - **`docs/fmstyle-format.md`** — the living field-by-field `.fmstyle.ron` format spec (defaults,
   meaning, RON snippets, breaking-change log) — keep this in sync whenever the schema changes,
   it's the spec, not narrative.
