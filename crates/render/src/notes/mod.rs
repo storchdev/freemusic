@@ -15,7 +15,9 @@ use std::path::Path;
 
 use midi_file::MidiFile;
 use piano_layout::{KeyboardLayout, KeyboardRange, Sizing};
-use project::{BlackKeyFill, Fill, KeyboardCalibration, NoteLayer, SkippedNote};
+use project::{
+    AddedNote, BlackKeyFill, Fill, KeyboardCalibration, NoteDurationEdit, NoteLayer, SkippedNote,
+};
 
 use instance::NoteInstance;
 use pipeline::NotesPipeline;
@@ -62,29 +64,81 @@ impl NoteInterval {
 
 /// One note's full identity (track/channel/number) plus its start/end time in seconds —
 /// everything the keyboard tab's note editor (`ui::draw_note_editor`) needs to list "what's
-/// playing right now" and to build a `project::SkippedNote` key to delete or restore it. Unlike
-/// `NoteInterval` (x-position, no note number — used by particle/flash effects), this carries the
-/// identifying fields and drops the x-span, since the editor has no use for layout. Built for
-/// every in-range/non-drum note regardless of `skipped` status (unlike `NoteInterval`/the
-/// rendered `NoteInstance`s, which only exist for non-skipped notes) so the editor can still list
-/// a skipped note with a restore option.
+/// playing right now" and to build a `project::SkippedNote`/`project::NoteDurationEdit` key to
+/// delete, restore, or re-time it. Unlike `NoteInterval` (x-position, no note number — used by
+/// particle/flash effects), this carries the identifying fields and drops the x-span, since the
+/// editor has no use for layout. Built for every in-range/non-drum note (both MIDI-derived and
+/// `project::AddedNote`s) regardless of `skipped` status (unlike `NoteInterval`/the rendered
+/// `NoteInstance`s, which only exist for non-skipped notes) so the editor can still list a skipped
+/// note with a restore option.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ActiveNote {
     pub track_id: usize,
     pub channel: u8,
     pub note: u8,
     pub start_seconds: f64,
+    /// Effective end time — `start_seconds + duration_edits`'s override if one applies, otherwise
+    /// the MIDI-parsed duration (both subject to the same 0.1s floor `NoteInstance`'s on-screen
+    /// size uses, so this always matches what's actually visible on the highway).
     pub end_seconds: f64,
     /// Whether this note is currently in the project's `skipped_notes` list (excluded from the
-    /// note highway and playback).
+    /// note highway and playback). Always `false` for an added note — there's no MIDI original to
+    /// exclude in favor of; deleting an added note removes it from `added_notes` outright instead.
     pub skipped: bool,
+    /// Whether a `project::NoteDurationEdit` currently overrides this note's duration. Always
+    /// `false` for an added note (its duration lives directly on `project::AddedNote`, no separate
+    /// override record needed).
+    pub edited: bool,
+    /// The duration this note would have with no `NoteDurationEdit` applied (same 0.1s floor as
+    /// `end_seconds - start_seconds`) — lets the note editor tell whether a value the user just
+    /// typed/dragged actually differs from the un-overridden original, regardless of whether an
+    /// override is *currently* active (so dragging an already-edited note back to its original
+    /// value cleanly drops the override instead of storing a redundant, if harmless, one). Equal
+    /// to `end_seconds - start_seconds` when `edited` is `false`. Meaningless (mirrors
+    /// `end_seconds - start_seconds`) for an added note, which has no "original" to speak of.
+    pub original_duration_seconds: f64,
+    /// `Some(id)` if this is a `project::AddedNote` rather than a note parsed from the loaded
+    /// `.mid` file — carries its `AddedNote::id` so the editor can mutate/delete the right entry.
+    pub added_note_id: Option<u64>,
+}
+
+/// Sentinel `track_id` given to a `NoteSource` built from a `project::AddedNote` rather than a
+/// real MIDI track — real track ids are always small (an index into the parsed file's track
+/// list), so this can never collide with one. Lets `ActiveNote::track_id`/`NoteInstance::
+/// track_index` keep working unchanged for added notes without a separate "is this real" enum.
+const ADDED_NOTE_TRACK_ID: usize = usize::MAX;
+
+/// Normalized view of one note to render, built fresh each `rebuild_instances` call from either a
+/// MIDI-parsed `midi_file::MidiNote` (with any `NoteDurationEdit` override already resolved) or a
+/// `project::AddedNote` — everything downstream (sorting, key lookup, instance/interval/
+/// active-note building) operates on this single shape so both sources are treated identically
+/// except where `added_id` specifically matters (skip/restore has no meaning for an added note).
+struct NoteSource {
+    track_id: usize,
+    channel: u8,
+    note: u8,
+    /// Full `f64` precision (unlike the `f32` everything else here uses) so identity comparisons
+    /// against `SkippedNote`/`NoteDurationEdit::start_seconds` — themselves built from an
+    /// `ActiveNote::start_seconds` that round-trips through this same field — never lose bits to
+    /// an f64->f32->f64 narrow/widen, matching the exact-equality matching `SkippedNote` used
+    /// before `NoteSource` existed.
+    start_seconds: f64,
+    duration_seconds: f32,
+    /// The MIDI-parsed duration before any `NoteDurationEdit` override (equal to
+    /// `duration_seconds` for an added note, which has no override concept). See
+    /// `ActiveNote::original_duration_seconds`.
+    original_duration_seconds: f32,
+    velocity: u8,
+    added_id: Option<u64>,
 }
 
 struct Loaded {
     midi: MidiFile,
-    /// Sorted note start times in seconds, cached at load time — used by the bottom timeline's
+    /// Sorted note start times in seconds (MIDI-derived and added notes both), rebuilt alongside
+    /// `note_intervals`/`active_notes` in `rebuild_instances` — used by the bottom timeline's
     /// note-density strip (`ui::draw_timeline`), which just needs raw onset times, not the full
-    /// per-track structure.
+    /// per-track structure. Rebuilding it on every `resize` (not just `load`) is what makes a note
+    /// added from the note editor show up in the density strip without reloading the MIDI file.
     note_starts: Vec<f32>,
     /// Sorted (ascending start time, matching `note_starts`) intervals for the notes actually
     /// drawn (in-range, non-drum, non-skipped) — see `NoteInterval`.
@@ -153,7 +207,10 @@ impl NotesRenderer {
 
     /// Parses `path` as a MIDI file and (re)builds the note instances for it. `skipped` excludes
     /// specific note occurrences (see `project::SkippedNote`) from both the rendered instances and
-    /// `notes_at`, without touching the file itself.
+    /// `notes_at`, without touching the file itself; `duration_edits` overrides specific notes'
+    /// rendered/playback duration (see `project::NoteDurationEdit`); `added_notes` are extra notes
+    /// (see `project::AddedNote`) rendered/played back alongside the parsed ones.
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
         &mut self,
         gpu: &GpuHandles,
@@ -162,27 +219,32 @@ impl NotesRenderer {
         note_layer: &NoteLayer,
         path: &Path,
         skipped: &[SkippedNote],
+        duration_edits: &[NoteDurationEdit],
+        added_notes: &[AddedNote],
     ) -> Result<(), String> {
         let midi = MidiFile::new(path)?;
-        let mut note_starts: Vec<f32> = midi
-            .tracks
-            .iter()
-            .flat_map(|track| track.notes.iter())
-            .map(|note| note.start.as_secs_f32())
-            .collect();
-        note_starts.sort_by(|a, b| a.partial_cmp(b).unwrap());
         self.loaded = Some(Loaded {
             midi,
-            note_starts,
+            note_starts: Vec::new(),
             note_intervals: Vec::new(),
             active_notes: Vec::new(),
         });
-        self.apply_view(gpu, viewport, calibration, note_layer, skipped);
+        self.apply_view(
+            gpu,
+            viewport,
+            calibration,
+            note_layer,
+            skipped,
+            duration_edits,
+            added_notes,
+        );
         Ok(())
     }
 
     /// Recomputes the projection and note-lane layout for a new viewport size, calibration, note
-    /// layer (fill/sheen/glow/roundedness/fall_speed), or skipped-notes set.
+    /// layer (fill/sheen/glow/roundedness/fall_speed), skipped-notes set, duration-edit set, or
+    /// added-notes set.
+    #[allow(clippy::too_many_arguments)]
     pub fn resize(
         &mut self,
         gpu: &GpuHandles,
@@ -190,10 +252,21 @@ impl NotesRenderer {
         calibration: &KeyboardCalibration,
         note_layer: &NoteLayer,
         skipped: &[SkippedNote],
+        duration_edits: &[NoteDurationEdit],
+        added_notes: &[AddedNote],
     ) {
-        self.apply_view(gpu, viewport, calibration, note_layer, skipped);
+        self.apply_view(
+            gpu,
+            viewport,
+            calibration,
+            note_layer,
+            skipped,
+            duration_edits,
+            added_notes,
+        );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_view(
         &mut self,
         gpu: &GpuHandles,
@@ -201,6 +274,8 @@ impl NotesRenderer {
         calibration: &KeyboardCalibration,
         note_layer: &NoteLayer,
         skipped: &[SkippedNote],
+        duration_edits: &[NoteDurationEdit],
+        added_notes: &[AddedNote],
     ) {
         let barrier_fraction = calibration.barrier_fraction.clamp(0.05, 1.0);
         self.pipeline
@@ -210,9 +285,18 @@ impl NotesRenderer {
         self.pipeline.set_style(gpu.queue, note_layer);
         self.canvas_size = viewport;
         self.barrier_fraction = barrier_fraction;
-        self.rebuild_instances(gpu, viewport, calibration, note_layer, skipped);
+        self.rebuild_instances(
+            gpu,
+            viewport,
+            calibration,
+            note_layer,
+            skipped,
+            duration_edits,
+            added_notes,
+        );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rebuild_instances(
         &mut self,
         gpu: &GpuHandles,
@@ -220,6 +304,8 @@ impl NotesRenderer {
         calibration: &KeyboardCalibration,
         note_layer: &NoteLayer,
         skipped: &[SkippedNote],
+        duration_edits: &[NoteDurationEdit],
+        added_notes: &[AddedNote],
     ) {
         self.pipeline.clear();
         let Some(loaded) = self.loaded.as_ref() else {
@@ -251,26 +337,81 @@ impl NotesRenderer {
             }
         };
 
-        let mut notes: Vec<_> = loaded
+        // Merge MIDI-parsed notes (with any `duration_edits` override already applied) and
+        // `added_notes` into one normalized list before the instance-building loop below, so both
+        // sources go through identical range/drum filtering, sorting, and rendering — an added
+        // note behaves exactly like a real one everywhere except skip/restore (see `NoteSource`'s
+        // `added_id`, checked below).
+        let mut notes: Vec<NoteSource> = loaded
             .midi
             .tracks
             .iter()
             .flat_map(|track| track.notes.iter())
             .filter(|note| range.contains(note.note) && note.channel != 9)
+            .map(|note| {
+                let start_seconds = note.start.as_secs_f64();
+                let original_duration_seconds = note.duration.as_secs_f32();
+                let duration_seconds = duration_edits
+                    .iter()
+                    .find(|edit| {
+                        edit.track_id == note.track_id
+                            && edit.channel == note.channel
+                            && edit.note == note.note
+                            && edit.start_seconds == start_seconds
+                    })
+                    .map(|edit| edit.new_duration_seconds as f32)
+                    .unwrap_or(original_duration_seconds);
+                NoteSource {
+                    track_id: note.track_id,
+                    channel: note.channel,
+                    note: note.note,
+                    start_seconds,
+                    duration_seconds,
+                    original_duration_seconds,
+                    velocity: note.velocity,
+                    added_id: None,
+                }
+            })
+            .chain(
+                added_notes
+                    .iter()
+                    .filter(|added| range.contains(added.note) && added.channel != 9)
+                    .map(|added| NoteSource {
+                        track_id: ADDED_NOTE_TRACK_ID,
+                        channel: added.channel,
+                        note: added.note,
+                        start_seconds: added.start_seconds,
+                        duration_seconds: added.duration_seconds as f32,
+                        original_duration_seconds: added.duration_seconds as f32,
+                        velocity: added.velocity,
+                        added_id: Some(added.id),
+                    }),
+            )
             .collect();
         // Render newer notes on top of older ones, matching Neothesia's own convention.
-        notes.sort_by_key(|note| note.start);
+        notes.sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
 
+        let mut note_starts = Vec::with_capacity(notes.len());
         let mut note_intervals = Vec::with_capacity(notes.len());
         let mut active_notes = Vec::with_capacity(notes.len());
         let instances = self.pipeline.instances();
-        for note in notes {
-            let is_skipped = skipped.iter().any(|skip| {
-                skip.track_id == note.track_id
-                    && skip.channel == note.channel
-                    && skip.note == note.note
-                    && skip.start_seconds == note.start.as_secs_f64()
-            });
+        for note in &notes {
+            // An added note has no MIDI original to skip/restore — deleting it removes it from
+            // `added_notes` outright instead (see `ActiveNote::added_note_id`'s doc comment).
+            let is_skipped = note.added_id.is_none()
+                && skipped.iter().any(|skip| {
+                    skip.track_id == note.track_id
+                        && skip.channel == note.channel
+                        && skip.note == note.note
+                        && skip.start_seconds == note.start_seconds
+                });
+            let is_edited = note.added_id.is_none()
+                && duration_edits.iter().any(|edit| {
+                    edit.track_id == note.track_id
+                        && edit.channel == note.channel
+                        && edit.note == note.note
+                        && edit.start_seconds == note.start_seconds
+                });
 
             let key = &keys[note.note as usize - range_start];
             let (color_top, color_bottom) = if key.is_sharp {
@@ -278,9 +419,12 @@ impl NotesRenderer {
             } else {
                 (top_light, bottom_light)
             };
-            let duration = note.duration.as_secs_f32().max(0.1);
+            let duration = note.duration_seconds.max(0.1);
+            let original_duration = note.original_duration_seconds.max(0.1);
             let note_x = key.x + left_x;
-            let start_seconds = note.start.as_secs_f32();
+            let start_seconds = note.start_seconds as f32;
+
+            note_starts.push(start_seconds);
 
             // A skipped note gets neither a rendered instance nor a `NoteInterval` (so it never
             // draws on the highway and never triggers barrier/particle effects) — but it still
@@ -307,18 +451,23 @@ impl NotesRenderer {
                 track_id: note.track_id,
                 channel: note.channel,
                 note: note.note,
-                start_seconds: note.start.as_secs_f64(),
+                start_seconds: note.start_seconds,
                 // Match the rendered note duration floor so the editor's active-note window
                 // matches what is visible. See `docs/implementation-notes.md`.
                 end_seconds: (start_seconds + duration) as f64,
                 skipped: is_skipped,
+                edited: is_edited,
+                original_duration_seconds: original_duration as f64,
+                added_note_id: note.added_id,
             });
         }
 
-        // `notes` was already sorted ascending by `note.start` above, so `note_intervals` (pushed
+        // `notes` was already sorted ascending by start time above, so `note_intervals` (pushed
         // in the same order) is too — `effects::EffectsRenderer::update` relies on that ordering
         // to binary-search the slice of events crossed since the last update.
+        note_starts.sort_by(|a, b| a.partial_cmp(b).unwrap());
         if let Some(loaded) = self.loaded.as_mut() {
+            loaded.note_starts = note_starts;
             loaded.note_intervals = note_intervals;
             loaded.active_notes = active_notes;
         }

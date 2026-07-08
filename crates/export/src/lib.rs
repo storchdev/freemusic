@@ -135,6 +135,8 @@ fn run_inner(
                 &note_layer,
                 midi_path,
                 &project.skipped_notes,
+                &project.duration_edits,
+                &project.added_notes,
             )
             .map_err(|err| format!("failed to load MIDI: {err}"))?;
     }

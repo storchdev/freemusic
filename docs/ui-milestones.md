@@ -685,3 +685,72 @@ cost of the original file always containing the "deleted" notes if opened elsewh
   button or drag-drop) clears any leftover skip list instead of silently (and coincidentally)
   filtering the new file by stale keys, and an export reflects the same deletions as the live
   preview.
+
+## Note editor: duration editing and adding new notes
+
+Two roadmap items, built as extensions of the note editor above rather than new UI surfaces —
+same table, same non-destructive philosophy (the loaded `.mid` file is never read from disk after
+the initial parse, and never written to), same "no staging/confirm step, the undo is always right
+there" design the skip list already established.
+
+- **Duration editing**: every row in the "currently playing" table now has an editable
+  `egui::DragValue` duration field (drag or type a new value, `0.02..=60.0` seconds) instead of a
+  plain label. For a MIDI-derived note, committing a new value writes a
+  `project::NoteDurationEdit { track_id, channel, note, start_seconds, new_duration_seconds }`
+  into `Project.duration_edits` (same identity fields as `SkippedNote`, minus the redundant
+  `end_seconds` "insurance" field — not meaningful once duration itself is the thing being
+  overridden) — see `ui::apply_duration_edit`/`ui::duration_edit_matches` in `app/src/ui.rs`. If
+  the typed value happens to match the note's original duration, the override is removed instead
+  of stored as a no-op edit. An edited row gets a ↺ button that removes its `NoteDurationEdit`
+  outright, snapping the field back to the original parsed duration next redraw.
+- **Adding notes**: a small form below the table (`ui.add_note_pitch`/`add_note_velocity`/
+  `add_note_duration_seconds` — plain UI-local fields, not persisted) has an "Add at current
+  frame" button that pushes a `project::AddedNote { id, channel: 0, note, start_seconds, \
+  duration_seconds, velocity }` into `Project.added_notes`, `start_seconds` taken from the current
+  transport position minus the sync offset (the same `midi_time` convention `update_midi_position`
+  uses everywhere else). `id` is simply one past the current max id in `added_notes` (`0` if
+  empty) — an added note has no MIDI-derived identity to key off the way `SkippedNote`/
+  `NoteDurationEdit` do, so an arbitrary per-project counter stands in for one; it doesn't need to
+  be persisted separately since it's always recomputed as "next after the current max."
+- **Rendering an added note**: `render::notes::rebuild_instances` (`crates/render/src/notes/
+  mod.rs`) now builds a `Vec<NoteSource>` — a small normalized struct — by chaining the real
+  MIDI-parsed notes (each with any matching `NoteDurationEdit` already resolved into its
+  `duration_seconds`) with `added_notes` mapped into the same shape, before the existing sort/
+  layout/instance-building loop runs unchanged over the merged list. An added note gets a sentinel
+  `track_id` (`ADDED_NOTE_TRACK_ID = usize::MAX`, guaranteed disjoint from any real track's index)
+  and is otherwise indistinguishable from a real note everywhere downstream — it lands on the
+  highway, triggers barrier/particle effects via `NoteInterval`, and shows up in the timeline's
+  note-density strip exactly like a parsed one. `note_starts` (backing that density strip) moved
+  from being computed once in `NotesRenderer::load` to being rebuilt every `rebuild_instances`
+  call, so an added note (or a duration edit shifting nothing visually but still meaningful) shows
+  up without needing a full MIDI reload.
+- **Skip/restore has no meaning for an added note**: `ActiveNote::skipped` is always `false` for
+  one (checked via `added_id.is_none()` before ever consulting `skipped_notes`) — there's no MIDI
+  original to exclude in favor of. Deleting an added note instead removes its entry from
+  `Project.added_notes` outright (`ui.rs`'s 🗑 handler branches on `ActiveNote::added_note_id`
+  before falling back to the skip-list 🗑/♻ pair), which is also why there's no restore icon for
+  one — un-deleting would mean re-creating it from scratch anyway, so a delete is already final in
+  the same way it would be for a fresh "never added" state.
+- **Precision note**: `NoteSource::start_seconds` is kept as full `f64` (unlike the `f32` used for
+  on-screen geometry elsewhere in this file) specifically so identity comparisons against
+  `SkippedNote`/`NoteDurationEdit::start_seconds` don't pick up f64→f32→f64 rounding drift — those
+  keys are round-tripped through `ActiveNote::start_seconds`, which is itself sourced from this
+  same field, so keeping it at full precision preserves the exact-equality matching the original
+  `SkippedNote`-only code had before this feature existed.
+- **Wiring**: both new lists thread through exactly the same set of call sites `skipped_notes`
+  already did — `NotesRenderer`/`Compositor`'s `load`/`resize` signatures, `AppState`'s
+  `applied_duration_edits`/`applied_added_notes` dirty-check fields (`app/src/main.rs`, checked
+  alongside `applied_skipped_notes` in `apply_post_ui_updates`), `snapshot_project`/
+  `load_project_from_path` round-tripping through `Project`, and `export::run` reading both
+  straight off the `Project` passed to it. The two "loading an unrelated MIDI file" sites (Open
+  MIDI button, drag-drop) now clear all three lists (`skipped_notes`, `duration_edits`,
+  `added_notes`), not just the skip list — an added note's pitch/time is arbitrary, not derived
+  from the old file's structure, but keeping it around across an unrelated song swap is more
+  surprising than useful, so it's cleared the same way stale skip/duration keys already were.
+- Verified by `cargo build`/`scripts/check.sh` (fmt+clippy clean) and `cargo test -p project` only
+  — not yet manually exercised in the running app. Worth checking next time someone has hands on
+  it: dragging a note's duration shorter/longer updates the highway bar and barrier-arrival timing
+  next frame, ↺ correctly reverts to the original duration, adding a note at the current frame
+  renders it immediately and shows up in the timeline's density strip, deleting an added note
+  removes it for good (no restore), saving/reloading a project round-trips `duration_edits`/
+  `added_notes`, and an export reflects the same edits/additions as the live preview.

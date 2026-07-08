@@ -41,6 +41,17 @@ pub struct Project {
     /// before this field existed load with an empty list (nothing skipped).
     #[serde(default)]
     pub skipped_notes: Vec<SkippedNote>,
+    /// Per-note duration overrides applied from the note editor's duration field — same
+    /// non-destructive philosophy as `skipped_notes`, the loaded `.mid` file is never touched.
+    /// `#[serde(default)]` so old `.fmproj.ron` files load with no overrides (every note keeps its
+    /// parsed duration).
+    #[serde(default)]
+    pub duration_edits: Vec<NoteDurationEdit>,
+    /// Notes created entirely from the note editor's "Add note" form rather than parsed from the
+    /// loaded `.mid` file — rendered/played back alongside the real notes, but never written back
+    /// to the MIDI file. `#[serde(default)]` so old `.fmproj.ron` files load with none added.
+    #[serde(default)]
+    pub added_notes: Vec<AddedNote>,
 }
 
 /// Horizontal bounds of the real keyboard visible in the footage (fractions of window width,
@@ -95,6 +106,38 @@ pub struct SkippedNote {
     pub note: u8,
     pub start_seconds: f64,
     pub end_seconds: f64,
+}
+
+/// A duration override applied to one specific note occurrence parsed from the loaded MIDI file —
+/// identified the same way as `SkippedNote` (track/channel/note/start, unique because re-parsing
+/// the same `.mid` bytes is always deterministic). `new_duration_seconds` replaces the note's
+/// rendered length and playback window everywhere a `NoteLayer` is applied; the source file itself
+/// is never rewritten. Has no effect on a `SkippedNote`-excluded note beyond what its restored
+/// length would be — the two lists are independent and both apply if present.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NoteDurationEdit {
+    pub track_id: usize,
+    pub channel: u8,
+    pub note: u8,
+    pub start_seconds: f64,
+    pub new_duration_seconds: f64,
+}
+
+/// A note that exists only in the project's save file, not in the loaded `.mid` file — created via
+/// the note editor's "Add note" form. `id` is an arbitrary, per-project-unique counter (the next
+/// unused value in `added_notes` at the time it's created — see `ui::draw_note_editor`), since an
+/// added note has no MIDI-derived identity of its own to key off the way `SkippedNote`/
+/// `NoteDurationEdit` do. `track_id` isn't carried — added notes aren't associated with any MIDI
+/// track (they render/play back exactly like a real note, but `track_id`-keyed features like
+/// `ColorBinding::ByTrack` don't apply to them).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AddedNote {
+    pub id: u64,
+    pub channel: u8,
+    pub note: u8,
+    pub start_seconds: f64,
+    pub duration_seconds: f64,
+    pub velocity: u8,
 }
 
 /// Camera-stretch calibration: fractions of canvas width for the left edge of C1 through C8, the

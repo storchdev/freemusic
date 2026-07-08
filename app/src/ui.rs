@@ -36,6 +36,18 @@ pub struct UiState {
     /// this against `applied_skipped_notes` each redraw (same pattern as `calibration`/the
     /// effective `NoteLayer`) and rebuilds the compositor's note instances when it changes.
     pub skipped_notes: Vec<project::SkippedNote>,
+    /// Per-note duration overrides, mirroring `project::Project::duration_edits` — same
+    /// dirty-check/rebuild pattern as `skipped_notes` (see its doc comment), edited via the note
+    /// editor's duration field (`draw_note_editor`).
+    pub duration_edits: Vec<project::NoteDurationEdit>,
+    /// Notes created from the note editor's "Add note" form, mirroring
+    /// `project::Project::added_notes` — same dirty-check/rebuild pattern as `skipped_notes`.
+    pub added_notes: Vec<project::AddedNote>,
+    /// "Add note" form fields, purely local UI state (not persisted) — the pitch/velocity/
+    /// duration to use the next time "Add at current frame" is clicked.
+    pub add_note_pitch: u8,
+    pub add_note_velocity: u8,
+    pub add_note_duration_seconds: f64,
     /// Notes whose window contains the current playback frame (both skipped and not — see
     /// `render::ActiveNote::skipped`), mirrored from `Compositor::notes_at` every redraw (see
     /// `main.rs`'s `update_midi_position`) regardless of whether the keyboard tab is actually
@@ -348,7 +360,8 @@ fn note_name(note: u8) -> String {
 
 /// Turns an `render::ActiveNote` (identity + timing, no display concerns) into the
 /// `project::SkippedNote` key that names it in the persisted skip list — same fields, just
-/// crossing the crate boundary.
+/// crossing the crate boundary. Only meaningful for a MIDI-derived note (`added_note_id.is_none()`
+/// — callers only reach for this after already checking that).
 fn skipped_note_key(note: &render::ActiveNote) -> project::SkippedNote {
     project::SkippedNote {
         track_id: note.track_id,
@@ -359,26 +372,68 @@ fn skipped_note_key(note: &render::ActiveNote) -> project::SkippedNote {
     }
 }
 
+/// Identity portion shared by `project::SkippedNote`/`project::NoteDurationEdit` — used to match
+/// an existing `duration_edits` entry against a given `ActiveNote` regardless of which of the two
+/// key structs it's stored as.
+fn duration_edit_matches(edit: &project::NoteDurationEdit, note: &render::ActiveNote) -> bool {
+    edit.track_id == note.track_id
+        && edit.channel == note.channel
+        && edit.note == note.note
+        && edit.start_seconds == note.start_seconds
+}
+
+/// Applies a new duration typed/dragged into the note editor's duration field for `note`: for an
+/// added note, mutates `project::AddedNote::duration_seconds` directly (it has no separate
+/// override record — the duration *is* its own data); for a MIDI-derived note, replaces (or
+/// removes, if the new value matches the original) its `duration_edits` entry. Never touches the
+/// loaded `.mid` file either way.
+fn apply_duration_edit(state: &mut UiState, note: &render::ActiveNote, new_duration_seconds: f64) {
+    let new_duration_seconds = new_duration_seconds.max(0.02);
+    if let Some(id) = note.added_note_id {
+        if let Some(added) = state.added_notes.iter_mut().find(|added| added.id == id) {
+            added.duration_seconds = new_duration_seconds;
+        }
+        return;
+    }
+    state
+        .duration_edits
+        .retain(|edit| !duration_edit_matches(edit, note));
+    if (new_duration_seconds - note.original_duration_seconds).abs() > 1e-6 {
+        state.duration_edits.push(project::NoteDurationEdit {
+            track_id: note.track_id,
+            channel: note.channel,
+            note: note.note,
+            start_seconds: note.start_seconds,
+            new_duration_seconds,
+        });
+    }
+}
+
 /// Fixed pixel height of the note editor's currently-playing table (see `draw_note_editor`) —
 /// kept constant regardless of how many notes are playing so the section doesn't grow/shrink
 /// every frame as notes start and stop; a longer list scrolls within this instead.
 const NOTE_EDITOR_TABLE_HEIGHT: f32 = 160.0;
 
 /// Lists every note (both skipped and not — see `render::ActiveNote::skipped`) whose window
-/// contains the current playback frame, each with a single icon: 🗑 immediately excludes a
-/// playing note (straight into `state.skipped_notes`, no staging queue or confirmation step —
-/// since ♻ is always right there to undo it, a confirmation step would just be a second click for
-/// no added safety), ♻ restores an already-skipped one. The row itself never disappears when
-/// clicked — only its icon (and dimmed text, for a skipped note) flips — so every note at the
-/// current frame always shows as exactly one of the two states. Nothing here ever touches the
-/// loaded `.mid` file on disk; the exclusion lives only in the project's own save file (see
+/// contains the current playback frame — both MIDI-derived notes and notes created via the "Add
+/// note" form below (`render::ActiveNote::added_note_id`) — with an editable duration field and an
+/// action icon: 🗑 immediately excludes a playing MIDI-derived note (straight into
+/// `state.skipped_notes`, no staging queue or confirmation step — since ♻ is always right there to
+/// undo it, a confirmation step would just be a second click for no added safety), ♻ restores an
+/// already-skipped one, ↺ resets an edited MIDI-derived note's duration back to its original, and
+/// 🗑 on an added note removes it from `state.added_notes` outright (there's no "original" to
+/// restore to, so no ♻ for these). No row ever disappears when its action button is clicked —
+/// only its icon (and dimmed text, for a skipped note) flips — so every note at the current frame
+/// always shows as exactly one clear state. Nothing here ever touches the loaded `.mid` file on
+/// disk; every edit lives only in the project's own save file (see
 /// `render::notes::rebuild_instances`).
 fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
     ui.heading("Note editor");
     ui.label(
-        "Notes at this frame. 🗑 excludes a note from the note highway and playback wherever \
-        this project is opened or exported; ♻ restores it. Neither ever modifies your original \
-        MIDI file.",
+        "Notes at this frame. Drag the duration to change how long a note lasts, 🗑 excludes/\
+        removes a note from the note highway and playback wherever this project is opened or \
+        exported, ♻ restores an excluded note, ↺ resets an edited duration. Nothing here ever \
+        modifies your original MIDI file.",
     );
     ui.add_space(4.0);
 
@@ -396,11 +451,12 @@ fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
                 return;
             }
             egui::Grid::new("note_editor_grid")
-                .num_columns(3)
+                .num_columns(4)
                 .striped(true)
                 .show(ui, |ui| {
                     ui.label("Note");
                     ui.label("Duration");
+                    ui.label("");
                     ui.label("");
                     ui.end_row();
 
@@ -410,27 +466,97 @@ fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
                     let mut notes_now = state.notes_now.clone();
                     notes_now.sort_by_key(|note| note.note);
                     for note in &notes_now {
-                        let key = skipped_note_key(note);
-                        let duration_text =
-                            format!("{:.2}s", note.end_seconds - note.start_seconds);
+                        let dim = ui.visuals().weak_text_color();
                         if note.skipped {
-                            let dim = ui.visuals().weak_text_color();
                             ui.colored_label(dim, note_name(note.note));
-                            ui.colored_label(dim, duration_text);
-                            if ui.button("♻").on_hover_text("Restore").clicked() {
-                                state.skipped_notes.retain(|skip| *skip != key);
-                            }
                         } else {
                             ui.label(note_name(note.note));
-                            ui.label(duration_text);
-                            if ui.button("🗑").on_hover_text("Delete").clicked() {
-                                state.skipped_notes.push(key);
+                        }
+
+                        let mut duration_seconds = note.end_seconds - note.start_seconds;
+                        let duration_response = ui.add(
+                            egui::DragValue::new(&mut duration_seconds)
+                                .speed(0.01)
+                                .range(0.02..=60.0)
+                                .suffix("s"),
+                        );
+                        if duration_response.changed() {
+                            apply_duration_edit(state, note, duration_seconds);
+                        }
+
+                        if note.edited {
+                            if ui
+                                .button("↺")
+                                .on_hover_text("Reset to original duration")
+                                .clicked()
+                            {
+                                state
+                                    .duration_edits
+                                    .retain(|edit| !duration_edit_matches(edit, note));
                             }
+                        } else {
+                            ui.label("");
+                        }
+
+                        if let Some(id) = note.added_note_id {
+                            if ui.button("🗑").on_hover_text("Remove added note").clicked() {
+                                state.added_notes.retain(|added| added.id != id);
+                            }
+                        } else if note.skipped {
+                            if ui.button("♻").on_hover_text("Restore").clicked() {
+                                let key = skipped_note_key(note);
+                                state.skipped_notes.retain(|skip| *skip != key);
+                            }
+                        } else if ui.button("🗑").on_hover_text("Delete").clicked() {
+                            state.skipped_notes.push(skipped_note_key(note));
                         }
                         ui.end_row();
                     }
                 });
         });
+
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label("Add note:");
+        ui.add(
+            egui::DragValue::new(&mut state.add_note_pitch)
+                .range(21..=108)
+                .custom_formatter(|value, _| note_name(value as u8)),
+        );
+        ui.label("Velocity:");
+        ui.add(egui::DragValue::new(&mut state.add_note_velocity).range(1..=127));
+        ui.label("Duration:");
+        ui.add(
+            egui::DragValue::new(&mut state.add_note_duration_seconds)
+                .speed(0.01)
+                .range(0.02..=60.0)
+                .suffix("s"),
+        );
+        if ui
+            .button("Add at current frame")
+            .on_hover_text(
+                "Adds a new note at the current playhead position — stored in the project file, \
+                never written to the MIDI file.",
+            )
+            .clicked()
+        {
+            let start_seconds = (state.position_seconds - state.sync_offset_seconds).max(0.0);
+            let next_id = state
+                .added_notes
+                .iter()
+                .map(|added| added.id)
+                .max()
+                .map_or(0, |id| id + 1);
+            state.added_notes.push(project::AddedNote {
+                id: next_id,
+                channel: 0,
+                note: state.add_note_pitch,
+                start_seconds,
+                duration_seconds: state.add_note_duration_seconds,
+                velocity: state.add_note_velocity,
+            });
+        }
+    });
 }
 
 fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {

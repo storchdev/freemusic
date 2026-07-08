@@ -10,7 +10,8 @@ mod notes;
 mod video_quad;
 
 use project::{
-    BarrierLayer, KeyboardCalibration, NoteLayer, SkippedNote, TransitionLayer, VideoTransform,
+    AddedNote, BarrierLayer, KeyboardCalibration, NoteDurationEdit, NoteLayer, SkippedNote,
+    TransitionLayer, VideoTransform,
 };
 
 pub use notes::{ActiveNote, GpuHandles};
@@ -31,8 +32,8 @@ impl Compositor {
     ) -> Self {
         let video_quad = video_quad::VideoQuad::new(gpu.device, gpu.texture_format);
         let mut notes = notes::NotesRenderer::new(gpu);
-        // No MIDI is loaded yet at construction time, so there's nothing to skip.
-        notes.resize(gpu, viewport, calibration, note_layer, &[]);
+        // No MIDI is loaded yet at construction time, so there's nothing to skip/edit/add.
+        notes.resize(gpu, viewport, calibration, note_layer, &[], &[], &[]);
         let barrier = barrier::BarrierRenderer::new(gpu.device, gpu.texture_format);
         let effects = effects::EffectsRenderer::new(gpu.device, gpu.texture_format);
         Self {
@@ -59,6 +60,7 @@ impl Compositor {
         self.notes.notes_at(time_seconds)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn load_midi(
         &mut self,
         gpu: &GpuHandles,
@@ -67,14 +69,26 @@ impl Compositor {
         note_layer: &NoteLayer,
         path: &std::path::Path,
         skipped: &[SkippedNote],
+        duration_edits: &[NoteDurationEdit],
+        added_notes: &[AddedNote],
     ) -> Result<(), String> {
-        self.notes
-            .load(gpu, viewport, calibration, note_layer, path, skipped)
+        self.notes.load(
+            gpu,
+            viewport,
+            calibration,
+            note_layer,
+            path,
+            skipped,
+            duration_edits,
+            added_notes,
+        )
     }
 
-    /// Recomputes note-lane layout for a new viewport size, calibration, note layer, or
-    /// skipped-notes set. Not needed for the video quad itself — its viewport-dependent state is
-    /// the cheap per-frame uniform written by `update_viewport` instead.
+    /// Recomputes note-lane layout for a new viewport size, calibration, note layer,
+    /// skipped-notes set, duration-edit set, or added-notes set. Not needed for the video quad
+    /// itself — its viewport-dependent state is the cheap per-frame uniform written by
+    /// `update_viewport` instead.
+    #[allow(clippy::too_many_arguments)]
     pub fn resize(
         &mut self,
         gpu: &GpuHandles,
@@ -82,9 +96,18 @@ impl Compositor {
         calibration: &KeyboardCalibration,
         note_layer: &NoteLayer,
         skipped: &[SkippedNote],
+        duration_edits: &[NoteDurationEdit],
+        added_notes: &[AddedNote],
     ) {
-        self.notes
-            .resize(gpu, viewport, calibration, note_layer, skipped);
+        self.notes.resize(
+            gpu,
+            viewport,
+            calibration,
+            note_layer,
+            skipped,
+            duration_edits,
+            added_notes,
+        );
     }
 
     pub fn upload_frame(

@@ -78,8 +78,6 @@ Ideas being considered for future work, roughly grouped:
 - Better slider input/dragging mechanics
 - More export options
 - Broader `.fmstyle.ron` feature support in the UI
-- Edit note durations in note editor
-- Add new notes at current frame in note editor
 
 **End-to-end**
 - Multiple styles within the same timeline (would require reworking the timeline UI and the
