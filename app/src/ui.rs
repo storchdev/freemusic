@@ -262,7 +262,12 @@ fn draw_side_panel(ui: &mut egui::Ui, state: &mut UiState) {
         |ui, is_expanded| {
             ui.add_space(4.0);
             if is_expanded {
-                ui.horizontal(|ui| {
+                // `horizontal_wrapped` (not `horizontal`) so the tab strip folds onto a second
+                // line instead of demanding more width than the panel's `max_size` when the panel
+                // is narrower than all 4 tabs + the collapse button fit on one line — an unwrapped
+                // row here would force the panel wider than its cap, breaking the panel's own
+                // resize drag the same way the note editor's "Add note" row did (see its comment).
+                ui.horizontal_wrapped(|ui| {
                     tab_button(ui, state, Tab::Project, "Project");
                     tab_button(ui, state, Tab::Keyboard, "Keyboard");
                     tab_button(ui, state, Tab::Transform, "Transform");
@@ -272,7 +277,19 @@ fn draw_side_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     }
                 });
                 ui.separator();
-                egui::ScrollArea::vertical()
+                // `both()`, not `vertical()`: with horizontal scrolling *disabled*,
+                // `auto_shrink([false, false])`'s width behavior is "expand to fit content" (see
+                // `egui::ScrollArea::end`'s `(direction_enabled, auto_shrink)` match), so any tab
+                // whose content is wider than the current panel width would silently force the
+                // panel itself wider — which is exactly what made the panel's resize drag refuse
+                // to shrink past each tab's own widest single widget (worst on the Keyboard tab,
+                // whose "Align notes to camera stretch…" button and note-editor table are the
+                // widest content of any tab). Enabling horizontal scrolling keeps this area's own
+                // width pinned to whatever's available and lets any wider content scroll sideways
+                // inside it instead — the resize drag can now always reach `min_size` regardless
+                // of which tab is open. See `docs/ui-milestones.md`'s note on this for the
+                // underlying egui behavior in more detail.
+                egui::ScrollArea::both()
                     .auto_shrink([false, false])
                     .show(ui, |ui| match state.active_tab {
                         Tab::Project => draw_project_tab(ui, state),
@@ -450,73 +467,94 @@ fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
                 ui.label("No notes at the current frame.");
                 return;
             }
-            egui::Grid::new("note_editor_grid")
-                .num_columns(4)
-                .striped(true)
+            // `egui::Grid` can't wrap its columns onto a new line the way `horizontal_wrapped`
+            // can, so on a narrow side panel its 4 columns (note name, duration `DragValue`,
+            // reset icon, delete/restore icon) can end up wider than the available width. Left
+            // bare, that would bubble up through the *outer* `ScrollArea::vertical()` above (whose
+            // `auto_shrink([false, false])` on a disabled horizontal axis means "expand to fit
+            // content" — see `egui`'s own `ScrollArea::end`) and force the whole side panel wider,
+            // which is what made the panel's resize drag refuse to go narrower than this table's
+            // content specifically while the Keyboard tab was open. Wrapping the grid in its own
+            // `ScrollArea::horizontal()` (`auto_shrink([false, true])`, i.e. "fill the available
+            // width, scroll instead of expanding if content is wider") absorbs that overflow
+            // locally instead of letting it propagate outward.
+            egui::ScrollArea::horizontal()
+                .auto_shrink([false, true])
+                .id_salt("note_editor_horizontal_scroll")
                 .show(ui, |ui| {
-                    ui.label("Note");
-                    ui.label("Duration");
-                    ui.label("");
-                    ui.label("");
-                    ui.end_row();
-
-                    // `state.notes_now` comes back ordered by start time (see
-                    // `render::notes::NotesRenderer::notes_at`); re-sort by pitch so the table
-                    // reads like a keyboard, lowest note first.
-                    let mut notes_now = state.notes_now.clone();
-                    notes_now.sort_by_key(|note| note.note);
-                    for note in &notes_now {
-                        let dim = ui.visuals().weak_text_color();
-                        if note.skipped {
-                            ui.colored_label(dim, note_name(note.note));
-                        } else {
-                            ui.label(note_name(note.note));
-                        }
-
-                        let mut duration_seconds = note.end_seconds - note.start_seconds;
-                        let duration_response = ui.add(
-                            egui::DragValue::new(&mut duration_seconds)
-                                .speed(0.01)
-                                .range(0.02..=60.0)
-                                .suffix("s"),
-                        );
-                        if duration_response.changed() {
-                            apply_duration_edit(state, note, duration_seconds);
-                        }
-
-                        if note.edited {
-                            if ui
-                                .button("↺")
-                                .on_hover_text("Reset to original duration")
-                                .clicked()
-                            {
-                                state
-                                    .duration_edits
-                                    .retain(|edit| !duration_edit_matches(edit, note));
-                            }
-                        } else {
+                    egui::Grid::new("note_editor_grid")
+                        .num_columns(4)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.label("Note");
+                            ui.label("Duration");
                             ui.label("");
-                        }
+                            ui.label("");
+                            ui.end_row();
 
-                        if let Some(id) = note.added_note_id {
-                            if ui.button("🗑").on_hover_text("Remove added note").clicked() {
-                                state.added_notes.retain(|added| added.id != id);
+                            // `state.notes_now` comes back ordered by start time (see
+                            // `render::notes::NotesRenderer::notes_at`); re-sort by pitch so the table
+                            // reads like a keyboard, lowest note first.
+                            let mut notes_now = state.notes_now.clone();
+                            notes_now.sort_by_key(|note| note.note);
+                            for note in &notes_now {
+                                let dim = ui.visuals().weak_text_color();
+                                if note.skipped {
+                                    ui.colored_label(dim, note_name(note.note));
+                                } else {
+                                    ui.label(note_name(note.note));
+                                }
+
+                                let mut duration_seconds = note.end_seconds - note.start_seconds;
+                                let duration_response = ui.add(
+                                    egui::DragValue::new(&mut duration_seconds)
+                                        .speed(0.01)
+                                        .range(0.02..=60.0)
+                                        .suffix("s"),
+                                );
+                                if duration_response.changed() {
+                                    apply_duration_edit(state, note, duration_seconds);
+                                }
+
+                                if note.edited {
+                                    if ui
+                                        .button("↺")
+                                        .on_hover_text("Reset to original duration")
+                                        .clicked()
+                                    {
+                                        state
+                                            .duration_edits
+                                            .retain(|edit| !duration_edit_matches(edit, note));
+                                    }
+                                } else {
+                                    ui.label("");
+                                }
+
+                                if let Some(id) = note.added_note_id {
+                                    if ui.button("🗑").on_hover_text("Remove added note").clicked()
+                                    {
+                                        state.added_notes.retain(|added| added.id != id);
+                                    }
+                                } else if note.skipped {
+                                    if ui.button("♻").on_hover_text("Restore").clicked() {
+                                        let key = skipped_note_key(note);
+                                        state.skipped_notes.retain(|skip| *skip != key);
+                                    }
+                                } else if ui.button("🗑").on_hover_text("Delete").clicked() {
+                                    state.skipped_notes.push(skipped_note_key(note));
+                                }
+                                ui.end_row();
                             }
-                        } else if note.skipped {
-                            if ui.button("♻").on_hover_text("Restore").clicked() {
-                                let key = skipped_note_key(note);
-                                state.skipped_notes.retain(|skip| *skip != key);
-                            }
-                        } else if ui.button("🗑").on_hover_text("Delete").clicked() {
-                            state.skipped_notes.push(skipped_note_key(note));
-                        }
-                        ui.end_row();
-                    }
+                        });
                 });
         });
 
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    // `horizontal_wrapped` (not `horizontal`) so this row folds onto multiple lines instead of
+    // demanding more width than the side panel's `max_size` when narrow — an unwrapped row here
+    // previously forced the panel wider than its cap, which is what broke the panel's own resize
+    // drag (see `draw_side_panel`'s doc comment).
+    ui.horizontal_wrapped(|ui| {
         ui.label("Add note:");
         ui.add(
             egui::DragValue::new(&mut state.add_note_pitch)
@@ -533,10 +571,10 @@ fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
                 .suffix("s"),
         );
         if ui
-            .button("Add at current frame")
+            .button("➕")
             .on_hover_text(
-                "Adds a new note at the current playhead position — stored in the project file, \
-                never written to the MIDI file.",
+                "Add note at the current playhead position — stored in the project file, never \
+                written to the MIDI file.",
             )
             .clicked()
         {

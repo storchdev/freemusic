@@ -704,14 +704,54 @@ there" design the skip list already established.
   of stored as a no-op edit. An edited row gets a ↺ button that removes its `NoteDurationEdit`
   outright, snapping the field back to the original parsed duration next redraw.
 - **Adding notes**: a small form below the table (`ui.add_note_pitch`/`add_note_velocity`/
-  `add_note_duration_seconds` — plain UI-local fields, not persisted) has an "Add at current
-  frame" button that pushes a `project::AddedNote { id, channel: 0, note, start_seconds, \
-  duration_seconds, velocity }` into `Project.added_notes`, `start_seconds` taken from the current
-  transport position minus the sync offset (the same `midi_time` convention `update_midi_position`
-  uses everywhere else). `id` is simply one past the current max id in `added_notes` (`0` if
-  empty) — an added note has no MIDI-derived identity to key off the way `SkippedNote`/
-  `NoteDurationEdit` do, so an arbitrary per-project counter stands in for one; it doesn't need to
-  be persisted separately since it's always recomputed as "next after the current max."
+  `add_note_duration_seconds` — plain UI-local fields, not persisted, laid out with
+  `horizontal_wrapped` so it folds instead of forcing the side panel wider — see the "panel
+  resize regression" note below) has a "➕" button that pushes a `project::AddedNote { id,
+  channel: 0, note, start_seconds, duration_seconds, velocity }` into `Project.added_notes`,
+  `start_seconds` taken from the current transport position minus the sync offset (the same
+  `midi_time` convention `update_midi_position` uses everywhere else). `id` is simply one past the
+  current max id in `added_notes` (`0` if empty) — an added note has no MIDI-derived identity to
+  key off the way `SkippedNote`/`NoteDurationEdit` do, so an arbitrary per-project counter stands
+  in for one; it doesn't need to be persisted separately since it's always recomputed as "next
+  after the current max."
+- **Panel resize regression, found and fixed same session**: the "Add note" row was originally a
+  plain `ui.horizontal` with a long "Add at current frame" button label — unwrapped, that row's
+  intrinsic width (label + 3 `DragValue`s + a wide button) exceeded the side panel's `max_size`
+  (420, see `draw_side_panel`), which broke the panel's own resize-drag handle (dragging it would
+  visually move but snap back on release, and dragging further right than before stopped working)
+  since a per-frame content width wider than the panel's cap fights the same drag-persisted width
+  `egui::Panel` stores. Fixed by shortening the button to a "➕" icon and switching both this row
+  and the tab strip above it (`draw_side_panel`'s "Project"/"Keyboard"/"Transform"/"Export"/"«"
+  row, same failure mode, same fix) to `horizontal_wrapped` — either wraps onto a second line
+  instead of demanding extra width once the panel gets narrow.
+- **Second, subtler round of the same regression, also found and fixed same session**: after the
+  fix above, the panel could still not be dragged as narrow while the Keyboard tab was open —
+  each tab turned out to have its own different effective minimum width (whatever its own widest
+  single non-wrapping widget demanded), Keyboard being the worst of the four. First attempted a
+  narrow fix (wrapping just the note editor's `egui::Grid` — which can't wrap its own columns the
+  way `horizontal_wrapped` can, and got wider this session: a duration `DragValue` plus a new reset
+  icon, replacing a plain formatted-text label — in its own nested `egui::ScrollArea::horizontal()`
+  with `auto_shrink([false, true])`, still present in `draw_note_editor`). That narrowed the grid's
+  own contribution but didn't fix the underlying bug, because the grid was never the *only* wide
+  contributor — the Keyboard tab's pre-existing "Align notes to camera stretch…" button (a single
+  `ui.button` with a long label, buttons don't wrap) is wide enough on its own to trip the same
+  failure. **Root cause, at the right level**: `egui::ScrollArea::vertical()`'s own sizing rule for
+  a *disabled* axis (its width, since only vertical scrolling was enabled) with `auto_shrink` off
+  is "expand to fit content" (see `ScrollArea::end`'s `(direction_enabled[d], auto_shrink[d])`
+  match in the egui source) rather than "clip" — so *any* tab's widest single non-wrapping widget
+  (a long button label, a `Grid`, anything `horizontal_wrapped` can't help with) silently expands
+  the Keyboard tab's outer content `ScrollArea` in `draw_side_panel`, which then feeds into the
+  same content-width-vs-persisted-drag-width conflict as the first round of this bug — no per-widget
+  patch inside a single tab can fully close this off, since the next new wide widget in *any* tab
+  would trip it again. Properly fixed by switching that outer `ScrollArea::vertical()` to
+  `ScrollArea::both()` (same `auto_shrink([false, false])`) — with horizontal scrolling *enabled*,
+  `auto_shrink: false` means "fill the available width, scroll instead of expanding if content is
+  wider" (the one `(direction_enabled, auto_shrink)` combination that doesn't expand-to-fit), so
+  any tab's overflow now scrolls sideways within the panel instead of ever resizing it. This is a
+  real, structural egui gotcha worth remembering generally: a `ScrollArea` with `auto_shrink` off
+  on a *disabled* axis expands to fit content on that axis rather than clipping it — enable
+  scrolling on that axis instead if the intent is "always fill the available space, let excess
+  content scroll" rather than "grow to whatever content needs."
 - **Rendering an added note**: `render::notes::rebuild_instances` (`crates/render/src/notes/
   mod.rs`) now builds a `Vec<NoteSource>` — a small normalized struct — by chaining the real
   MIDI-parsed notes (each with any matching `NoteDurationEdit` already resolved into its
