@@ -1,0 +1,1067 @@
+<title>Barrier FX Lab</title>
+<style>
+  :root {
+    --bg: #0a0912;
+    --panel: #131120;
+    --panel-2: #17142a;
+    --border: #2a2740;
+    --text: #eae7f5;
+    --text-dim: #948ec0;
+    --text-dimmer: #635d85;
+    --accent: #ffb454;
+    --accent-soft: rgba(255, 180, 84, 0.16);
+    --accent-dim: #7a5a30;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    --sans: -apple-system, "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    overflow: hidden;
+  }
+
+  body {
+    display: flex;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  #stage {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    background: #000;
+  }
+
+  #gl {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  #hint {
+    position: absolute;
+    left: 20px;
+    bottom: 16px;
+    font-size: 11px;
+    color: rgba(234, 231, 245, 0.45);
+    letter-spacing: 0.02em;
+    font-family: var(--mono);
+    pointer-events: none;
+  }
+
+  #rail {
+    flex: 0 0 380px;
+    height: 100%;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #rail-header {
+    flex: 0 0 auto;
+    padding: 18px 20px 14px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 4px;
+  }
+
+  h1 {
+    font-size: 18px;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+    margin: 0 0 2px;
+    text-wrap: balance;
+  }
+
+  .subtitle {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin: 0 0 14px;
+    line-height: 1.4;
+  }
+
+  .presets {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .preset-btn {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 8px;
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .preset-btn:hover { border-color: var(--accent-dim); background: #1c1832; }
+  .preset-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .preset-btn.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+
+  .action-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--border);
+  }
+
+  #pulse-btn {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 700;
+    color: #1a1206;
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    padding: 8px 12px;
+    cursor: pointer;
+    letter-spacing: 0.01em;
+  }
+  #pulse-btn:active { transform: translateY(1px); }
+  #pulse-btn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+
+  .auto-pulse {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  .auto-pulse input[type="checkbox"] { accent-color: var(--accent); }
+
+  #groups {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 4px 0 24px;
+  }
+
+  #groups::-webkit-scrollbar { width: 9px; }
+  #groups::-webkit-scrollbar-track { background: transparent; }
+  #groups::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
+  #groups::-webkit-scrollbar-thumb:hover { background: var(--accent-dim); }
+
+  details.group {
+    border-bottom: 1px solid var(--border);
+    padding: 0 20px;
+  }
+  details.group[open] { padding-bottom: 10px; }
+
+  summary.group-title {
+    list-style: none;
+    cursor: pointer;
+    padding: 12px 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    user-select: none;
+  }
+  summary.group-title::-webkit-details-marker { display: none; }
+  summary.group-title::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-dim);
+    flex: 0 0 auto;
+  }
+  details[open] > summary.group-title::before { background: var(--accent); }
+  summary.group-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .row {
+    display: grid;
+    grid-template-columns: 108px 1fr 52px;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 0;
+  }
+
+  .row label {
+    font-size: 12px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .row input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+    height: 4px;
+  }
+
+  .row .val {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .row.checkbox-row { grid-template-columns: 1fr auto; }
+  .row.checkbox-row input[type="checkbox"] { accent-color: var(--accent); }
+
+  .row.select-row select {
+    grid-column: 2 / span 2;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 11.5px;
+    font-family: var(--sans);
+    padding: 4px 6px;
+  }
+
+  .row.color-row input[type="color"] {
+    grid-column: 2 / span 2;
+    justify-self: start;
+    width: 64px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: none;
+    cursor: pointer;
+  }
+
+  #export-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(5, 4, 10, 0.65);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+  }
+  #export-overlay.open { display: flex; }
+
+  #export-panel {
+    width: min(560px, 90vw);
+    max-height: 80vh;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  }
+
+  #export-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  #export-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 6px;
+  }
+  #export-close:hover { color: var(--text); }
+  #export-close:focus-visible { outline: 2px solid var(--accent); }
+
+  #export-text {
+    width: 100%;
+    min-height: 320px;
+    background: #0d0c16;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    padding: 10px;
+    resize: vertical;
+  }
+  #export-text:focus-visible { outline: 2px solid var(--accent); }
+
+  #export-hint {
+    margin: 0;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+</style>
+
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <div id="hint">drag to explore &middot; space = trigger pulse</div>
+</div>
+
+<div id="rail">
+  <div id="rail-header">
+    <p class="eyebrow">freemusic &middot; shader exploration</p>
+    <h1>Barrier FX Lab</h1>
+    <p class="subtitle">Standalone playground for the note-highway barrier: the existing wavy-edge + 3-layer corona model, plus new electric/wispy options not in the app yet.</p>
+    <div class="presets" id="presets"></div>
+    <div class="action-row">
+      <button id="pulse-btn" type="button">Trigger pulse</button>
+      <label class="auto-pulse"><input type="checkbox" id="auto-pulse" /> auto, every</label>
+      <span class="val" id="auto-pulse-val" style="font-family: var(--mono); font-size:11px; color:var(--text-dim);">0.5s</span>
+    </div>
+    <div class="action-row" style="border-top: none; margin-top: 6px; padding-top: 0;">
+      <button id="export-btn" type="button" class="preset-btn" style="width: 100%;">Export settings (JSON)</button>
+    </div>
+  </div>
+  <div id="groups"></div>
+</div>
+
+<div id="export-overlay">
+  <div id="export-panel">
+    <div id="export-panel-header">
+      <span>Current settings</span>
+      <button id="export-close" type="button" aria-label="Close">&times;</button>
+    </div>
+    <textarea id="export-text" readonly spellcheck="false"></textarea>
+    <p id="export-hint">Copied to clipboard if your browser allows it &mdash; otherwise select all (Ctrl/Cmd+A) and copy.</p>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// Parameter schema. Each entry both drives a generated slider row and a GLSL
+// uniform of the same purpose. Defaults for thickness/glow-layer amplitude and
+// sigma_px, and the wavy amplitude/wavelength/speed ranges, are lifted straight
+// from crates/project/src/style.rs and dump_sample_styles.rs so this starts
+// from the app's real numbers rather than guesses.
+// ---------------------------------------------------------------------------
+const SCHEMA = [
+  { key: "coreColor", group: "core", type: "color", label: "Core color", default: "#ffb454" },
+  { key: "showBar", group: "core", type: "checkbox", label: "Show opaque core", default: false },
+  { key: "thickness", group: "core", type: "range", label: "Thickness", min: 1, max: 20, step: 0.5, unit: "px", default: 4 },
+  { key: "brightnessBase", group: "core", type: "range", label: "Brightness (rest)", min: 0.2, max: 2, step: 0.02, default: 1.0 },
+  { key: "brightnessPeak", group: "core", type: "range", label: "Brightness (pulse peak)", min: 0.5, max: 3.5, step: 0.02, default: 1.9 },
+  { key: "pulseDecay", group: "core", type: "range", label: "Pulse decay", min: 0.05, max: 1.5, step: 0.01, unit: "s", default: 0.35 },
+
+  { key: "glowColor", group: "glow", type: "color", label: "Glow color", default: "#ffd9a0" },
+  { key: "glowIntensity", group: "glow", type: "range", label: "Glow intensity", min: 0, max: 3, step: 0.02, default: 1.0 },
+  { key: "glowSizeScale", group: "glow", type: "range", label: "Glow size", min: 0.3, max: 3, step: 0.02, default: 1.0 },
+  { key: "layerAmp1", group: "glow", type: "range", label: "Layer 1 amp", min: 0, max: 6, step: 0.05, default: 2.6 },
+  { key: "layerSigma1", group: "glow", type: "range", label: "Layer 1 σ", min: 0.5, max: 40, step: 0.5, unit: "px", default: 5 },
+  { key: "layerAmp2", group: "glow", type: "range", label: "Layer 2 amp", min: 0, max: 6, step: 0.05, default: 1.1 },
+  { key: "layerSigma2", group: "glow", type: "range", label: "Layer 2 σ", min: 0.5, max: 60, step: 0.5, unit: "px", default: 16 },
+  { key: "layerAmp3", group: "glow", type: "range", label: "Layer 3 amp", min: 0, max: 6, step: 0.05, default: 0.38 },
+  { key: "layerSigma3", group: "glow", type: "range", label: "Layer 3 σ", min: 0.5, max: 100, step: 1, unit: "px", default: 48 },
+
+  { key: "wavyEnabled", group: "wave", type: "checkbox", label: "Wavy edge enabled", default: true },
+  { key: "wavyMode", group: "wave", type: "select", label: "Mode", default: "1", options: [["0", "Top wave"], ["1", "Edge"], ["2", "Full wave"]] },
+  { key: "waveAmp", group: "wave", type: "range", label: "Amplitude", min: 0, max: 30, step: 0.5, unit: "px", default: 7 },
+  { key: "waveLen", group: "wave", type: "range", label: "Wavelength", min: 10, max: 300, step: 1, unit: "px", default: 55 },
+  { key: "waveSpeed", group: "wave", type: "range", label: "Ripple speed", min: 0, max: 20, step: 0.1, default: 3.5 },
+  { key: "slideSpeed", group: "wave", type: "range", label: "Slide speed", min: -200, max: 200, step: 1, unit: "px/s", default: 40 },
+  { key: "strandCount", group: "wave", type: "range", label: "Strand count (edge mode only)", min: 1, max: 8, step: 1, default: 5 },
+  { key: "strandSpread", group: "wave", type: "range", label: "Strand spread", min: 0, max: 40, step: 1, unit: "px", default: 14 },
+  { key: "strandJitter", group: "wave", type: "range", label: "Strand independence", min: 0, max: 1, step: 0.01, default: 0.75 },
+  { key: "strandThickness", group: "wave", type: "range", label: "Strand thinness", min: 0.4, max: 6, step: 0.1, unit: "px", default: 1.4 },
+  { key: "strandHaloAmp", group: "wave", type: "range", label: "Strand halo amp", min: 0, max: 3, step: 0.02, default: 1.0 },
+  { key: "strandHaloSigma", group: "wave", type: "range", label: "Strand halo sigma", min: 0.5, max: 40, step: 0.5, unit: "px", default: 6 },
+  { key: "strandGlow", group: "wave", type: "range", label: "Strand glow", min: 0, max: 3, step: 0.02, default: 1.3 },
+  { key: "strandFlicker", group: "wave", type: "range", label: "Strand flicker speed", min: 0, max: 5, step: 0.02, default: 1.8 },
+
+  { key: "filamentIntensity", group: "filament", type: "range", label: "Intensity", min: 0, max: 2, step: 0.02, default: 0.7 },
+  { key: "filamentSpeed", group: "filament", type: "range", label: "Slide speed", min: -3, max: 3, step: 0.02, default: 0.9 },
+  { key: "filamentScale", group: "filament", type: "range", label: "Streak width", min: 8, max: 150, step: 1, unit: "px", default: 42 },
+
+  { key: "wispDensity", group: "wisps", type: "range", label: "Density", min: 0, max: 1, step: 0.01, default: 0.55 },
+  { key: "wispHeight", group: "wisps", type: "range", label: "Height", min: 0, max: 160, step: 1, unit: "px", default: 46 },
+  { key: "wispFlicker", group: "wisps", type: "range", label: "Flicker speed", min: 0, max: 5, step: 0.02, default: 1.4 },
+  { key: "wispSway", group: "wisps", type: "range", label: "Sway", min: 0, max: 1, step: 0.01, default: 0.5 },
+  { key: "wispIntensity", group: "wisps", type: "range", label: "Intensity", min: 0, max: 2, step: 0.02, default: 0.9 },
+
+  { key: "barrierYFrac", group: "scene", type: "range", label: "Barrier height", min: 0.15, max: 0.6, step: 0.01, default: 0.34 },
+  { key: "keyWidth", group: "scene", type: "range", label: "Key width", min: 16, max: 60, step: 1, unit: "px", default: 34 },
+  { key: "vignette", group: "scene", type: "range", label: "Vignette", min: 0, max: 1, step: 0.02, default: 0.35 },
+  { key: "exposure", group: "scene", type: "range", label: "Exposure", min: 0.4, max: 2.5, step: 0.02, default: 1.0 },
+];
+
+const GROUPS = [
+  { id: "core", title: "Core bar" },
+  { id: "glow", title: "Corona (glow)" },
+  { id: "wave", title: "Wavy edge" },
+  { id: "filament", title: "Electric — sliding filament" },
+  { id: "wisps", title: "Electric — wisps" },
+  { id: "scene", title: "Scene" },
+];
+
+const PRESETS = {
+  "SeeMusic gold": {
+    coreColor: "#ffb454", glowColor: "#ffd9a0", showBar: false, thickness: 4,
+    brightnessBase: 1.0, brightnessPeak: 1.9, pulseDecay: 0.35,
+    glowIntensity: 1.0, glowSizeScale: 1.0,
+    layerAmp1: 2.6, layerSigma1: 5, layerAmp2: 1.1, layerSigma2: 16, layerAmp3: 0.38, layerSigma3: 48,
+    wavyEnabled: true, wavyMode: "1", waveAmp: 7, waveLen: 55, waveSpeed: 3.5, slideSpeed: 40,
+    strandCount: 6, strandSpread: 16, strandJitter: 0.8, strandThickness: 1.3, strandHaloAmp: 1.0, strandHaloSigma: 6, strandGlow: 1.5, strandFlicker: 2.0,
+    filamentIntensity: 0.7, filamentSpeed: 0.9, filamentScale: 42,
+    wispDensity: 0.55, wispHeight: 46, wispFlicker: 1.4, wispSway: 0.5, wispIntensity: 0.9,
+    barrierYFrac: 0.34, keyWidth: 34, vignette: 0.35, exposure: 1.0,
+  },
+  "Cool plasma": {
+    coreColor: "#8fe0ff", glowColor: "#bfe9ff", showBar: true, thickness: 3.5,
+    brightnessBase: 1.0, brightnessPeak: 2.1, pulseDecay: 0.28,
+    glowIntensity: 1.2, glowSizeScale: 1.1,
+    layerAmp1: 2.2, layerSigma1: 4, layerAmp2: 1.3, layerSigma2: 18, layerAmp3: 0.5, layerSigma3: 55,
+    wavyEnabled: true, wavyMode: "1", waveAmp: 5, waveLen: 40, waveSpeed: 6.5, slideSpeed: 90,
+    strandCount: 7, strandSpread: 20, strandJitter: 0.9, strandThickness: 1.0, strandHaloAmp: 1.2, strandHaloSigma: 5, strandGlow: 1.6, strandFlicker: 3.2,
+    filamentIntensity: 1.1, filamentSpeed: 1.8, filamentScale: 26,
+    wispDensity: 0.7, wispHeight: 60, wispFlicker: 2.4, wispSway: 0.8, wispIntensity: 1.2,
+    barrierYFrac: 0.34, keyWidth: 34, vignette: 0.4, exposure: 1.05,
+  },
+  "Ember pulse": {
+    coreColor: "#ff6a2e", glowColor: "#ff9a3d", showBar: true, thickness: 5,
+    brightnessBase: 0.9, brightnessPeak: 2.6, pulseDecay: 0.55,
+    glowIntensity: 1.3, glowSizeScale: 1.3,
+    layerAmp1: 3.0, layerSigma1: 6, layerAmp2: 1.4, layerSigma2: 20, layerAmp3: 0.5, layerSigma3: 60,
+    wavyEnabled: true, wavyMode: "2", waveAmp: 12, waveLen: 120, waveSpeed: 1.4, slideSpeed: 15,
+    strandCount: 4, strandSpread: 22, strandJitter: 0.6, strandThickness: 2.0, strandHaloAmp: 0.7, strandHaloSigma: 9, strandGlow: 1.1, strandFlicker: 1.0,
+    filamentIntensity: 0.4, filamentSpeed: 0.4, filamentScale: 60,
+    wispDensity: 0.4, wispHeight: 80, wispFlicker: 0.9, wispSway: 0.35, wispIntensity: 1.1,
+    barrierYFrac: 0.36, keyWidth: 36, vignette: 0.3, exposure: 1.1,
+  },
+  "Minimal (today)": {
+    coreColor: "#f4f1ea", glowColor: "#f4f1ea", showBar: true, thickness: 4,
+    brightnessBase: 1.0, brightnessPeak: 1.5, pulseDecay: 0.3,
+    glowIntensity: 0.7, glowSizeScale: 1.0,
+    layerAmp1: 2.6, layerSigma1: 5, layerAmp2: 1.1, layerSigma2: 16, layerAmp3: 0.38, layerSigma3: 48,
+    wavyEnabled: false, wavyMode: "0", waveAmp: 0, waveLen: 55, waveSpeed: 0, slideSpeed: 0,
+    strandCount: 1, strandSpread: 0, strandJitter: 0, strandThickness: 1.4, strandHaloAmp: 0, strandHaloSigma: 5, strandGlow: 0, strandFlicker: 1,
+    filamentIntensity: 0, filamentSpeed: 0, filamentScale: 42,
+    wispDensity: 0.5, wispHeight: 0, wispFlicker: 1, wispSway: 0.5, wispIntensity: 0,
+    barrierYFrac: 0.34, keyWidth: 34, vignette: 0.3, exposure: 1.0,
+  },
+};
+
+const params = {};
+for (const s of SCHEMA) params[s.key] = s.default;
+
+// ---------------------------------------------------------------------------
+// Build the control rail
+// ---------------------------------------------------------------------------
+const groupsEl = document.getElementById("groups");
+const inputEls = {};
+
+for (const g of GROUPS) {
+  const details = document.createElement("details");
+  details.className = "group";
+  details.open = true;
+  const summary = document.createElement("summary");
+  summary.className = "group-title";
+  summary.textContent = g.title;
+  details.appendChild(summary);
+
+  for (const s of SCHEMA.filter((s) => s.group === g.id)) {
+    const row = document.createElement("div");
+    row.className = "row";
+    if (s.type === "checkbox") row.classList.add("checkbox-row");
+    if (s.type === "select") row.classList.add("select-row");
+    if (s.type === "color") row.classList.add("color-row");
+
+    const label = document.createElement("label");
+    label.textContent = s.label;
+    label.htmlFor = "ctl-" + s.key;
+    row.appendChild(label);
+
+    let input;
+    if (s.type === "range") {
+      input = document.createElement("input");
+      input.type = "range";
+      input.min = s.min; input.max = s.max; input.step = s.step;
+      input.value = s.default;
+      const val = document.createElement("span");
+      val.className = "val";
+      const fmt = (v) => (Number.isInteger(s.step) ? Math.round(v) : parseFloat(v).toFixed(2)) + (s.unit ? " " + s.unit : "");
+      val.textContent = fmt(s.default);
+      input.addEventListener("input", () => {
+        params[s.key] = parseFloat(input.value);
+        val.textContent = fmt(input.value);
+      });
+      row.appendChild(input);
+      row.appendChild(val);
+    } else if (s.type === "checkbox") {
+      input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = !!s.default;
+      input.addEventListener("input", () => { params[s.key] = input.checked; });
+      row.appendChild(input);
+    } else if (s.type === "select") {
+      input = document.createElement("select");
+      for (const [val, text] of s.options) {
+        const opt = document.createElement("option");
+        opt.value = val; opt.textContent = text;
+        if (val === s.default) opt.selected = true;
+        input.appendChild(opt);
+      }
+      input.addEventListener("input", () => { params[s.key] = input.value; });
+      row.appendChild(input);
+    } else if (s.type === "color") {
+      input = document.createElement("input");
+      input.type = "color";
+      input.value = s.default;
+      input.addEventListener("input", () => { params[s.key] = input.value; });
+      row.appendChild(input);
+    }
+    input.id = "ctl-" + s.key;
+    inputEls[s.key] = input;
+    details.appendChild(row);
+  }
+  groupsEl.appendChild(details);
+}
+
+function syncControlsFromParams() {
+  for (const s of SCHEMA) {
+    const input = inputEls[s.key];
+    const v = params[s.key];
+    if (s.type === "checkbox") input.checked = !!v;
+    else input.value = v;
+    if (s.type === "range") {
+      const row = input.parentElement;
+      const val = row.querySelector(".val");
+      const fmt = (x) => (Number.isInteger(s.step) ? Math.round(x) : parseFloat(x).toFixed(2)) + (s.unit ? " " + s.unit : "");
+      val.textContent = fmt(v);
+    }
+  }
+}
+
+// Presets
+const presetsEl = document.getElementById("presets");
+let activeBtn = null;
+for (const name of Object.keys(PRESETS)) {
+  const btn = document.createElement("button");
+  btn.className = "preset-btn";
+  btn.type = "button";
+  btn.textContent = name;
+  btn.addEventListener("click", () => {
+    Object.assign(params, PRESETS[name]);
+    syncControlsFromParams();
+    if (activeBtn) activeBtn.classList.remove("active");
+    btn.classList.add("active");
+    activeBtn = btn;
+  });
+  presetsEl.appendChild(btn);
+  if (name === "SeeMusic gold") { btn.classList.add("active"); activeBtn = btn; }
+}
+
+// ---------------------------------------------------------------------------
+// Pulse trigger (simulates a note landing on the barrier)
+// ---------------------------------------------------------------------------
+let pulseStart = null;
+let currentPulse = 0;
+function triggerPulse(nowSec) {
+  pulseStart = nowSec;
+}
+document.getElementById("pulse-btn").addEventListener("click", () => triggerPulse(clock()));
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && e.target === document.body) {
+    e.preventDefault();
+    triggerPulse(clock());
+  }
+});
+
+const autoCheckbox = document.getElementById("auto-pulse");
+const autoValSpan = document.getElementById("auto-pulse-val");
+let autoInterval = null;
+autoCheckbox.addEventListener("input", () => {
+  if (autoCheckbox.checked) {
+    autoInterval = setInterval(() => triggerPulse(clock()), 500);
+  } else if (autoInterval) {
+    clearInterval(autoInterval);
+    autoInterval = null;
+  }
+});
+autoValSpan.textContent = "0.5s";
+
+// ---------------------------------------------------------------------------
+// Export: dump the exact live params object as JSON, for pasting into the app
+// as a new preset or attaching to an issue/note once a look is worth keeping.
+// ---------------------------------------------------------------------------
+const exportOverlay = document.getElementById("export-overlay");
+const exportText = document.getElementById("export-text");
+document.getElementById("export-btn").addEventListener("click", async () => {
+  const json = JSON.stringify(params, null, 2);
+  exportText.value = json;
+  exportOverlay.classList.add("open");
+  exportText.focus();
+  exportText.select();
+  try {
+    await navigator.clipboard.writeText(json);
+  } catch (err) {
+    // Clipboard permission denied/unavailable (common in sandboxed contexts) --
+    // the selected textarea is the fallback, no further action needed.
+  }
+});
+function closeExport() { exportOverlay.classList.remove("open"); }
+document.getElementById("export-close").addEventListener("click", closeExport);
+exportOverlay.addEventListener("click", (e) => {
+  if (e.target === exportOverlay) closeExport();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && exportOverlay.classList.contains("open")) closeExport();
+});
+
+// ---------------------------------------------------------------------------
+// WebGL2 setup: a single fullscreen-triangle fragment shader renders the
+// entire scene (background, procedural piano keys, barrier core, corona,
+// sliding filament, wisps).
+// ---------------------------------------------------------------------------
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl2", { antialias: true, alpha: false });
+if (!gl) {
+  document.getElementById("stage").innerHTML =
+    '<p style="color:#eae7f5;padding:24px;font-family:sans-serif;">WebGL2 is not available in this browser.</p>';
+  throw new Error("no webgl2");
+}
+
+const VERT_SRC = `#version 300 es
+void main() {
+  vec2 pos[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(pos[gl_VertexID], 0.0, 1.0);
+}`;
+
+const FRAG_SRC = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+
+uniform vec2 uResolution;
+uniform float uTime;
+
+uniform vec3 uCoreColor;
+uniform vec3 uGlowColor;
+uniform float uThickness;
+uniform float uShowBar;
+uniform float uBrightnessBase;
+uniform float uBrightnessPeak;
+uniform float uPulse;
+
+uniform float uGlowIntensity;
+uniform float uGlowSizeScale;
+uniform vec3 uLayerAmp;
+uniform vec3 uLayerSigma;
+
+uniform float uWavyEnabled;
+uniform float uWavyMode;
+uniform float uWaveAmp;
+uniform float uWaveLen;
+uniform float uWaveSpeed;
+uniform float uSlideSpeed;
+uniform float uStrandCount;
+uniform float uStrandSpread;
+uniform float uStrandJitter;
+uniform float uStrandThickness;
+uniform float uStrandHaloAmp;
+uniform float uStrandHaloSigma;
+uniform float uStrandGlow;
+uniform float uStrandFlicker;
+
+uniform float uFilamentIntensity;
+uniform float uFilamentSpeed;
+uniform float uFilamentScale;
+
+uniform float uWispDensity;
+uniform float uWispHeight;
+uniform float uWispFlicker;
+uniform float uWispSway;
+uniform float uWispIntensity;
+
+uniform float uBarrierYFrac;
+uniform float uKeyWidth;
+uniform float uVignette;
+uniform float uExposure;
+
+// --- value noise, same construction as barrier.wgsl's hash21/noise2 ---
+float hash21(vec2 p) {
+  vec3 p3 = fract(vec3(p.x, p.y, p.x) * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float noise2(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  float a = hash21(i);
+  float b = hash21(i + vec2(1.0, 0.0));
+  float c = hash21(i + vec2(0.0, 1.0));
+  float d = hash21(i + vec2(1.0, 1.0));
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 2.0 - 1.0;
+}
+
+// desaturate toward white as brightness climbs past 1.0 -- barrier.wgsl's hot_color
+vec3 hotColor(vec3 base, float brightness) {
+  float b = max(brightness, 0.0);
+  if (b <= 1.0) return base * b;
+  float whiteness = 1.0 - 1.0 / b;
+  return mix(base, vec3(1.0), whiteness);
+}
+
+const float WAVE_ENVELOPE_MAX = 2.6;
+const float NOISE_SHAPE_POWER = 2.2;
+
+// same stochastic-ripple construction as barrier.wgsl's wavy_offset: two independent
+// noise axes (x, t) rather than a single traveling sine, so it reads as irregular
+// rather than periodic. seed decorrelates one strand's ripple from another's (see
+// the strand-bundle loop in main()) by shifting which region of the noise field gets
+// sampled -- seed 0.0 reproduces the original single-edge behavior exactly. uSlideSpeed
+// (px/s) is a separate knob from uWaveSpeed: it literally translates the ripple pattern
+// sideways along x, rather than just mutating it in place over time -- the "current
+// flowing through the wire" motion, independent of how fast the ripples themselves churn.
+float wavyOffsetSeeded(float x, float seed) {
+  if (uWavyEnabled < 0.5) return 0.0;
+  float amp = uWaveAmp;
+  float wavelength = max(uWaveLen, 1.0);
+  float speed = uWaveSpeed;
+  float t = uTime;
+
+  float xSlid = x - t * uSlideSpeed;
+  float sx = xSlid / wavelength + seed * 3.7;
+  float st = t * speed + seed * 5.3;
+
+  float n = 0.0;
+  n += 0.55 * noise2(vec2(sx * 1.00, st * 1.00));
+  n += 0.30 * noise2(vec2(sx * 2.13 + 7.1, st * 1.53 + 3.7));
+  n += 0.15 * noise2(vec2(sx * 4.77 + 1.9, st * 0.71 + 9.2));
+  n = sign(n) * pow(abs(n), NOISE_SHAPE_POWER);
+
+  float envN = noise2(vec2(sx * 0.23 + 5.0, st * 0.31 + 2.0));
+  float envelope = 1.0 + (WAVE_ENVELOPE_MAX - 1.0) * envN * envN;
+
+  return amp * n * envelope;
+}
+float wavyOffset(float x) { return wavyOffsetSeeded(x, 0.0); }
+
+struct EdgeShape { float coreAlpha; float edgeDist; float h; float topEdge; float baseWave; };
+
+// Ported from barrier.wgsl's edge_shape, but for WebGL's y-up fragCoord convention
+// (larger y = higher on screen) instead of wgsl's y-down @builtin(position): "top"
+// (where wisps rise from) is the +y side of the bar here, not the -y side.
+EdgeShape edgeShape(float fragY, float fragX, float barrierY) {
+  float halfT = uThickness * 0.5;
+  float wave = wavyOffset(fragX);
+  float topOff = 0.0;
+  float botOff = 0.0;
+  if (uWavyEnabled > 0.5) {
+    if (uWavyMode > 1.5) {
+      float swell = 0.5 * (uWaveAmp + wave);
+      topOff = swell;
+      botOff = -swell;
+    } else if (uWavyMode > 0.5) {
+      topOff = wave;
+      botOff = wave;
+    } else {
+      topOff = wave;
+    }
+  }
+  float topEdge = barrierY + halfT + topOff;
+  float botEdge = barrierY - halfT + botOff;
+
+  float alphaTop = 1.0 - smoothstep(topEdge - 1.0, topEdge + 1.0, fragY);
+  float alphaBot = smoothstep(botEdge - 1.0, botEdge + 1.0, fragY);
+  float coreAlpha = clamp(alphaTop, 0.0, 1.0) * clamp(alphaBot, 0.0, 1.0);
+
+  float distAbove = fragY - topEdge;
+  float distBelow = botEdge - fragY;
+  float edgeDist = max(max(distAbove, distBelow), 0.0);
+
+  EdgeShape s;
+  s.coreAlpha = coreAlpha;
+  s.edgeDist = edgeDist;
+  s.h = max(fragY - topEdge, 0.0);
+  s.topEdge = topEdge;
+  s.baseWave = wave;
+  return s;
+}
+
+vec3 pianoKeys(float fragX, float fragY, float keysTop) {
+  float depth = keysTop - fragY;
+  float whiteW = uKeyWidth;
+  float octaveW = 7.0 * whiteW;
+  float xInOct = mod(fragX, octaveW);
+  float whiteIdxF = floor(xInOct / whiteW);
+  int whiteIdx = int(whiteIdxF);
+  float xInKey = xInOct - whiteIdxF * whiteW;
+
+  vec3 white = vec3(0.86, 0.84, 0.80);
+  float seam = smoothstep(0.0, 1.6, xInKey) * smoothstep(0.0, 1.6, whiteW - xInKey);
+  vec3 key = mix(vec3(0.05, 0.045, 0.05), white, seam);
+  float shade = 1.0 - clamp(depth / max(keysTop, 1.0), 0.0, 1.0) * 0.22;
+  key *= shade;
+
+  bool hasSharp = whiteIdx == 0 || whiteIdx == 1 || whiteIdx == 3 || whiteIdx == 4 || whiteIdx == 5;
+  if (hasSharp) {
+    float blackCenter = (whiteIdxF + 1.0) * whiteW;
+    float blackW = whiteW * 0.62;
+    float blackH = keysTop * 0.6;
+    float distC = abs(xInOct - blackCenter);
+    if (depth < blackH && distC < blackW * 0.5) {
+      float edge = smoothstep(0.0, 1.6, blackW * 0.5 - distC);
+      float topHi = 1.0 - smoothstep(0.0, blackH * 0.5, depth);
+      vec3 blackKey = mix(vec3(0.02), vec3(0.10, 0.085, 0.07), topHi * 0.5);
+      key = mix(key, blackKey, edge);
+    }
+  }
+  return key;
+}
+
+void main() {
+  vec2 frag = gl_FragCoord.xy;
+  float barrierY = uResolution.y * uBarrierYFrac;
+
+  EdgeShape shape = edgeShape(frag.y, frag.x, barrierY);
+  float brightness = mix(uBrightnessBase, uBrightnessPeak, clamp(uPulse, 0.0, 1.0));
+
+  // sliding electric filament: traveling bright streaks along the bar, both as
+  // extra core hot-spots and as a localized additive bump near the edge.
+  float filN = noise2(vec2(frag.x / max(uFilamentScale, 1.0) - uTime * uFilamentSpeed, 0.3));
+  float filStreak = pow(clamp(filN * 0.5 + 0.5, 0.0, 1.0), 4.0);
+
+  vec3 coreHot = hotColor(uCoreColor, brightness + filStreak * uFilamentIntensity * 0.6);
+
+  float d = shape.edgeDist;
+  vec3 sigma = max(uLayerSigma * uGlowSizeScale, vec3(0.01));
+  vec3 amp = uLayerAmp * uGlowIntensity;
+  float strength = amp.x * exp(-d / sigma.x) + amp.y * exp(-d / sigma.y) + amp.z * exp(-d / sigma.z);
+
+  float occlusion = uShowBar > 0.5 ? shape.coreAlpha : 0.0;
+  vec3 light = uGlowColor * strength * brightness * (1.0 - occlusion);
+
+  float filGlow = filStreak * uFilamentIntensity * exp(-d / 8.0);
+  light += uGlowColor * filGlow * brightness * (1.0 - occlusion);
+
+  // wisps: thin flickering tendrils rising from the top edge, swaying with height
+  float colWidth = mix(50.0, 6.0, clamp(uWispDensity, 0.0, 1.0));
+  vec3 tendril = vec3(0.0);
+  float col0 = floor(frag.x / colWidth);
+  for (int k = -1; k <= 1; k++) {
+    float ci = col0 + float(k);
+    float seed = hash21(vec2(ci * 12.9898, 3.7));
+    float heightI = uWispHeight * (0.35 + 0.65 * seed);
+    float flick = noise2(vec2(ci * 3.1 + 11.0, uTime * uWispFlicker + seed * 20.0));
+    flick = pow(clamp(flick * 0.5 + 0.5, 0.0, 1.0), 1.5);
+    float sway = noise2(vec2(ci * 2.3 + 5.0, uTime * 0.5 + seed * 7.0)) * uWispSway * colWidth * 0.5;
+    float hn = clamp(shape.h / max(heightI, 1.0), 0.0, 1.6);
+    float xCenter = (ci + 0.5) * colWidth + sway * hn;
+    float widthPx = mix(3.0, 0.6, clamp(hn, 0.0, 1.0));
+    float distX = frag.x - xCenter;
+    float streak = exp(-pow(distX / max(widthPx, 0.3), 2.0));
+    float heightFalloff = exp(-shape.h / max(heightI * 0.55, 1.0)) * step(shape.h, heightI * 1.6);
+    tendril += vec3(1.0) * streak * heightFalloff * flick;
+  }
+  light += uGlowColor * tendril * uWispIntensity * brightness;
+
+  // strand bundle: the SeeMusic top edge isn't one smooth wavy line -- it's several thin
+  // filaments fraying off it independently. Each strand re-samples the same stochastic
+  // ripple with its own seed (uStrandJitter blends from "identical copies, just offset in
+  // height" at 0 toward "fully decorrelated wiggle per strand" at 1) and sits at its own
+  // fixed height above the real top edge (0 = riding the edge itself, uStrandSpread = the
+  // furthest-out filament), rendered as a thin exponential thread rather than a filled band.
+  // Each strand also gets a soft additive halo around its own thread using the same
+  // amplitude/sigma falloff the main corona layers use (uStrandHaloAmp/uStrandHaloSigma) --
+  // one shared amp/sigma pair applied identically to every strand, not per-strand values.
+  // Only meaningful in "Edge" mode (uWavyMode == 1): Top/Full wave describe the bar's own
+  // solid cross-section, not a bundle of independent threads riding alongside it.
+  vec3 strandLight = vec3(0.0);
+  bool edgeMode = uWavyEnabled > 0.5 && uWavyMode > 0.5 && uWavyMode < 1.5;
+  if (edgeMode) {
+    int nStrands = int(uStrandCount + 0.5);
+    float haloSigma = max(uStrandHaloSigma, 0.1);
+    for (int i = 0; i < 8; i++) {
+      if (i >= nStrands) break;
+      float fi = float(i);
+      float seed = mix(0.0, (fi + 1.0) * 13.7, uStrandJitter);
+      float dWave = wavyOffsetSeeded(frag.x, seed) - shape.baseWave;
+      float baseline = nStrands > 1 ? (fi / float(nStrands - 1)) * uStrandSpread : 0.0;
+      float edgeY_i = shape.topEdge + baseline + dWave;
+      float distY = abs(frag.y - edgeY_i);
+      float flick = noise2(vec2(seed * 7.0 + frag.x * 0.01, uTime * uStrandFlicker + seed * 3.0));
+      flick = pow(clamp(flick * 0.5 + 0.5, 0.0, 1.0), 1.4);
+      float core = exp(-distY / max(uStrandThickness, 0.1));
+      float halo = uStrandHaloAmp * exp(-distY / haloSigma);
+      strandLight += vec3((core + halo) * flick);
+    }
+  }
+  light += uGlowColor * strandLight * uStrandGlow * brightness * (1.0 - occlusion);
+
+  // scene: dark gradient background + procedural piano keys below the barrier
+  float bgT = clamp(frag.y / uResolution.y, 0.0, 1.0);
+  vec3 bg = mix(vec3(0.05, 0.03, 0.035), vec3(0.02, 0.016, 0.03), bgT);
+  vec2 nrm = (frag / uResolution - 0.5) * vec2(1.0, 1.0);
+  bg *= mix(1.0, 1.0 - uVignette, smoothstep(0.25, 1.05, length(nrm)));
+
+  vec3 base = frag.y < barrierY ? pianoKeys(frag.x, frag.y, barrierY) : bg;
+  vec3 withGlow = base + light;
+
+  float coreAlphaEff = shape.coreAlpha * step(0.5, uShowBar);
+  vec3 outColor = mix(withGlow, coreHot, coreAlphaEff);
+
+  outColor = 1.0 - exp(-outColor * uExposure);
+  fragColor = vec4(clamp(outColor, 0.0, 1.0), 1.0);
+}
+`;
+
+function compileShader(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    throw new Error(gl.getShaderInfoLog(sh));
+  }
+  return sh;
+}
+
+const program = gl.createProgram();
+gl.attachShader(program, compileShader(gl.VERTEX_SHADER, VERT_SRC));
+gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, FRAG_SRC));
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+  throw new Error(gl.getProgramInfoLog(program));
+}
+gl.useProgram(program);
+
+const UNIFORM_NAMES = [
+  "uResolution", "uTime", "uCoreColor", "uGlowColor", "uThickness", "uShowBar",
+  "uBrightnessBase", "uBrightnessPeak", "uPulse", "uGlowIntensity", "uGlowSizeScale",
+  "uLayerAmp", "uLayerSigma", "uWavyEnabled", "uWavyMode", "uWaveAmp", "uWaveLen",
+  "uWaveSpeed", "uSlideSpeed", "uStrandCount", "uStrandSpread", "uStrandJitter", "uStrandThickness",
+  "uStrandHaloAmp", "uStrandHaloSigma", "uStrandGlow", "uStrandFlicker",
+  "uFilamentIntensity", "uFilamentSpeed", "uFilamentScale",
+  "uWispDensity", "uWispHeight", "uWispFlicker", "uWispSway", "uWispIntensity",
+  "uBarrierYFrac", "uKeyWidth", "uVignette", "uExposure",
+];
+const loc = {};
+for (const name of UNIFORM_NAMES) loc[name] = gl.getUniformLocation(program, name);
+
+function hexToLinear(hex) {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const toLin = (c) => Math.pow(c, 2.2);
+  return [toLin(r), toLin(g), toLin(b)];
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(canvas.clientWidth * dpr));
+  const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+    gl.viewport(0, 0, w, h);
+  }
+}
+window.addEventListener("resize", resize);
+
+const startTime = performance.now();
+function clock() { return (performance.now() - startTime) / 1000; }
+
+function frame() {
+  resize();
+  const t = clock();
+
+  if (pulseStart !== null) {
+    const elapsed = t - pulseStart;
+    if (params.pulseDecay > 0 && elapsed >= 0 && elapsed < params.pulseDecay) {
+      currentPulse = 1.0 - elapsed / params.pulseDecay;
+    } else {
+      currentPulse = 0;
+      pulseStart = null;
+    }
+  } else {
+    currentPulse = 0;
+  }
+
+  gl.uniform2f(loc.uResolution, canvas.width, canvas.height);
+  gl.uniform1f(loc.uTime, t);
+
+  const cc = hexToLinear(params.coreColor);
+  const gc = hexToLinear(params.glowColor);
+  gl.uniform3f(loc.uCoreColor, cc[0], cc[1], cc[2]);
+  gl.uniform3f(loc.uGlowColor, gc[0], gc[1], gc[2]);
+  gl.uniform1f(loc.uThickness, params.thickness);
+  gl.uniform1f(loc.uShowBar, params.showBar ? 1 : 0);
+  gl.uniform1f(loc.uBrightnessBase, params.brightnessBase);
+  gl.uniform1f(loc.uBrightnessPeak, params.brightnessPeak);
+  gl.uniform1f(loc.uPulse, currentPulse);
+
+  gl.uniform1f(loc.uGlowIntensity, params.glowIntensity);
+  gl.uniform1f(loc.uGlowSizeScale, params.glowSizeScale);
+  gl.uniform3f(loc.uLayerAmp, params.layerAmp1, params.layerAmp2, params.layerAmp3);
+  gl.uniform3f(loc.uLayerSigma, params.layerSigma1, params.layerSigma2, params.layerSigma3);
+
+  gl.uniform1f(loc.uWavyEnabled, params.wavyEnabled ? 1 : 0);
+  gl.uniform1f(loc.uWavyMode, parseFloat(params.wavyMode));
+  gl.uniform1f(loc.uWaveAmp, params.waveAmp);
+  gl.uniform1f(loc.uWaveLen, params.waveLen);
+  gl.uniform1f(loc.uWaveSpeed, params.waveSpeed);
+  gl.uniform1f(loc.uSlideSpeed, params.slideSpeed);
+  gl.uniform1f(loc.uStrandCount, params.strandCount);
+  gl.uniform1f(loc.uStrandSpread, params.strandSpread);
+  gl.uniform1f(loc.uStrandJitter, params.strandJitter);
+  gl.uniform1f(loc.uStrandThickness, params.strandThickness);
+  gl.uniform1f(loc.uStrandHaloAmp, params.strandHaloAmp);
+  gl.uniform1f(loc.uStrandHaloSigma, params.strandHaloSigma);
+  gl.uniform1f(loc.uStrandGlow, params.strandGlow);
+  gl.uniform1f(loc.uStrandFlicker, params.strandFlicker);
+
+  gl.uniform1f(loc.uFilamentIntensity, params.filamentIntensity);
+  gl.uniform1f(loc.uFilamentSpeed, params.filamentSpeed);
+  gl.uniform1f(loc.uFilamentScale, params.filamentScale);
+
+  gl.uniform1f(loc.uWispDensity, params.wispDensity);
+  gl.uniform1f(loc.uWispHeight, params.wispHeight);
+  gl.uniform1f(loc.uWispFlicker, params.wispFlicker);
+  gl.uniform1f(loc.uWispSway, params.wispSway);
+  gl.uniform1f(loc.uWispIntensity, params.wispIntensity);
+
+  gl.uniform1f(loc.uBarrierYFrac, params.barrierYFrac);
+  gl.uniform1f(loc.uKeyWidth, params.keyWidth);
+  gl.uniform1f(loc.uVignette, params.vignette);
+  gl.uniform1f(loc.uExposure, params.exposure);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame(frame);
+</script>

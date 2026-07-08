@@ -236,6 +236,7 @@ freemusic/
     audio-playback/          # cpal output stream for the loaded video's own audio, driven by transport position
   scripts/               # cargo check, run/screenshot/click/drag the app, gen synthetic test clips
   docs/                  # detailed narrative/design docs, split out of this file — see below
+  explorations/          # standalone, non-integrated experiments — not wired into the app/build
 ```
 
 **The rest of this project's history and design detail lives in `docs/`, not here**, to keep this
@@ -252,6 +253,12 @@ touching that area of the code:
   milestone (6b), keyboard navigation (6d), synced audio playback (6e), the timeline
   waveform/scroll/collapsible-panel polish pass, the slider-validation fix, and the widened
   rotation/roundedness ranges.
+- **`explorations/barrier-fx-lab/`** — a standalone WebGL2 HTML page (no build step, no app
+  dependency) for prototyping new barrier looks — glow sigmas, wavy-edge modes, and new
+  electric/wispy filament/wisp effects not yet in `barrier.wgsl` — before committing any of it to
+  the real renderer. Its `presets/` holds exported JSON snapshots of looks worth keeping, notably
+  `seemusic-found.json`, the closest match found so far to the SeeMusic edge in `sm-ex.png`; see
+  the directory's own `README.md`.
 - **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–L) of the
   `.fmstyle.ron` extensible visual style format: schema/plumbing, the vendored note pipeline
   (dropping the `neothesia-core` dependency), note fill effects (gradient/sheen/glow), barrier
