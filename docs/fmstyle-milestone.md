@@ -1209,3 +1209,81 @@ Three smaller changes landed after Phase O's initial PR, all still within the st
   session — same underlying `Style` values, different formatting only (verified via `cargo test -p
   project`'s `shipped_sample_styles_parse`, which re-parses every file).
 
+### Phase P: canvas-Y-position note gradient (`Fill::CanvasGradient`)
+
+The first roadmap item off the README's "`.fmstyle.ron`" list: "Y-level-dependent note styles" —
+notes whose color depends on where they currently are on the canvas, not on which key/pitch they
+belong to, so every note passing through the same on-screen height reads the same color there. The
+only design that made sense for a first cut is a 2-color gradient, same shape as the existing
+per-note `Fill::VerticalGradient`, just blended across a different span.
+
+- **Schema** (`crates/project/src/style.rs`): `Fill` gained a third variant, `CanvasGradient { top:
+  ColorBinding, bottom: ColorBinding }` — identical shape to `VerticalGradient`, different meaning.
+  `VerticalGradient` blends across each note's own on-screen height (every note shows the full
+  `top`->`bottom` range wherever it is); `CanvasGradient` blends across a fixed span of the canvas
+  itself instead (canvas Y = 0 at the top of the frame down to the barrier line resolves `top`-
+  >`bottom`, clamped beyond either end) — a falling note's rendered color changes over time as it
+  descends through that span, rather than carrying a fixed range baked in. The two variants are
+  mutually exclusive by construction (one `Fill` enum, one variant per fill) — no separate
+  compatibility flag needed for that. `black_key_fill` (`BlackKeyFill::Auto`/`Same`/`Custom`) works
+  identically to every other fill variant: `Auto` darkens the resolved endpoints for sharp keys
+  (still canvas-blended), `Custom(fill)` can independently choose a *different* `Fill` variant for
+  sharp keys than natural keys use (including `CanvasGradient` on one side and `Solid`/
+  `VerticalGradient` on the other) — this "just works" with no extra schema plumbing since
+  `BlackKeyFill` already resolves the two key groups' fills completely independently. `sheen`/
+  `glow` are unaffected either way — both are computed independently of `Fill` in the fragment
+  shader, so `CanvasGradient` composes with either exactly as `Solid`/`VerticalGradient` already do.
+- **Renderer** (`crates/render/src/notes/`): `resolve_fill_base` (`mod.rs`) already resolved
+  `VerticalGradient`'s `top`/`bottom` `ColorBinding`s to a concrete color pair per rebuild;
+  `CanvasGradient` reuses the exact same resolution (added to the same match arm, since resolving
+  *which* colors doesn't depend on how they'll be blended). What differs is *how* the shader mixes
+  those two colors, which can't be inferred from the color values alone (unlike the existing
+  solid-vs-gradient distinction, which the shader gets for free since a solid fill's two colors are
+  simply equal) — so a new per-note flag was added: `NoteInstance::canvas_gradient: f32` (`0.0`/
+  `1.0`), a new vertex attribute (location 8) alongside the existing `velocity`/`track_index`
+  fields added ahead of need for the same future-property-binding phase. `rebuild_instances`
+  computes it once per key group per rebuild (`is_canvas_light`/`is_canvas_dark`, mirroring how
+  `top_light`/`top_dark` etc. are already computed once per group) via a small
+  `is_canvas_gradient(fill: &Fill) -> bool` helper, then bakes the right one into each note
+  instance depending on `key.is_sharp` — same pattern the existing color-pair selection already
+  used, just one more parallel field. This needed to be per-instance rather than a style-wide
+  uniform flag for the same reason the color pair itself is per-instance: `BlackKeyFill::Custom`
+  can make the two key groups differ.
+- **Shader** (`shader.wgsl`): `NoteInstance`/`VertexOutput` both gained the `canvas_gradient` field
+  (location 8 on the instance, location 5 on the output — passed through unmodified in `vs_main`).
+  `fill_color` now computes two candidate UV fractions — `note_uv_y` (the original note-local
+  fraction, unchanged) and `canvas_uv_y` (`in.position.y / (view_uniform.size.y *
+  view_uniform.barrier_fraction)`, using the fragment's absolute framebuffer position instead of
+  its position within the note, normalized against the same `keyboard_y` the vertex shader already
+  computes) — and `select()`s between them based on the per-fragment `canvas_gradient` flag before
+  mixing `color_top`/`color_bottom`. Everything downstream of that mix (sheen, the glow rim
+  blend-target in `fs_core`, the corona in `fs_glow`) is unchanged, since none of it reads `Fill`
+  or the gradient basis at all.
+- **Bug found on first real run**: reading `view_uniform` from `fill_color` (called by both
+  fragment entry points) crashed at pipeline creation — `wgpu` validation error, "Shader global
+  ResourceBinding { group: 0, binding: 0 } is not available in the pipeline layout / Visibility
+  flags don't include the shader stage." Group 0's bind group layout (`pipeline.rs`'s
+  `view_bind_group_layout`) only granted `ShaderStages::VERTEX`, left over from when
+  `view_uniform` was vertex-only (the transform/scale/barrier_fraction it carries were only ever
+  read in `vs_main` before this phase). Fixed by adding `ShaderStages::FRAGMENT` to that entry's
+  `visibility` — the uniform itself didn't need to change, only which stages are allowed to bind
+  it. Cargo build/clippy don't catch this class of bug (same gotcha `docs/fmstyle-history.md`'s
+  "Black-key gradient bug" section already notes for embedded WGSL: validation only happens when
+  the pipeline/shader module is actually created at runtime) — worth double-checking bind group
+  layout `visibility` flags whenever a shader change starts reading an existing uniform from a
+  new stage.
+- **Sample style**: `examples/styles/canvas-gradient.fmstyle.ron`, generated the same way every
+  other sample is (`crates/project/examples/dump_sample_styles.rs`'s `canvas_gradient` block +
+  `scripts/refresh-sample-styles.sh`) — deep blue near the top of the frame fading to warm gold
+  near the barrier, with a modest sheen, and `black_key_fill` set to an independent (dimmer)
+  `CanvasGradient` rather than `Auto`, so the sample also demonstrates that path.
+- **No UI editor**, same as every other `.fmstyle.ron` field not already surfaced by the Keyboard
+  tab's legacy sliders — edited as RON text, imported via the Project tab's "Import style…" button.
+
+**Not yet manually run**: load `canvas-gradient.fmstyle.ron` and confirm notes actually shift color
+as they fall (blue near the top of the highway, gold approaching the barrier) rather than each note
+carrying one fixed color or a fixed per-note gradient; confirm sharp keys render their own dimmer
+`CanvasGradient` correctly; confirm sheen still visibly sweeps across notes using this fill;
+confirm switching back to a `VerticalGradient`/`Solid` style still looks exactly as before (the new
+per-instance flag defaults to `0.0`/note-local for every other fill).
+

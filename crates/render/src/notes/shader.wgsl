@@ -69,6 +69,7 @@ struct NoteInstance {
     @location(5) radius: f32,
     @location(6) velocity: f32,
     @location(7) track_index: f32,
+    @location(8) canvas_gradient: f32,
 }
 
 struct VertexOutput {
@@ -79,6 +80,7 @@ struct VertexOutput {
     @location(2) color_top: vec3<f32>,
     @location(3) color_bottom: vec3<f32>,
     @location(4) radius: f32,
+    @location(5) canvas_gradient: f32,
 }
 
 @vertex
@@ -130,6 +132,7 @@ fn vs_main(vertex: Vertex, note: NoteInstance) -> VertexOutput {
     out.color_top = note.color_top;
     out.color_bottom = note.color_bottom;
     out.radius = note.radius * view_uniform.scale;
+    out.canvas_gradient = note.canvas_gradient;
 
     return out;
 }
@@ -159,12 +162,21 @@ fn dist(
 // separate from `dist`'s edge-distance math so `fs_glow` doesn't need to duplicate it, and vice
 // versa.
 fn fill_color(in: VertexOutput) -> vec3<f32> {
-    // Always blend by the fragment's position within the note's true (unpadded) box. For a solid
-    // fill (default), `color_top == color_bottom` per instance, so this mix is a no-op and matches
-    // Phase B's flat color exactly — this must stay a per-instance equality check rather than a
-    // style-wide flag, since `BlackKeyFill::Custom` can give sharp-key notes a gradient (or vice
-    // versa) independently of whether the natural-key `fill` itself is solid or a gradient.
-    let shape_uv_y = clamp((in.position.y - in.note_pos.y) / max(in.size.y, 0.0001), 0.0, 1.0);
+    // Two possible bases to blend `color_top`/`color_bottom` across, picked per-instance by
+    // `canvas_gradient` (Phase P) rather than a style-wide flag, since `BlackKeyFill::Custom` can
+    // give sharp-key notes a different `Fill` variant (and therefore basis) than natural keys:
+    //  - note-local (`Fill::Solid`/`Fill::VerticalGradient`, the default): fraction of the way
+    //    down the note's own true (unpadded) box. For a solid fill `color_top == color_bottom`
+    //    per instance, so this mix is a no-op and matches Phase B's flat color exactly.
+    //  - canvas (`Fill::CanvasGradient`): fraction of the way from the top of the canvas down to
+    //    the barrier line, using the fragment's absolute framebuffer position instead of its
+    //    position within the note — so whatever note currently occupies a given on-screen height
+    //    shows the same color there, regardless of key, and a falling note's own color changes
+    //    over time as it descends.
+    let note_uv_y = clamp((in.position.y - in.note_pos.y) / max(in.size.y, 0.0001), 0.0, 1.0);
+    let keyboard_y = view_uniform.size.y * view_uniform.barrier_fraction;
+    let canvas_uv_y = clamp(in.position.y / max(keyboard_y, 0.0001), 0.0, 1.0);
+    let shape_uv_y = select(note_uv_y, canvas_uv_y, in.canvas_gradient > 0.5);
     var color = mix(in.color_top, in.color_bottom, shape_uv_y);
 
     // Diagonal specular stripe, swept across the note's fill at a fixed angle.

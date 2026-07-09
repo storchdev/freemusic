@@ -226,7 +226,10 @@ impl NotesPipeline {
                 label: Some("notes_view_bind_group_layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // Read by both stages now: the vertex shader still needs the full transform,
+                    // and the fragment shader (Phase P) needs `size.y`/`barrier_fraction` to
+                    // normalize `Fill::CanvasGradient`'s canvas-Y UV in `fill_color`.
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,

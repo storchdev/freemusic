@@ -60,5 +60,7 @@ at `distance == 0`.
 | L | Breaking: `intensity` was removed from `Glow`, `Pulse`, and `FlashSpec`. Drop it from `Glow`/`FlashSpec`; for `Pulse`, fold it into `brightness` if preserving the old peak is important. |
 | M | Breaking: `Glow.radius_px` was replaced by `layers: [GlowLayer; 3]`. `FlashSpec` and `ParticleSpec` also gained `layers`. `BarrierLayer` gained `show_bar: bool`, defaulting to `false`. |
 | N | `Style` gained `background: ColorBinding`, defaulting to black. `Project` gained `background_color` for the legacy/no-imported-style path. |
+| O | `WavySpec` gained `strands: Option<StrandSpec>` (`StrandSpec`, only meaningful when `mode` is `Edge`, requires `BarrierLayer::glow` to be `Some(..)` to render) and `slide_speed: f32`. Both additive/`#[serde(default)]`; old files render an unchanged flat/still edge. |
+| P | `Fill` gained a third variant, `CanvasGradient { top: ColorBinding, bottom: ColorBinding }` — same shape as `VerticalGradient`, but blended across the canvas's own Y position (top of frame -> barrier line) instead of each note's own local height. Additive; old files (which can only ever construct `Solid`/`VerticalGradient`) are unaffected. |
 
 The schema-breaking phases so far are H, K, L, and M.

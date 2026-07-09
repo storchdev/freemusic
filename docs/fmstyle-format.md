@@ -98,11 +98,41 @@ notes: Static((
 ### `Fill`
 
 ```rust
-enum Fill { Solid(ColorBinding), VerticalGradient { top: ColorBinding, bottom: ColorBinding } }
+enum Fill {
+    Solid(ColorBinding),
+    VerticalGradient { top: ColorBinding, bottom: ColorBinding },
+    CanvasGradient { top: ColorBinding, bottom: ColorBinding },
+}
 ```
 
 `Solid` gives every note one color; `VerticalGradient`'s `top`/`bottom` are independently resolved
-`ColorBinding`s (each darkened separately for sharp keys under `BlackKeyFill::Auto`).
+`ColorBinding`s (each darkened separately for sharp keys under `BlackKeyFill::Auto`), blended
+across **each note's own on-screen height** — every note shows the full `top`->`bottom` range no
+matter where it currently sits on the canvas.
+
+`CanvasGradient` (Phase P) has the identical `{ top, bottom }` shape but blends across a fixed span
+of **the canvas itself** instead: canvas Y = 0 (top of the frame) resolves to `top`, the barrier
+line resolves to `bottom`, clamped beyond either end. Practically: whatever note is currently
+passing through a given on-screen height shows the same color there, regardless of pitch/key — a
+falling note's color shifts as it descends rather than each note carrying a fixed top-to-bottom
+range baked in. `VerticalGradient` and `CanvasGradient` are mutually exclusive by construction
+(`Fill` is one enum, a note's fill is exactly one variant); a note can still combine `CanvasGradient`
+with `sheen`/`glow` exactly as it would with `Solid`/`VerticalGradient` — neither reads or affects
+`Fill` at all, they're computed independently in the fragment shader. `black_key_fill` works
+identically to the other variants: `Auto` darkens the resolved `top`/`bottom` endpoints for sharp
+keys (still canvas-blended), `Same` uses the identical endpoints, and `Custom(fill)` can give sharp
+keys a wholly independent fill — including a *different* variant than the natural-key fill (e.g.
+natural keys `CanvasGradient`, sharp keys plain `Solid`) — see `NoteInstance::canvas_gradient`'s
+doc comment in `crates/render/src/notes/instance.rs` for how the renderer keeps the two key groups'
+bases independent.
+
+Render-side: `crates/render/src/notes/mod.rs::rebuild_instances` resolves `Fill` to a `(color_top,
+color_bottom)` pair exactly like `VerticalGradient` (`resolve_fill_base` handles both identically),
+but also bakes a per-note `canvas_gradient: bool` flag (`is_canvas_gradient`) alongside it.
+`shader.wgsl`'s `fill_color` reads that per-instance flag to pick which UV basis to mix
+`color_top`/`color_bottom` across — the note-local fraction (`VerticalGradient`/`Solid`'s behavior)
+or `in.position.y / (view_uniform.size.y * view_uniform.barrier_fraction)` (the canvas fraction,
+using the fragment's absolute framebuffer position instead of its position within the note).
 
 ### `BlackKeyFill`
 

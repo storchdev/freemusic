@@ -336,6 +336,15 @@ impl NotesRenderer {
                 (color_to_linear(dark_top), color_to_linear(dark_bottom))
             }
         };
+        // Phase P: whether each key group's fill should blend by canvas Y position
+        // (`Fill::CanvasGradient`) instead of the note's own local top/bottom — `Auto`/`Same`
+        // inherit the natural-key fill's basis (they only ever darken or copy its colors, never
+        // change what those colors mean), `Custom` uses its own independently chosen fill.
+        let is_canvas_light = is_canvas_gradient(&note_layer.fill);
+        let is_canvas_dark = match &note_layer.black_key_fill {
+            BlackKeyFill::Auto | BlackKeyFill::Same => is_canvas_light,
+            BlackKeyFill::Custom(fill) => is_canvas_gradient(fill),
+        };
 
         // Merge MIDI-parsed notes (with any `duration_edits` override already applied) and
         // `added_notes` into one normalized list before the instance-building loop below, so both
@@ -414,10 +423,10 @@ impl NotesRenderer {
                 });
 
             let key = &keys[note.note as usize - range_start];
-            let (color_top, color_bottom) = if key.is_sharp {
-                (top_dark, bottom_dark)
+            let (color_top, color_bottom, canvas_gradient) = if key.is_sharp {
+                (top_dark, bottom_dark, is_canvas_dark)
             } else {
-                (top_light, bottom_light)
+                (top_light, bottom_light, is_canvas_light)
             };
             let duration = note.duration_seconds.max(0.1);
             let original_duration = note.original_duration_seconds.max(0.1);
@@ -439,6 +448,7 @@ impl NotesRenderer {
                     radius: key.width * 0.2 * note_layer.roundedness,
                     velocity: note.velocity as f32 / 127.0,
                     track_index: note.track_id as f32,
+                    canvas_gradient: canvas_gradient as u32 as f32,
                 });
                 note_intervals.push(NoteInterval {
                     start_seconds,
@@ -601,10 +611,18 @@ fn resolve_fill_base(fill: &Fill) -> ([u8; 3], [u8; 3]) {
             let color = binding.resolve_constant();
             (color, color)
         }
-        Fill::VerticalGradient { top, bottom } => {
+        Fill::VerticalGradient { top, bottom } | Fill::CanvasGradient { top, bottom } => {
             (top.resolve_constant(), bottom.resolve_constant())
         }
     }
+}
+
+/// Whether a `Fill` should be blended against the canvas's own Y position (`Fill::CanvasGradient`)
+/// rather than each note's own local top/bottom (`Fill::Solid`/`Fill::VerticalGradient`) — the flag
+/// `rebuild_instances` bakes per-note into `NoteInstance::canvas_gradient`, since white/sharp keys
+/// can independently be `CanvasGradient` or not via `BlackKeyFill::Custom`.
+fn is_canvas_gradient(fill: &Fill) -> bool {
+    matches!(fill, Fill::CanvasGradient { .. })
 }
 
 fn darken(color: [u8; 3], factor: f32) -> [u8; 3] {

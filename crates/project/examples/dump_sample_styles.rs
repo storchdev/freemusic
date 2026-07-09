@@ -486,7 +486,39 @@ fn main() {
         background: ColorBinding::Constant([4, 2, 14]),
     };
 
+    // Phase P: `Fill::CanvasGradient` — color depends on the note's current position on the
+    // canvas (deep blue near the top of the frame, warm gold approaching the barrier) rather than
+    // each note's own local top/bottom, so every note reads the same color at a given height
+    // regardless of pitch, and shifts color as it falls. `black_key_fill` is an independently
+    // resolved `CanvasGradient` too (dimmer endpoints), just like other fills' `Custom` overrides.
+    let canvas_gradient = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer {
+            fill: Fill::CanvasGradient {
+                top: ColorBinding::Constant([80, 120, 255]),
+                bottom: ColorBinding::Constant([255, 200, 90]),
+            },
+            sheen: Some(Sheen {
+                intensity: 0.35,
+                width: 0.6,
+                angle_degrees: 45.0,
+            }),
+            glow: None,
+            roundedness: 1.0,
+            fall_speed: 400.0,
+            border: None,
+            black_key_fill: BlackKeyFill::Custom(Fill::CanvasGradient {
+                top: ColorBinding::Constant([40, 60, 130]),
+                bottom: ColorBinding::Constant([160, 120, 50]),
+            }),
+        }),
+        barrier: Timed::Static(visible_barrier()),
+        transition: Timed::Static(TransitionLayer::default()),
+        background: ColorBinding::Constant([0, 0, 0]),
+    };
+
     print_style("gradient-glow", &gradient_glow);
+    print_style("canvas-gradient", &canvas_gradient);
     print_style("barrier-pulse", &barrier_pulse);
     print_style("barrier-wavy", &barrier_wavy);
     print_style("barrier-wavy-volume", &barrier_wavy_volume);

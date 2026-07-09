@@ -243,11 +243,25 @@ impl Default for ScalarBinding {
     }
 }
 
-/// Note fill: solid color today, a vertical gradient as the first non-solid look.
+/// Note fill: solid color, a per-note top-to-bottom gradient, or a canvas-Y-position gradient.
+///
+/// `VerticalGradient` and `CanvasGradient` both interpolate the same two `ColorBinding`s but over
+/// different spans, and are mutually exclusive (a note picks exactly one `Fill` variant):
+/// `VerticalGradient` blends across each note's own on-screen height, so every note shows the full
+/// `top`->`bottom` range regardless of where it currently sits on the canvas — this is what makes
+/// it a *per-note* gradient. `CanvasGradient` instead blends across a fixed span of the canvas
+/// itself (canvas y = 0 at the top of the frame down to the barrier line), so whatever note is
+/// passing through a given on-screen height shows the same color there regardless of pitch/key —
+/// falling notes shift color as they descend rather than each carrying a fixed top-to-bottom
+/// range. See `docs/fmstyle-format.md` for the exact mapping and render-side mechanics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Fill {
     Solid(ColorBinding),
     VerticalGradient {
+        top: ColorBinding,
+        bottom: ColorBinding,
+    },
+    CanvasGradient {
         top: ColorBinding,
         bottom: ColorBinding,
     },
@@ -779,6 +793,28 @@ mod tests {
         notes.black_key_fill = BlackKeyFill::Custom(Fill::VerticalGradient {
             top: ColorBinding::Constant([10, 20, 30]),
             bottom: ColorBinding::Constant([1, 2, 3]),
+        });
+        let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
+        let parsed: Style = ron::from_str(&text).unwrap();
+        assert_eq!(style, parsed);
+    }
+
+    /// `Fill::CanvasGradient` (canvas-Y-position note gradient) round-trips, including as a
+    /// `black_key_fill` override independent of the natural-key fill's own variant.
+    #[test]
+    fn canvas_gradient_fill_round_trips() {
+        let mut style =
+            Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
+        let Timed::Static(notes) = &mut style.notes else {
+            unreachable!()
+        };
+        notes.fill = Fill::CanvasGradient {
+            top: ColorBinding::Constant([200, 220, 255]),
+            bottom: ColorBinding::Constant([10, 20, 60]),
+        };
+        notes.black_key_fill = BlackKeyFill::Custom(Fill::CanvasGradient {
+            top: ColorBinding::Constant([100, 110, 130]),
+            bottom: ColorBinding::Constant([5, 10, 30]),
         });
         let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
         let parsed: Style = ron::from_str(&text).unwrap();

@@ -285,12 +285,13 @@ touching that area of the code:
   (Phase O, `project::StrandSpec`/`WavySpec::strands`, gated to `WavyMode::Edge` — see
   `docs/fmstyle-format.md` and `docs/fmstyle-milestone.md`); the sliding-filament/wisp controls in
   the lab remain unported experiments.
-- **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–O) of the
+- **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–P) of the
   `.fmstyle.ron` extensible visual style format: schema/plumbing, the vendored note pipeline
   (dropping the `neothesia-core` dependency), note fill effects (gradient/sheen/glow), barrier
   glow/pulse, transition particles/flash, per-key-color/wavy-barrier/elliptical-flash/continuous-
   particle follow-ups, the brightness/overexposure + white-hot-corona redesign, canvas background
-  color, and the barrier strand bundle ported from `explorations/barrier-fx-lab`.
+  color, the barrier strand bundle ported from `explorations/barrier-fx-lab`, and the canvas-Y-
+  position note gradient (`Fill::CanvasGradient`, Phase P).
 - **`docs/fmstyle-format.md`** — the living field-by-field `.fmstyle.ron` format spec (defaults,
   meaning, RON snippets, breaking-change log) — keep this in sync whenever the schema changes,
   it's the spec, not narrative.
