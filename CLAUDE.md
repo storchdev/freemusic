@@ -161,8 +161,13 @@ nature of the tool.
 ### System dependencies (Linux dev environment)
 
 Not vendored, must be present on the machine:
-- FFmpeg dev libraries (`libavcodec`, `libavformat`, `libavutil`, `libswscale`, `libswresample`)
-  for `ffmpeg-sys-next`'s bindgen step, plus `clang`/`llvm`.
+- FFmpeg dev libraries (`libavcodec`, `libavformat`, `libavutil`, `libswscale`, `libswresample`,
+  **and** `libavfilter`, `libavdevice` — `ffmpeg-next`'s default feature set enables its `filter`
+  and `device` features, which pull in `ffmpeg-sys-next/avfilter` and `ffmpeg-sys-next/avdevice`
+  respectively, so all seven `-dev` packages are required even though only five look obviously
+  video-related; `.github/workflows/unit-tests.yml`'s `apt-get install` list was missing the last
+  two and failed CI with a pkg-config "package libavfilter was not found" error until fixed) for
+  `ffmpeg-sys-next`'s bindgen step, plus `clang`/`llvm`.
 - Vulkan loader + a driver. Under WSL2 specifically, `mesa`'s default packages ship no Vulkan ICD
   at all — install `vulkan-dzn` (Mesa's D3D12-passthrough driver, exposes the real GPU through
   `/dev/dxg`) or `vulkan-swrast` (lavapipe, software fallback) from the `extra` repo. `wgpu`
@@ -179,18 +184,32 @@ fields (`sample_fmts`, `pix_fmts`, `supported_framerates`, `ch_layouts`) — bin
 from the generated Rust struct — which caused `ffmpeg-next 8.1.0` to fail to compile with `E0609`/
 `E0425`/`E0004` errors on these fields and on several `AVCodecID` enum variants added in 7.1.5.
 
-The fix lives in `vendor/ffmpeg-next/` — a vendored copy of `ffmpeg-next 8.1.0` with three targeted
+The fix lives in `vendor/ffmpeg-next/` — a vendored copy of `ffmpeg-next 8.1.0` with four targeted
 patches applied: (1) `src/codec/video.rs` + `src/codec/audio.rs`: return `None` from the methods
 that accessed those deprecated struct fields (the deprecated API is no longer reachable anyway);
 (2) `src/codec/id.rs`: map `V410`/`V308`/`V408` codec IDs to `AV_CODEC_ID_NONE` in the forward
 direction and add a `_ => Id::None` wildcard to the reverse match for codec IDs added in 7.1.5+;
 (3) `src/util/frame/side_data.rs` + `src/codec/packet/side_data.rs`: add `_ => todo!()` wildcard
-arms for enum variants added in 7.1.5+ that the crate doesn't know about yet. The workspace
-`Cargo.toml` has `[patch.crates-io] ffmpeg-next = { path = "vendor/ffmpeg-next" }` to use this
-patched copy. `crates/mp4-encoder/src/audio.rs` was also updated to not access the deprecated
+arms for enum variants added in 7.1.5+ that the crate doesn't know about yet; (4)
+`src/software/resampling/context.rs`: a hand-added `SwrContext::convert_planes` method (not part
+of upstream `ffmpeg-next`) that calls `swr_convert` directly instead of `swr_convert_frame`, used
+by `crates/export/src/audio.rs` and `crates/audio-playback/src/lib.rs` — see their doc comment for
+why (`swr_convert_frame` requires frame metadata that Windows static FFmpeg 7.x AAC decode
+sometimes leaves zeroed). `swr_convert`'s input-planes parameter is C's `const uint8_t **`, which
+bindgen renders as `*mut *const u8` — `convert_planes` originally passed `in_planes.as_ptr()`
+(`*const *const u8`) uncast, which type-checked against whatever bindgen output this repo's own
+dev machine happened to generate but failed to compile (`E0308`, mismatched mutability) in GitHub
+Actions CI, which generates its own bindings against the runner's system FFmpeg headers. Fixed by
+casting: `in_planes.as_ptr() as *mut *const u8` (and `ptr::null_mut()` for the empty/flush case).
+This is a reminder that this vendor tree's build-time-generated bindings aren't pinned/checked in
+— a local `cargo check` passing doesn't guarantee CI will, whenever a patch's pointer types are
+written to match one machine's bindgen output rather than the C header's actual signature. The
+workspace `Cargo.toml` has `[patch.crates-io] ffmpeg-next = { path = "vendor/ffmpeg-next" }` to use
+this patched copy. `crates/mp4-encoder/src/audio.rs` was also updated to not access the deprecated
 fields directly (hardcoded `AV_SAMPLE_FMT_FLTP` + 44100 Hz for AAC, which are its only supported
 values anyway). If `ffmpeg-next` is ever bumped to a version that handles this, remove the vendor
-directory and the patch entry.
+directory and the patch entry (patch 4's `convert_planes` method would need to be re-added by hand
+since it isn't an upstream feature).
 
 **`ffmpeg-sys-next` is also vendored/patched (`vendor/ffmpeg-sys-next/`, same `8.1.0` pin, same
 `[patch.crates-io]` mechanism), for two unrelated MSVC-only build bugs found while getting the

@@ -209,7 +209,11 @@ impl Context {
                 out_left.as_mut_ptr() as *mut u8,
                 out_right.as_mut_ptr() as *mut u8,
             ];
-            let in_ptr = if in_samples > 0 { in_planes.as_ptr() } else { ptr::null() };
+            let in_ptr = if in_samples > 0 {
+                in_planes.as_ptr() as *mut *const u8
+            } else {
+                ptr::null_mut()
+            };
             let n = swr_convert(
                 self.ptr,
                 out_ptrs.as_mut_ptr(),
