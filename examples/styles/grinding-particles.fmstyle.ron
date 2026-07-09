@@ -32,12 +32,18 @@
                 rate_per_second: 30.0,
             ),
             brightness: 1.0,
-            layers: (
-                (amplitude: 2.6, sigma_px: 0.5),
-                (amplitude: 1.1, sigma_px: 1.0),
-                (amplitude: 0.38, sigma_px: 2.0),
-            ),
+            layers: ((
+                amplitude: 2.6,
+                sigma_px: 0.5,
+            ), (
+                amplitude: 1.1,
+                sigma_px: 1.0,
+            ), (
+                amplitude: 0.38,
+                sigma_px: 2.0,
+            )),
         )),
         flash: None,
     )),
+    background: Constant((0, 0, 0)),
 )

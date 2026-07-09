@@ -15,11 +15,17 @@
         glow: Some((
             color: Constant((255, 220, 120)),
             brightness: 1.5,
-            layers: (
-                (amplitude: 3.0, sigma_px: 2.0),
-                (amplitude: 2.0, sigma_px: 4.0),
-                (amplitude: 0.85, sigma_px: 8.0),
-            ),
+            layers: ((
+                amplitude: 3.0,
+                sigma_px: 2.0,
+            ), (
+                amplitude: 2.0,
+                sigma_px: 4.0,
+            ), (
+                amplitude: 0.85,
+                sigma_px: 8.0,
+            )),
+            edge_blend_px: 0.0,
         )),
         pulse: Some((
             decay_seconds: 0.35,
@@ -33,4 +39,5 @@
         particles: None,
         flash: None,
     )),
+    background: Constant((0, 0, 0)),
 )

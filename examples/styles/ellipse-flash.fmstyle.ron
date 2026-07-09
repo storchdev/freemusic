@@ -27,11 +27,17 @@
             decay_seconds: 0.2,
             mode: Instant,
             brightness: 1.0,
-            layers: (
-                (amplitude: 2.6, sigma_px: 2.0),
-                (amplitude: 1.1, sigma_px: 5.0),
-                (amplitude: 0.38, sigma_px: 10.0),
-            ),
+            layers: ((
+                amplitude: 2.6,
+                sigma_px: 2.0,
+            ), (
+                amplitude: 1.1,
+                sigma_px: 5.0,
+            ), (
+                amplitude: 0.38,
+                sigma_px: 10.0,
+            )),
         )),
     )),
+    background: Constant((0, 0, 0)),
 )

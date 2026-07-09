@@ -17,7 +17,9 @@ struct Uniforms {
     flags: vec4<f32>,
     // x = wave amplitude (px), y = wavelength (px), z = speed, w = transport time (seconds).
     wave: vec4<f32>,
-    // xyz = halo color (linear, independent of the bar's own color), w unused.
+    // xyz = halo color (linear, independent of the bar's own color), w = wavy ripple slide
+    // speed in canvas px/second (0 = no lateral translation) — parked in this vec4's spare
+    // slot, unrelated to the halo color itself.
     glow_style: vec4<f32>,
     // x = resting brightness (bar's Glow::brightness, or 1.0 if no glow), y = peak brightness at
     // pulse = 1.0 (Pulse::brightness, or equal to x if no pulse), zw unused.
@@ -123,8 +125,14 @@ fn wavy_offset_seeded(x: f32, seed: f32) -> f32 {
     let wavelength = max(uniforms.wave.y, 1.0);
     let speed = uniforms.wave.z;
     let t = uniforms.wave.w;
+    // `WavySpec::slide_speed` (canvas px/second): literally translates the noise field along x
+    // over time, independent of `speed` (which mutates the field's shape in place without moving
+    // it) — the "current flowing through the wire" look. `0.0` (default) makes `x_slid` reduce to
+    // `x` exactly, an exact no-op matching behavior before this field existed.
+    let slide_speed = uniforms.glow_style.w;
+    let x_slid = x - t * slide_speed;
 
-    let sx = x / wavelength + seed * 3.7;
+    let sx = x_slid / wavelength + seed * 3.7;
     let st = t * speed + seed * 5.3;
 
     var n = 0.0;

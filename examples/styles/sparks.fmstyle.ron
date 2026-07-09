@@ -30,11 +30,16 @@
             additive: true,
             emission: Burst,
             brightness: 1.0,
-            layers: (
-                (amplitude: 3.0, sigma_px: 0.5),
-                (amplitude: 2.0, sigma_px: 1.0),
-                (amplitude: 0.85, sigma_px: 2.0),
-            ),
+            layers: ((
+                amplitude: 3.0,
+                sigma_px: 0.5,
+            ), (
+                amplitude: 2.0,
+                sigma_px: 1.0,
+            ), (
+                amplitude: 0.85,
+                sigma_px: 2.0,
+            )),
         )),
         flash: Some((
             radius_x_px: 40.0,
@@ -43,11 +48,17 @@
             decay_seconds: 0.15,
             mode: Instant,
             brightness: 1.0,
-            layers: (
-                (amplitude: 2.6, sigma_px: 2.0),
-                (amplitude: 1.1, sigma_px: 5.0),
-                (amplitude: 0.38, sigma_px: 10.0),
-            ),
+            layers: ((
+                amplitude: 2.6,
+                sigma_px: 2.0,
+            ), (
+                amplitude: 1.1,
+                sigma_px: 5.0,
+            ), (
+                amplitude: 0.38,
+                sigma_px: 10.0,
+            )),
         )),
     )),
+    background: Constant((0, 0, 0)),
 )

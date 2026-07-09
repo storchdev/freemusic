@@ -559,12 +559,23 @@ pub struct WavySpec {
     pub amplitude_px: f32,
     /// Pixels per cycle of the slowest (dominant) term.
     pub wavelength_px: f32,
-    /// How fast the wave crawls sideways over transport time; 0 = frozen shape (still
-    /// x-varying), not flat.
+    /// How fast the ripple pattern *mutates in place* over transport time — which parts of the
+    /// noise field currently look big/small, not the field's x-position; `0` freezes the shape
+    /// (still x-varying, not flat), but even a frozen shape sits at a fixed spot along x. See
+    /// `slide_speed` for actual lateral translation.
     pub speed: f32,
     /// Which edges ripple and how. See `WavyMode`'s own doc comments.
     #[serde(default)]
     pub mode: WavyMode,
+    /// How fast the ripple pattern's noise field itself translates sideways along the barrier's
+    /// width, in canvas px/second — independent of `speed` (which mutates the pattern's shape in
+    /// place, leaving its x-position fixed). A positive value gives a "current flowing through the
+    /// wire" look: the whole ripple (and, since strands re-sample the same field, the whole strand
+    /// bundle too) visibly crawls sideways rather than just wobbling in place. `0.0` (default) is
+    /// an exact no-op — the field's x-position never moves, matching behavior before this field
+    /// existed.
+    #[serde(default)]
+    pub slide_speed: f32,
     /// Independent filament threads riding just above the wavy top edge. See `StrandSpec`'s own
     /// doc comment for the full picture — in particular, only meaningful (rendered) when `mode` is
     /// `Edge`, and requires the barrier's `glow` to be `Some(..)` to actually be visible.

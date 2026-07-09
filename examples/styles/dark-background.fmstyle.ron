@@ -25,6 +25,7 @@
                 amplitude: 0.38,
                 sigma_px: 8.0,
             )),
+            edge_blend_px: 0.0,
         )),
         pulse: None,
         wavy: None,

@@ -30,7 +30,9 @@ struct Uniforms {
     flags: [f32; 4],
     /// x = wave amplitude (px), y = wavelength (px), z = speed, w = transport time (seconds).
     wave: [f32; 4],
-    /// xyz = halo color (linear, independent of the bar's own `bar_color`), w unused.
+    /// xyz = halo color (linear, independent of the bar's own `bar_color`), w = wavy ripple slide
+    /// speed in canvas px/second (`WavySpec::slide_speed`; `0.0` = no lateral translation) —
+    /// parked in this vec4's spare slot, unrelated to the halo color itself.
     glow_style: [f32; 4],
     /// x = resting brightness (the bar's `Glow::brightness` when glow is set, else `1.0`), y =
     /// peak brightness at `pulse = 1.0` (the bar's `Pulse::brightness`, or the resting value when
@@ -273,6 +275,7 @@ impl BarrierRenderer {
                 wavelength_px,
                 speed,
                 mode,
+                slide_speed,
                 strands,
             }) => {
                 self.data.flags[2] = 1.0;
@@ -284,6 +287,10 @@ impl BarrierRenderer {
                 self.data.wave[0] = amplitude_px.max(0.0);
                 self.data.wave[1] = *wavelength_px;
                 self.data.wave[2] = *speed;
+                // Parked in `glow_style`'s spare `w` slot (see that field's own doc comment) —
+                // affects the whole wavy edge, every `WavyMode`, not just the strand bundle, since
+                // strands re-sample the same `wavy_offset_seeded` field the base edge itself uses.
+                self.data.glow_style[3] = *slide_speed;
                 // Uploaded unconditionally regardless of `mode` — `barrier.wgsl`'s `fs_glow` is
                 // the single place that gates strand rendering to `WavyMode::Edge` (see its own
                 // comment); no matching gate here, so this stays in lockstep with the shader
@@ -324,6 +331,7 @@ impl BarrierRenderer {
                 self.data.wave[0] = 0.0;
                 self.data.wave[1] = 0.0;
                 self.data.wave[2] = 0.0;
+                self.data.glow_style[3] = 0.0;
                 self.data.strand_params_a = [0.0; 4];
                 self.data.strand_params_b = [0.0; 4];
             }

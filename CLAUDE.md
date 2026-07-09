@@ -138,6 +138,10 @@ scripts/click.sh <x> <y> [button]         # click at WINDOW-RELATIVE coordinates
 scripts/drag.sh <x1> <y1> <x2> <y2> [btn] # drag between two WINDOW-RELATIVE coordinates
 scripts/gen-test-video.sh <out.mp4> [sec] # synthetic frame-counter test clip, default 30s (see
                                            # the video-pipeline verification section for why not 10s)
+scripts/refresh-sample-styles.sh          # regenerates examples/styles/*.fmstyle.ron from
+                                           # `cargo run -p project --example dump_sample_styles`'s
+                                           # stdout, raw (no reformatting) — diff before committing,
+                                           # see docs/fmstyle-milestone.md's Phase O follow-ups
 ```
 
 All of `click.sh`/`drag.sh`/`screenshot.sh` resolve the window id themselves via

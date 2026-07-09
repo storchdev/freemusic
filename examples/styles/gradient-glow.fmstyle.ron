@@ -13,11 +13,16 @@
         glow: Some((
             color: Constant((120, 200, 255)),
             brightness: 0.8,
-            layers: (
-                (amplitude: 2.6, sigma_px: 2.0),
-                (amplitude: 1.1, sigma_px: 4.0),
-                (amplitude: 0.38, sigma_px: 10.0),
-            ),
+            layers: ((
+                amplitude: 2.6,
+                sigma_px: 2.0,
+            ), (
+                amplitude: 1.1,
+                sigma_px: 4.0,
+            ), (
+                amplitude: 0.38,
+                sigma_px: 10.0,
+            )),
             edge_blend_px: 6.0,
         )),
         roundedness: 1.0,
@@ -38,4 +43,5 @@
         particles: None,
         flash: None,
     )),
+    background: Constant((0, 0, 0)),
 )

@@ -129,6 +129,7 @@ fn main() {
                 wavelength_px: 50.0,
                 speed: 2.0,
                 mode: WavyMode::Edge,
+                slide_speed: 0.0,
                 strands: None,
             }),
             show_bar: false,
@@ -155,6 +156,7 @@ fn main() {
                 wavelength_px: 50.0,
                 speed: 18.0,
                 mode: WavyMode::FullWave,
+                slide_speed: 0.0,
                 strands: None,
             }),
             show_bar: false,
@@ -166,23 +168,29 @@ fn main() {
     // Phase O: the strand bundle ported from `explorations/barrier-fx-lab` — several thin,
     // independently-flickering filament threads fraying off the wavy top edge, rather than one
     // smooth wavy line. `mode: Edge` is required for strands to render at all (see `StrandSpec`'s
-    // doc comment). Values here are the exact `explorations/barrier-fx-lab/presets/
-    // seemusic-found.json` preset (the closest match found so far to the real SeeMusic edge, see
-    // `sm-ex.png`), translated field-by-field into this schema:
+    // doc comment). Values here are the `explorations/barrier-fx-lab/presets/seemusic-found.json`
+    // preset (the closest match found so far to the real SeeMusic edge, see `sm-ex.png`),
+    // translated field-by-field into this schema, with one deliberate deviation (`pulse: None`,
+    // see below):
     // - `coreColor`/`glowColor` hex -> `color`/`glow.color` RGB.
-    // - `brightnessBase`/`brightnessPeak`/`pulseDecay` -> `glow.brightness`/`pulse.brightness`/
-    //   `pulse.decay_seconds` directly — same resting/peak-brightness-mix meaning in both models.
+    // - `brightnessBase` -> `glow.brightness` directly (resting brightness, same meaning in both
+    //   models). `brightnessPeak`/`pulseDecay` (the lab's note-arrival pulse) are **deliberately
+    //   not carried over** — `pulse: None` — so the barrier holds steady at its resting glow
+    //   instead of periodically brightening on each note; this is the one place this sample
+    //   departs from a literal 1:1 translation of the preset.
     // - `layerAmpN` * `glowIntensity` -> `layers[N].amplitude` (this schema has no separate
     //   intensity knob distinct from `Glow::brightness`, so the lab's multiplier is baked
     //   directly into each layer's amplitude instead); `layerSigmaN` -> `layers[N].sigma_px`
     //   unchanged (`glowSizeScale` was `1`, a no-op).
-    // - `waveAmp`/`waveLen`/`waveSpeed`/`wavyMode` -> `amplitude_px`/`wavelength_px`/`speed`/
-    //   `mode` directly. `slideSpeed` (40) has **no equivalent field** — the real app's
-    //   `wavy_offset` never got a lateral-slide term ported, only the strand bundle did (see this
-    //   phase's own scope) — so it's silently dropped, not approximated.
+    // - `waveAmp`/`waveLen`/`waveSpeed`/`slideSpeed`/`wavyMode` -> `amplitude_px`/`wavelength_px`/
+    //   `speed`/`slide_speed`/`mode` directly (`slide_speed` ported after this phase originally
+    //   shipped — see `WavySpec::slide_speed`'s own doc comment for how it differs from `speed`).
     // - `strandCount`/`strandSpread`/`strandJitter`/`strandThickness`/`strandHaloAmp`/
     //   `strandHaloSigma`/`strandGlow`/`strandFlicker` -> `StrandSpec`'s identically-purposed
-    //   fields, 1:1, no translation needed.
+    //   fields, 1:1, no translation needed. Several of these (`spread_px`/`thickness_px`/
+    //   `glow_intensity`, and the barrier's own `thickness`) have since been hand-tuned away from
+    //   a literal preset translation — see this style's own values below, not the preset JSON, for
+    //   the current look.
     // - `filamentIntensity`/`filamentSpeed`/`filamentScale` (sliding filament) and
     //   `wispDensity`/`wispHeight`/`wispFlicker`/`wispSway`/`wispIntensity` (wisps) have no
     //   real-app equivalent — out of scope for this phase, per its own doc comment.
@@ -193,7 +201,7 @@ fn main() {
         notes: Timed::Static(NoteLayer::default()),
         barrier: Timed::Static(BarrierLayer {
             color: ColorBinding::Constant([255, 180, 84]),
-            thickness: 4.0,
+            thickness: 0.0,
             glow: Some(Glow {
                 color: ColorBinding::Constant([255, 217, 160]),
                 brightness: 1.0,
@@ -213,23 +221,21 @@ fn main() {
                 ],
                 edge_blend_px: 0.0,
             }),
-            pulse: Some(Pulse {
-                decay_seconds: 0.35,
-                brightness: 1.9,
-            }),
+            pulse: None,
             wavy: Some(WavySpec {
                 amplitude_px: 9.5,
                 wavelength_px: 55.0,
                 speed: 2.0,
                 mode: WavyMode::Edge,
+                slide_speed: 40.0,
                 strands: Some(StrandSpec {
                     count: 4,
-                    spread_px: 2.0,
+                    spread_px: 4.0,
                     jitter: 1.0,
-                    thickness_px: 3.0,
-                    halo_amplitude: 1.48,
+                    thickness_px: 2.0,
+                    halo_amplitude: 1.0,
                     halo_sigma_px: 0.5,
-                    glow_intensity: 1.92,
+                    glow_intensity: 0.5,
                     flicker_speed: 1.8,
                 }),
             }),
@@ -419,6 +425,7 @@ fn main() {
                 wavelength_px: 150.0,
                 speed: 1.0,
                 mode: WavyMode::Edge,
+                slide_speed: 0.0,
                 strands: None,
             }),
             show_bar: false,

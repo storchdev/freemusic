@@ -221,7 +221,7 @@ point, not derived from anything; adjust per style if it looks too subtle or too
 
 ```rust
 struct WavySpec {
-    amplitude_px: f32, wavelength_px: f32, speed: f32, mode: WavyMode,
+    amplitude_px: f32, wavelength_px: f32, speed: f32, mode: WavyMode, slide_speed: f32,
     strands: Option<StrandSpec>,
 }
 ```
@@ -231,8 +231,15 @@ struct WavySpec {
   amplitude_px` always holds exactly — a "calm ocean cross-section," not one obvious repeating
   sine.
 - `wavelength_px`: pixels per cycle of the dominant (slowest) term.
-- `speed`: how fast the ripple crawls sideways over transport time; `0` freezes the shape in place
-  (still x-varying, just not animating).
+- `speed`: how fast the ripple pattern *mutates in place* over transport time — which parts of the
+  noise field currently look big/small, not the field's x-position; `0` freezes the shape (still
+  x-varying, just not animating), but even a frozen shape sits at a fixed spot along x. See
+  `slide_speed` below for actual lateral movement.
+- `slide_speed` (default `0.0`): how fast the ripple pattern's noise field itself translates
+  sideways along the barrier's width, in canvas px/second — independent of `speed`. A positive
+  value gives a "current flowing through the wire" look: the whole ripple (and, since strands
+  re-sample the same field, the whole strand bundle too — see `StrandSpec` below) visibly crawls
+  sideways rather than just wobbling in place. `0.0` is an exact no-op.
 - `mode` (`WavyMode`, default `TopWave`):
   - `TopWave`: only the top edge ripples, bottom stays flat — bar thickness varies across its
     width, can pinch thin at wave troughs.
@@ -296,6 +303,10 @@ Two restrictions worth calling out explicitly:
   and skips the whole strand loop outside `Edge`, even if `strands` is `Some(..)`. This is the
   single source of truth: there is no matching CPU-side gate, `BarrierRenderer::set_style` uploads
   strand params unconditionally whenever `strands` is `Some(..)`.
+
+Strands have no `slide_speed` of their own — they re-sample the same `wavy_offset_seeded` noise
+field `WavySpec::slide_speed` already translates, so setting a nonzero `slide_speed` on the parent
+`WavySpec` moves the whole strand bundle sideways along with the base edge, in lockstep.
 
 See `examples/styles/barrier-strands.fmstyle.ron` for a complete, renderable example.
 

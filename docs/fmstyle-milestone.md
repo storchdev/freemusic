@@ -1167,3 +1167,45 @@ strands (silent no-op, not a crash); confirm the pulse brightness and wavy rippl
 correctly with strands layered on top, at both low and high `strandCount`/`jitter` (up to the
 8-strand cap).
 
+### Phase O follow-ups: exact preset match, hand-tuning, `slide_speed`, and a refresh script
+
+Three smaller changes landed after Phase O's initial PR, all still within the strand-bundle scope:
+
+- **`examples/styles/barrier-strands.fmstyle.ron` first matched `seemusic-found.json` exactly**
+  (`layers[i].amplitude` = `layerAmpN * glowIntensity` since this schema bakes the lab's separate
+  intensity knob into amplitude directly, `pulse` initially carried over as `brightnessPeak`/
+  `pulseDecay`), **then had `pulse` removed** (`pulse: None`, so the barrier holds at a steady
+  resting glow instead of brightening on each note) **and several values hand-tuned further**
+  (`thickness: 0.0`, `strands.spread_px: 4.0`, `strands.thickness_px: 2.0`,
+  `strands.glow_intensity: 0.5` — all diverging from a literal preset translation by eye/taste, not
+  by a translation rule). `crates/project/examples/dump_sample_styles.rs`'s `barrier_strands` block
+  is the source of truth for whatever this sample's current values actually are; its own doc
+  comment documents the translation rules, not this milestone doc.
+- **`WavySpec` gained `slide_speed: f32`** (`#[serde(default)]`, `0.0` = exact no-op), porting the
+  lab's `slideSpeed` parameter: unlike `speed` (which mutates the ripple's *shape* in place over
+  time, leaving its x-position fixed), `slide_speed` literally translates the noise field sideways
+  along x — a positive value reads as "current flowing through the wire," not just wobbling in
+  place. Implementation: `barrier.wgsl`'s `wavy_offset_seeded` now computes `x_slid = x - t *
+  slide_speed` before dividing by `wavelength` (both `sx` axes downstream use `x_slid`, `st` is
+  unaffected). The uniform value is parked in `glow_style`'s previously-unused `w` component
+  (`crates/render/src/barrier.rs`) rather than growing the `Uniforms` struct by another vec4, same
+  "reuse a documented spare slot" pattern `bar_color.w` already established. **Affects the whole
+  wavy edge, every `WavyMode`, not just the strand bundle** — strands re-sample the same
+  `wavy_offset_seeded` field the base edge itself uses, so they slide in lockstep with it
+  automatically, with no strand-specific slide field needed. `barrier-strands.fmstyle.ron` sets
+  `slide_speed: 40.0` (the `seemusic-found.json` value); the other three `WavySpec`-using samples
+  (`barrier-wavy`, `barrier-wavy-volume`, `showcase_blue_purple`) got `slide_speed: 0.0` (no-op,
+  unchanged look).
+- **`scripts/refresh-sample-styles.sh`** automates the "copy stdout sections into files" step
+  `dump_sample_styles.rs`'s own header comment describes: runs the example, splits its `=== name
+  ===`-delimited stdout, and writes each block **raw** (no reformatting) into
+  `examples/styles/<name>.fmstyle.ron`. Content-equivalent to hand-copying, but the raw dump's
+  formatting differs cosmetically from what most of the 10 shipped files previously had by hand —
+  expanded `layers: ((
+ amplitude: ...,
+), ...)` tuples instead of a compact one-line-per-entry
+  form, and explicit default-valued fields (`edge_blend_px: 0.0`, `background: Constant((0, 0,
+  0))`) that used to be stripped by hand. All 10 files were refreshed to this raw form in this
+  session — same underlying `Style` values, different formatting only (verified via `cargo test -p
+  project`'s `shipped_sample_styles_parse`, which re-parses every file).
+
