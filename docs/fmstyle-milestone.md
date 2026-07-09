@@ -944,6 +944,32 @@ embedded project style has no external file to reload from) and `reload_style_re
 so a `.fmstyle.ron` can be hand-edited externally and reloaded without reopening the file picker
 each time. The button is disabled until a style has actually been imported from a file.
 
+**Later addition**: a text field underneath "Import style…"/the refresh button, mirroring the
+Project-file section's own path-text-field pattern, so a style can be loaded either via the native
+file picker or by typing/pasting a path directly. `UiState` gained `style_path_text: String`
+(mirrored from `style_path` — via `load_style` — every time a style is (re)imported by any means:
+the picker, the refresh button, a CLI-passed style path, or a loaded project that references one;
+cleared alongside `style_path` on New Project / loading a project, same reasoning as that field)
+and `load_style_path_requested: bool` (set by a "Load" button next to the text field, or pressing
+Enter in it; `main.rs`'s `apply_post_ui_updates` handles it identically to
+`reload_style_requested` except the path comes from the typed text instead of `style_path`, and
+it's a no-op on an empty field rather than needing an `Option` check). Shares `load_style` end to
+end with every other style-loading path, so it gets the same status-message/error reporting as the
+picker.
+
+**Bug found on first real use**: pressing Enter to submit the path reliably produced a "path not
+found" error, because the field's text actually gained a trailing space from that same Enter
+keypress — egui's singleline `TextEdit` receives Enter both as a key event (which the "submitted"
+check above reacts to) and as an insertable text event, and singleline mode maps a newline
+character to a literal space rather than dropping it, so `style_path_text` ended up as e.g.
+`"foo.fmstyle.ron "` by the time the submit check fired. Fixed by trimming the text before
+constructing a `PathBuf` from it at every load-on-submit call site — not just this one:
+`load_style`'s own `load_style_path_requested` handler, `save_project`/`load_project` (the
+Project-file text field this one was modeled on has the identical latent gotcha even without
+Enter-to-submit wiring, if a user presses Enter in it out of habit), and `start_export`'s
+`export_path_text`. The picker-driven paths (`import_style_requested`, `open_project_requested`,
+etc.) were never affected — `rfd::FileDialog` results don't round-trip through a text buffer.
+
 **`show_bar` now defaults to `false`** (`#[serde(default)]` on the field, `BarrierLayer::default()`
 follows suit) — once the (3) fix above made `show_bar: false` actually produce a clean single-blade
 glow with no gap, the flat opaque bar stopped being a look worth defaulting to at all; a

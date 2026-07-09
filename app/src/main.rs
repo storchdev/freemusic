@@ -465,6 +465,8 @@ impl AppState {
                 import_style_requested: false,
                 style_path: None,
                 reload_style_requested: false,
+                style_path_text: String::new(),
+                load_style_path_requested: false,
                 status_message: None,
                 export_path_text: String::new(),
                 export_fps: 30,
@@ -650,6 +652,7 @@ impl AppState {
             Ok(style) => {
                 self.ui_state.style = Some(style);
                 self.ui_state.style_path = Some(path.to_path_buf());
+                self.ui_state.style_path_text = path.display().to_string();
                 self.ui_state.status_message =
                     Some(format!("Imported style from {}", path.display()));
             }
@@ -681,7 +684,11 @@ impl AppState {
 
     fn save_project(&mut self) {
         let project = self.snapshot_project();
-        let path = PathBuf::from(&self.ui_state.project_path_text);
+        // `.trim()`: egui's singleline `TextEdit` turns a trailing Enter keypress into a literal
+        // space appended to the buffer (the platform delivers Enter as an insertable text event,
+        // not just a key event, and singleline mode maps newlines to spaces rather than dropping
+        // them) — untrimmed, that trailing space becomes part of the path and fails to resolve.
+        let path = PathBuf::from(self.ui_state.project_path_text.trim());
         self.ui_state.status_message = Some(match project.save(&path) {
             Ok(()) => format!("Saved to {}", path.display()),
             Err(err) => err,
@@ -701,7 +708,8 @@ impl AppState {
 
         let project = self.snapshot_project();
         let settings = export::ExportSettings {
-            output_path: PathBuf::from(&self.ui_state.export_path_text),
+            // See `save_project`'s comment on `.trim()` — same trailing-space-from-Enter gotcha.
+            output_path: PathBuf::from(self.ui_state.export_path_text.trim()),
             fps: self.ui_state.export_fps,
         };
         let (tx, rx) = mpsc::channel();
@@ -767,6 +775,7 @@ impl AppState {
         self.ui_state.background_color = [0, 0, 0];
         self.ui_state.style = None;
         self.ui_state.style_path = None;
+        self.ui_state.style_path_text = String::new();
         self.ui_state.skipped_notes = Vec::new();
         self.ui_state.duration_edits = Vec::new();
         self.ui_state.added_notes = Vec::new();
@@ -784,7 +793,8 @@ impl AppState {
     /// Loads a project from the path in the project text field, replacing the current video,
     /// MIDI, sync offset, and calibration with whatever it contains.
     fn load_project(&mut self) {
-        let path = PathBuf::from(&self.ui_state.project_path_text);
+        // See `save_project`'s comment on `.trim()` — same trailing-space-from-Enter gotcha.
+        let path = PathBuf::from(self.ui_state.project_path_text.trim());
         self.load_project_from_path(&path);
     }
 
@@ -803,6 +813,7 @@ impl AppState {
                 self.ui_state.background_color = project.background_color;
                 self.ui_state.style = project.style.clone();
                 self.ui_state.style_path = None;
+                self.ui_state.style_path_text = String::new();
                 self.ui_state.skipped_notes = project.skipped_notes.clone();
                 self.ui_state.duration_edits = project.duration_edits.clone();
                 self.ui_state.added_notes = project.added_notes.clone();
@@ -1188,6 +1199,16 @@ impl AppState {
             self.ui_state.reload_style_requested = false;
             if let Some(path) = self.ui_state.style_path.clone() {
                 self.load_style(&path);
+            }
+        }
+        if self.ui_state.load_style_path_requested {
+            self.ui_state.load_style_path_requested = false;
+            // `.trim()`: pressing Enter to submit is exactly the case that introduces the
+            // trailing space in the first place (see `save_project`'s comment) — trimming here is
+            // required, not just defensive.
+            let trimmed = self.ui_state.style_path_text.trim();
+            if !trimmed.is_empty() {
+                self.load_style(&PathBuf::from(trimmed));
             }
         }
         if self.ui_state.new_project_requested {

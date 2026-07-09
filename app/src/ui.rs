@@ -90,6 +90,17 @@ pub struct UiState {
     /// Set by the refresh button next to "Import style…"; the app loop consumes and clears it
     /// each redraw, re-loading `style` from `style_path`.
     pub reload_style_requested: bool,
+    /// Path typed into the style text field, underneath "Import style…" — lets a user load a
+    /// style by typing/pasting a path instead of going through the file picker. Mirrored from
+    /// `style_path` whenever a style is (re)imported via the picker/refresh button/CLI arg/loaded
+    /// project, so the field always reflects whatever style is actually active; empty when no
+    /// external style file is active (a fresh project, or one with a style embedded directly
+    /// rather than referencing a file).
+    pub style_path_text: String,
+    /// Set by the "Load" button next to the style text field (or pressing Enter in it); the app
+    /// loop consumes and clears it each redraw, loading `style_path_text` the same way
+    /// `reload_style_requested` loads `style_path`.
+    pub load_style_path_requested: bool,
     pub status_message: Option<String>,
     /// Path typed into the Export text field; defaulted from the video path on first load.
     pub export_path_text: String,
@@ -772,6 +783,14 @@ fn draw_project_tab(ui: &mut egui::Ui, state: &mut UiState) {
             .clicked()
         {
             state.reload_style_requested = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Style file:");
+        let response = ui.text_edit_singleline(&mut state.style_path_text);
+        let submitted = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if ui.button("Load").clicked() || submitted {
+            state.load_style_path_requested = true;
         }
     });
     ui.label(if state.style.is_some() {

@@ -10,10 +10,12 @@ Schema lives in `crates/project/src/style.rs`; keep that module's doc comment po
 
 A `.fmstyle.ron` file is a [RON](https://github.com/ron-rs/ron) document describing a `Style`. It's
 loaded via `Style::load(path)` and imported into a running project through the Project tab's
-"Import style…" button (`app/src/ui.rs::draw_project_tab`) — there's no other way to attach one to
-a project today. An imported style fully overrides the legacy note/barrier "quick control" sliders
-for whichever layers it sets; a project with no imported style has its look synthesized from those
-sliders via `Style::from_legacy` (see each layer section below for the exact legacy mapping).
+"Import style…" button (native file picker) or the path text field underneath it (type/paste a
+path, then click "Load" or press Enter — `app/src/ui.rs::draw_project_tab`) — there's no other way
+to attach one to a project today. An imported style fully overrides the legacy note/barrier "quick
+control" sliders for whichever layers it sets; a project with no imported style has its look
+synthesized from those sliders via `Style::from_legacy` (see each layer section below for the
+exact legacy mapping).
 
 `version` is always `1` right now — there is no migration logic yet. Every field on every type in
 this schema is `#[serde(default)]`-compatible, so a file written by an older schema version still
