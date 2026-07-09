@@ -166,7 +166,28 @@ fn main() {
     // Phase O: the strand bundle ported from `explorations/barrier-fx-lab` — several thin,
     // independently-flickering filament threads fraying off the wavy top edge, rather than one
     // smooth wavy line. `mode: Edge` is required for strands to render at all (see `StrandSpec`'s
-    // doc comment); values here are close to the lab's own "SeeMusic gold" preset.
+    // doc comment). Values here are the exact `explorations/barrier-fx-lab/presets/
+    // seemusic-found.json` preset (the closest match found so far to the real SeeMusic edge, see
+    // `sm-ex.png`), translated field-by-field into this schema:
+    // - `coreColor`/`glowColor` hex -> `color`/`glow.color` RGB.
+    // - `brightnessBase`/`brightnessPeak`/`pulseDecay` -> `glow.brightness`/`pulse.brightness`/
+    //   `pulse.decay_seconds` directly — same resting/peak-brightness-mix meaning in both models.
+    // - `layerAmpN` * `glowIntensity` -> `layers[N].amplitude` (this schema has no separate
+    //   intensity knob distinct from `Glow::brightness`, so the lab's multiplier is baked
+    //   directly into each layer's amplitude instead); `layerSigmaN` -> `layers[N].sigma_px`
+    //   unchanged (`glowSizeScale` was `1`, a no-op).
+    // - `waveAmp`/`waveLen`/`waveSpeed`/`wavyMode` -> `amplitude_px`/`wavelength_px`/`speed`/
+    //   `mode` directly. `slideSpeed` (40) has **no equivalent field** — the real app's
+    //   `wavy_offset` never got a lateral-slide term ported, only the strand bundle did (see this
+    //   phase's own scope) — so it's silently dropped, not approximated.
+    // - `strandCount`/`strandSpread`/`strandJitter`/`strandThickness`/`strandHaloAmp`/
+    //   `strandHaloSigma`/`strandGlow`/`strandFlicker` -> `StrandSpec`'s identically-purposed
+    //   fields, 1:1, no translation needed.
+    // - `filamentIntensity`/`filamentSpeed`/`filamentScale` (sliding filament) and
+    //   `wispDensity`/`wispHeight`/`wispFlicker`/`wispSway`/`wispIntensity` (wisps) have no
+    //   real-app equivalent — out of scope for this phase, per its own doc comment.
+    // - `barrierYFrac`/`keyWidth`/`vignette`/`exposure` are lab-scene-only (mock piano/vignette/
+    //   tonemapping for the standalone preview canvas), not part of this schema at all.
     let barrier_strands = Style {
         version: 1,
         notes: Timed::Static(NoteLayer::default()),
@@ -176,7 +197,20 @@ fn main() {
             glow: Some(Glow {
                 color: ColorBinding::Constant([255, 217, 160]),
                 brightness: 1.0,
-                layers: glow_layers(5.0, 16.0, 48.0),
+                layers: [
+                    GlowLayer {
+                        amplitude: 0.988,
+                        sigma_px: 5.0,
+                    },
+                    GlowLayer {
+                        amplitude: 0.418,
+                        sigma_px: 16.0,
+                    },
+                    GlowLayer {
+                        amplitude: 0.1444,
+                        sigma_px: 48.0,
+                    },
+                ],
                 edge_blend_px: 0.0,
             }),
             pulse: Some(Pulse {
@@ -184,19 +218,19 @@ fn main() {
                 brightness: 1.9,
             }),
             wavy: Some(WavySpec {
-                amplitude_px: 7.0,
+                amplitude_px: 9.5,
                 wavelength_px: 55.0,
-                speed: 3.5,
+                speed: 2.0,
                 mode: WavyMode::Edge,
                 strands: Some(StrandSpec {
-                    count: 6,
-                    spread_px: 16.0,
-                    jitter: 0.8,
-                    thickness_px: 1.3,
-                    halo_amplitude: 1.0,
-                    halo_sigma_px: 6.0,
-                    glow_intensity: 1.5,
-                    flicker_speed: 2.0,
+                    count: 4,
+                    spread_px: 2.0,
+                    jitter: 1.0,
+                    thickness_px: 3.0,
+                    halo_amplitude: 1.48,
+                    halo_sigma_px: 0.5,
+                    glow_intensity: 1.92,
+                    flicker_speed: 1.8,
                 }),
             }),
             show_bar: false,
