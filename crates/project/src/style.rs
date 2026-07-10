@@ -98,6 +98,7 @@ impl Style {
                         BlackKeyFill::Custom(Fill::Solid(ColorBinding::Constant(color)))
                     }
                 },
+                alpha: ScalarBinding::default(),
             }),
             barrier: Timed::Static(BarrierLayer {
                 color: ColorBinding::Constant(barrier_style.color),
@@ -466,6 +467,14 @@ pub struct NoteLayer {
     pub border: Option<Border>,
     #[serde(default)]
     pub black_key_fill: BlackKeyFill,
+    /// Note opacity, resolved per note like `ColorBinding` (`ByVelocity`/`ByPitchClass`/`ByTrack`
+    /// can make quieter or specific notes more transparent). `1.0` (opaque, the default) is a
+    /// pixel-identical no-op — the note core pipeline is already alpha-blended (for the rounded-
+    /// corner antialiasing edge), so this only multiplies that edge coverage by the resolved
+    /// value in `fs_core` (`shader.wgsl`) rather than needing a new blend state. Applies to the
+    /// note's own fill only; the glow corona (`fs_glow`, additive) is unaffected.
+    #[serde(default)]
+    pub alpha: ScalarBinding,
 }
 
 impl Default for NoteLayer {
@@ -478,6 +487,7 @@ impl Default for NoteLayer {
             fall_speed: 400.0,
             border: None,
             black_key_fill: BlackKeyFill::default(),
+            alpha: ScalarBinding::default(),
         }
     }
 }
@@ -1024,6 +1034,36 @@ mod tests {
         let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
         let parsed: Style = ron::from_str(&text).unwrap();
         assert_eq!(style, parsed);
+    }
+
+    /// `NoteLayer::alpha` (a `ScalarBinding`, resolved per note like `ColorBinding`) round-trips
+    /// through RON in its `ByVelocity` form, not just the `Constant` default.
+    #[test]
+    fn note_layer_alpha_round_trips() {
+        let mut style =
+            Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
+        let Timed::Static(notes) = &mut style.notes else {
+            unreachable!()
+        };
+        notes.alpha = ScalarBinding::ByVelocity {
+            low: 0.2,
+            high: 1.0,
+        };
+        let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
+        let parsed: Style = ron::from_str(&text).unwrap();
+        assert_eq!(style, parsed);
+    }
+
+    /// A `.fmstyle.ron` file predating `NoteLayer::alpha` (missing the key entirely) loads as
+    /// fully opaque, not some other fallback.
+    #[test]
+    fn note_layer_without_alpha_field_loads_as_opaque() {
+        let text = "(notes: Static((fill: Solid(Constant((1, 2, 3))), roundedness: 1.0, fall_speed: 400.0)))";
+        let style: Style = ron::from_str(text).unwrap();
+        let Timed::Static(notes) = &style.notes else {
+            unreachable!()
+        };
+        assert_eq!(notes.alpha, ScalarBinding::Constant(1.0));
     }
 
     #[test]

@@ -10,7 +10,9 @@
 //! canvas's own Y position (`Fill::CanvasGradient`) — see `shader.wgsl`'s `fill_color` and
 //! `project::Fill`'s doc comment. Baked per-note (not a style-wide uniform) since
 //! `BlackKeyFill::Custom` can give sharp keys a different `Fill` variant, and therefore a
-//! different gradient basis, than natural keys.
+//! different gradient basis, than natural keys. `alpha` is `NoteLayer::alpha`
+//! (`ScalarBinding`) resolved per note the same way as `color_top`/`color_bottom`, multiplied
+//! into the note core's output alpha in `fs_core`.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -29,10 +31,13 @@ pub struct NoteInstance {
     /// `0.0` = blend `color_top`/`color_bottom` across the note's own local height, `1.0` = blend
     /// across the canvas's own Y position instead. See this module's doc comment.
     pub canvas_gradient: f32,
+    /// Note opacity (`NoteLayer::alpha` resolved for this note), `1.0` = fully opaque. See this
+    /// module's doc comment.
+    pub alpha: f32,
 }
 
 impl NoteInstance {
-    pub fn attributes() -> [wgpu::VertexAttribute; 8] {
+    pub fn attributes() -> [wgpu::VertexAttribute; 9] {
         wgpu::vertex_attr_array![
             1 => Float32x2,
             2 => Float32x2,
@@ -42,6 +47,7 @@ impl NoteInstance {
             6 => Float32,
             7 => Float32,
             8 => Float32,
+            9 => Float32,
         ]
     }
 

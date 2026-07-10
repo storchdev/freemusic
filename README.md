@@ -62,15 +62,13 @@ See `docs/` for architecture, verification, implementation notes, and format his
 Ideas being considered for future work, roughly grouped:
 
 **`.fmstyle.ron` (visual style format)**
-- Alpha (transparency) on notes
-- Custom note textures and background textures, both compatible with note alpha — alpha would
-  let a note "see through" into a static background
+- Custom note textures and background textures, both compatible with the note alpha that now
+  exists (`NoteLayer::alpha`) — alpha would let a note "see through" into a static background
 - Octave lines
 - Experiment with more barrier settings
 - Experiment with more wispy/bubbly particles
 - Flickering speed/intensity for continuous (`FlashMode::Sustained`) flashes
 - Reflectivity settings, for a metal-bar look
-- Key-property-based styles (e.g. driven by pitch or velocity)
 - Custom shaders
 
 **UI**

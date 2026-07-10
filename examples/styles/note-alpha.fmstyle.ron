@@ -1,21 +1,11 @@
 (
     version: 1,
     notes: Static((
-        fill: Solid(Constant((255, 200, 90))),
+        fill: Solid(Constant((90, 200, 255))),
         sheen: None,
-        glow: None,
-        roundedness: 1.0,
-        fall_speed: 400.0,
-        border: None,
-        black_key_fill: Auto,
-        alpha: Constant(1.0),
-    )),
-    barrier: Static((
-        color: Constant((120, 200, 255)),
-        thickness: 4.0,
         glow: Some((
-            color: Constant((120, 200, 255)),
-            brightness: 1.4,
+            color: Constant((90, 200, 255)),
+            brightness: 0.8,
             layers: ((
                 amplitude: 2.6,
                 sigma_px: 2.0,
@@ -24,19 +14,29 @@
                 sigma_px: 4.0,
             ), (
                 amplitude: 0.38,
-                sigma_px: 8.0,
+                sigma_px: 10.0,
             )),
-            edge_blend_px: 0.0,
+            edge_blend_px: 6.0,
             match_note_color: false,
         )),
+        roundedness: 1.0,
+        fall_speed: 400.0,
+        border: None,
+        black_key_fill: Auto,
+        alpha: Constant(0.4),
+    )),
+    barrier: Static((
+        color: Constant((255, 255, 255)),
+        thickness: 4.0,
+        glow: None,
         pulse: None,
         wavy: None,
-        show_bar: false,
+        show_bar: true,
     )),
     transition: Static((
         kind: r#None,
         particles: None,
         flash: None,
     )),
-    background: Constant((8, 10, 24)),
+    background: Constant((150, 70, 50)),
 )

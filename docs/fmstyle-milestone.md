@@ -1616,3 +1616,56 @@ manually run** — worth confirming, next time someone has hands on the app: `ve
 both color *and* brightness scaling with how hard each note was struck (a soft hit's burst/flash
 should read as visibly dimmer, not just differently colored, than a hard hit's).
 
+### Phase S: note alpha (transparency)
+
+First item off the README's `.fmstyle.ron` roadmap list: "Alpha (transparency) on notes." Added
+`NoteLayer::alpha: ScalarBinding` (default `Constant(1.0)`, fully opaque) — resolved per note the
+same way as `ScalarBinding`'s other consumers (`ParticleSpec`/`FlashSpec` brightness, Phase R
+follow-up), so `ByVelocity`/`ByPitchClass`/`ByTrack` can make quieter or specific notes more
+see-through instead of every note sharing one fixed opacity.
+
+**No new blend state needed.** The note core pipeline (`fs_core` in
+`crates/render/src/notes/shader.wgsl`) was already built with `wgpu::BlendState::ALPHA_BLENDING` —
+until now purely for the rounded-corner antialiasing edge (`base_alpha`, a smoothstep over the
+distance field), never for real see-through notes. Making `alpha` actually work was just: (1) a new
+`NoteInstance::alpha: f32` field (`crates/render/src/notes/instance.rs`, vertex attribute location
+9), (2) `rebuild_instances` (`crates/render/src/notes/mod.rs`) resolving `note_layer.alpha` per note
+via `ScalarBinding::resolve_for_note` and baking it into the new field, (3) the shader threading
+`alpha` from `NoteInstance` through `VertexOutput` (also a new location, 6) and multiplying it into
+`fs_core`'s final return alpha (`base_alpha * in.alpha`). `fs_glow` (the additive corona) is
+untouched — a transparent note's own fill/rim fades out, but its glow still radiates at full
+strength, which reads better than a glow that also fades (a dim, see-through note with a full-
+strength halo still looks intentional; a fading halo on top of a fading note reads as the whole
+note guttering out rather than "this note is deliberately translucent").
+
+Applies to the note's own fill only, not `BlackKeyFill::Custom`'s independently-resolved fill —
+there's a single `alpha` per `NoteLayer`, not a separate one for the black-key override, matching
+how `sheen`/`glow`/`roundedness` are already `NoteLayer`-wide rather than nested per fill variant.
+
+**Sample added**: `examples/styles/note-alpha.fmstyle.ron` (generated via
+`cargo run -p project --example dump_sample_styles`, `note_alpha` in
+`crates/project/examples/dump_sample_styles.rs`) — a solid light-blue fill with
+`alpha: ByVelocity { low: 0.15, high: 1.0 }`, so a soft keypress renders as a mostly see-through
+note and a hard keypress as fully opaque. Also gave it a `glow` (reusing `gradient_glow`'s own
+params — `brightness: 0.8`, `glow_layers(2.0, 4.0, 10.0)`, `edge_blend_px: 6.0`, just recolored to
+match this sample's own fill instead of `gradient_glow`'s blue) and a warm burnt-orange
+`background` (`(90, 45, 20)`) deliberately contrasting the note's cool light-blue fill — chosen
+over a dark, `dark_background`-style navy specifically so the see-through effect reads clearly
+(a transparent note visibly shifts toward the warm background instead of blending into another
+near-black).
+
+**Tests**: `crates/project/src/style.rs` gained `note_layer_alpha_round_trips` (RON round-trip of
+the `ByVelocity` form, not just the `Constant` default) and
+`note_layer_without_alpha_field_loads_as_opaque` (a `.fmstyle.ron` predating this field, missing
+the key entirely, loads `alpha` as `Constant(1.0)` rather than some other fallback) — same pattern
+as the existing "field missing -> documented default" tests for `background`/`Glow::brightness`/
+`Pulse::brightness`.
+
+**Verified**: `cargo build --workspace`, `cargo test --workspace`, and `cargo fmt`/`cargo clippy
+--all-targets --workspace` all clean; `shipped_sample_styles_parse` finds the new sample file.
+**Not yet manually run** (per the "never run the app yourself" rule) — worth confirming, next time
+someone has hands on the app: import `note-alpha.fmstyle.ron` and confirm soft-velocity notes
+visibly show the barrier/video/background through them while hard-velocity notes stay solid, and
+that a note with `glow: Some(..)` (e.g. combine with an existing glow sample by hand) still shows
+its corona at full strength even while its own fill is mostly transparent.
+

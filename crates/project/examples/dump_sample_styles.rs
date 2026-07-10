@@ -83,6 +83,7 @@ fn main() {
             fall_speed: 400.0,
             border: None,
             black_key_fill: BlackKeyFill::Auto,
+            alpha: ScalarBinding::default(),
         }),
         barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer::default()),
@@ -413,6 +414,7 @@ fn main() {
                 top: ColorBinding::Constant([170, 235, 255]),
                 bottom: ColorBinding::Constant([95, 55, 255]),
             }),
+            alpha: ScalarBinding::default(),
         }),
         barrier: Timed::Static(BarrierLayer {
             color: ColorBinding::Constant([205, 245, 255]),
@@ -519,6 +521,7 @@ fn main() {
                 top: ColorBinding::Constant([40, 60, 130]),
                 bottom: ColorBinding::Constant([160, 120, 50]),
             }),
+            alpha: ScalarBinding::default(),
         }),
         barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer::default()),
@@ -600,6 +603,7 @@ fn main() {
             fall_speed: 400.0,
             border: None,
             black_key_fill: BlackKeyFill::Auto,
+            alpha: ScalarBinding::default(),
         }),
         barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer {
@@ -648,6 +652,32 @@ fn main() {
         barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
+    };
+
+    // Demonstrates `NoteLayer::alpha` (`ScalarBinding`) actually resolving per note: a soft
+    // keypress (low velocity) renders as a mostly see-through note, a hard keypress (high
+    // velocity) as fully opaque — the note core pipeline is already alpha-blended, so this needs
+    // no renderer changes beyond baking the resolved value into `NoteInstance::alpha`.
+    let note_alpha = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer {
+            fill: Fill::Solid(ColorBinding::Constant([90, 200, 255])),
+            glow: Some(Glow {
+                color: ColorBinding::Constant([90, 200, 255]),
+                brightness: 0.8,
+                layers: glow_layers(2.0, 4.0, 10.0),
+                edge_blend_px: 6.0,
+                match_note_color: false,
+            }),
+            alpha: ScalarBinding::Constant(0.4),
+            ..NoteLayer::default()
+        }),
+        barrier: Timed::Static(visible_barrier()),
+        transition: Timed::Static(TransitionLayer::default()),
+        // A warm, clearly-not-black background (rather than `dark_background`'s subtle navy)
+        // deliberately contrasting the note's cool light-blue fill, so a transparent note visibly
+        // shifts toward it instead of blending into another near-black.
+        background: ColorBinding::Constant([150, 70, 50]),
     };
 
     // Demonstrates `ColorBinding::ByPitchClass` actually resolving per note: each of the 12 pitch
@@ -762,6 +792,7 @@ fn main() {
     print_style("dark-background", &dark_background);
     print_style("showcase_blue_purple", &showcase_blue_purple);
     print_style("velocity-colored-notes", &velocity_colored_notes);
+    print_style("note-alpha", &note_alpha);
     print_style("pitch-rainbow", &pitch_rainbow);
     print_style("track-colored-notes", &track_colored_notes);
     print_style("velocity-sparks", &velocity_sparks);

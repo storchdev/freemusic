@@ -75,6 +75,7 @@ The falling notes themselves.
 | `fall_speed` | `f32` | `400.0` | Pixels/second. Also scales on-screen note *length*, since note quad height is `duration_seconds * fall_speed` — there's no separate length control. |
 | `border` | `Option<Border>` | `None` | **Schema-only, no-op** — see [below](#known-schema-onlyno-op-fields). |
 | `black_key_fill` | `BlackKeyFill` | `Auto` | How sharp-key notes are colored relative to `fill`. |
+| `alpha` | `ScalarBinding` | `Constant(1.0)` | Note opacity, resolved per note (see [`ColorBinding`/`ScalarBinding`](#colorbinding--scalarbinding)). `1.0` = fully opaque, `0.0` = fully see-through. Applies to the note's own fill/sheen/glow-rim core (`fs_core`) only — the glow corona (`fs_glow`, additive) is unaffected and always renders at full strength regardless of `alpha`. |
 
 ```ron
 notes: Static((
@@ -94,8 +95,25 @@ notes: Static((
     fall_speed: 400.0,
     border: None,
     black_key_fill: Auto,
+    alpha: Constant(1.0),
 )),
 ```
+
+### `alpha` (note transparency)
+
+`NoteLayer::alpha` is a `ScalarBinding` (the same per-note-resolved scalar type as
+`ParticleSpec::brightness`/`FlashSpec::brightness`, see
+[`ColorBinding`/`ScalarBinding`](#colorbinding--scalarbinding) below): `Constant(f32)`,
+`ByVelocity { low, high }`, `ByPitchClass([f32; 12])`, or
+`ByTrack(Vec<f32>)`. `crates/render/src/notes/mod.rs::rebuild_instances` resolves it once per note
+(`ScalarBinding::resolve_for_note`) alongside `fill`'s own per-note color resolution, and bakes the
+result into `NoteInstance::alpha`. The note core pipeline (`fs_core` in `shader.wgsl`) was already
+alpha-blended (`wgpu::BlendState::ALPHA_BLENDING`) for the rounded-corner antialiasing edge, so
+adding real transparency needed no new pipeline/blend state — `fs_core` just multiplies its
+existing edge-coverage alpha by `in.alpha` before returning. A transparent note lets whatever is
+already composited behind it (barrier corona, video, canvas background) show through; it does not
+composite against a separate background texture (no such feature exists yet — this is scoped purely
+to blending against whatever's already in the framebuffer).
 
 ### `Fill`
 

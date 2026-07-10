@@ -70,6 +70,7 @@ struct NoteInstance {
     @location(6) velocity: f32,
     @location(7) track_index: f32,
     @location(8) canvas_gradient: f32,
+    @location(9) alpha: f32,
 }
 
 struct VertexOutput {
@@ -81,6 +82,7 @@ struct VertexOutput {
     @location(3) color_bottom: vec3<f32>,
     @location(4) radius: f32,
     @location(5) canvas_gradient: f32,
+    @location(6) alpha: f32,
 }
 
 @vertex
@@ -133,6 +135,7 @@ fn vs_main(vertex: Vertex, note: NoteInstance) -> VertexOutput {
     out.color_bottom = note.color_bottom;
     out.radius = note.radius * view_uniform.scale;
     out.canvas_gradient = note.canvas_gradient;
+    out.alpha = note.alpha;
 
     return out;
 }
@@ -255,7 +258,7 @@ fn fs_core(in: VertexOutput) -> @location(0) vec4<f32> {
         out_color = mix(out_color, rim_target, rim_weight);
     }
 
-    return vec4<f32>(clamp(out_color, vec3<f32>(0.0), vec3<f32>(1.0)), base_alpha);
+    return vec4<f32>(clamp(out_color, vec3<f32>(0.0), vec3<f32>(1.0)), base_alpha * in.alpha);
 }
 
 // Additive corona (Phase M): sums three exponential falloff terms

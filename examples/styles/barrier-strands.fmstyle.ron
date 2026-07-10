@@ -8,6 +8,7 @@
         fall_speed: 400.0,
         border: None,
         black_key_fill: Auto,
+        alpha: Constant(1.0),
     )),
     barrier: Static((
         color: Constant((255, 180, 84)),

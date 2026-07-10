@@ -33,6 +33,7 @@
             top: Constant((170, 235, 255)),
             bottom: Constant((95, 55, 255)),
         )),
+        alpha: Constant(1.0),
     )),
     barrier: Static((
         color: Constant((205, 245, 255)),

@@ -482,6 +482,9 @@ impl NotesRenderer {
                     is_canvas_light,
                 )
             };
+            let alpha = note_layer
+                .alpha
+                .resolve_for_note(note.velocity, note.note, note.track_id);
             let duration = note.duration_seconds.max(0.1);
             let original_duration = note.original_duration_seconds.max(0.1);
             let note_x = key.x + left_x;
@@ -503,6 +506,7 @@ impl NotesRenderer {
                     velocity: note.velocity as f32 / 127.0,
                     track_index: note.track_id as f32,
                     canvas_gradient: canvas_gradient as u32 as f32,
+                    alpha,
                 });
                 note_intervals.push(NoteInterval {
                     start_seconds,
