@@ -1780,3 +1780,83 @@ confirming, next time someone has hands on the app: import `pitch-gradient.fmsty
 confirm bass notes render blue and treble notes render orange, with a visible in-between gradient
 across the middle of the keyboard rather than a hard split.
 
+### Phase U: flicker speed/intensity for `FlashMode::Sustained` flashes
+
+Roadmap item from the README: a sustained flash (a held key's glow) rendered at perfectly constant
+brightness for its whole hold, with no way to give it a candle-like waver. Added two new
+`FlashSpec` fields, `flicker_speed: ScalarBinding` and `flicker_intensity: ScalarBinding`
+(`crates/project/src/style.rs`), both defaulting to `Constant(0.0)` via a new shared
+`default_zero_scalar()` helper — unlike `ScalarBinding::default()` itself (`Constant(1.0)`, tuned
+for multiplier fields), `0.0` is the right "off" default here since a flash predating this field
+should render exactly as before. Both are resolved once per spawned flash against the *triggering*
+note's velocity/pitch/track, same call site and mechanism (`resolve_for_note`) every other
+per-note `FlashSpec` scalar already uses.
+
+**Why value noise, not a literal sine wave**: `barrier.wgsl`'s strand-bundle flicker (Phase O,
+`StrandSpec::flicker_speed`) already established the project's answer to "how should a flicker
+look" — a seeded, hash-based 2D value-noise field (`hash21`/`noise2`) rather than `sin(t * speed)`,
+because a literal sine reads as a metronomic pulse while value noise reads as an irregular waver,
+much closer to a real candle/neon-tube flicker. A flash's alpha, unlike a strand's, is computed
+CPU-side in `render::effects::rebuild_instances` rather than in a fragment shader, so
+`crates/render/src/effects.rs` gained its own `hash21`/`noise2` — direct ports of `barrier.wgsl`'s
+functions, same formula — plus a new `flash_flicker(seed, time_seconds, speed) -> f32` that samples
+`noise2(seed * 7.0, time_seconds * speed + seed * 3.0)` and reshapes it into `[0, 1]` with the same
+`pow(.., 1.4)` contrast curve the strand flicker uses, so a flash's flicker and a barrier strand's
+flicker share both their math and their "feel" despite living in different renderers.
+
+**Per-flash random seed, not a shared one**: each spawned `Flash` (`crates/render/src/effects.rs`)
+now carries `flicker_speed: f32`/`flicker_intensity: f32`/`flicker_seed: f32`, the last drawn from
+`EffectsRenderer::rng` at spawn time (`self.rng.range(0.0, 1000.0)`) so that a held chord's several
+simultaneous sustained flashes flicker independently rather than in lockstep — same reasoning as
+the strand bundle's own per-strand seed, just decorrelating flash instances instead of strands
+within one bundle.
+
+**Wiring into alpha**: `rebuild_instances` already computed a decay-based alpha `t` (1.0 at
+spawn/during the hold, decaying to 0.0 over `decay_seconds`). When `flicker_intensity > 0.0`, `t` is
+now further multiplied by `1.0 - flicker_intensity + flicker_intensity * flash_flicker(..)` — at
+`flicker_intensity == 0.0` this multiplier is an exact no-op (`1.0`, regardless of `flicker_speed`),
+which is what makes the whole feature a pure opt-in with zero behavior change for every existing
+`.fmstyle.ron`. At `flicker_intensity == 1.0` the multiplier ranges the full `[0.0, 1.0]`, letting
+the flash dim all the way to invisible at the noise field's troughs.
+
+**Scoped to `Sustained` in practice, not in code**: the roadmap item specifically asked for
+flicker on continuous/`Sustained` flashes, but the two fields aren't actually gated to that mode —
+an `Instant` flash reads `flicker_speed`/`flicker_intensity` too, for the same reason
+`radius_x_px`/`brightness`/etc. aren't mode-gated either (nothing else in `FlashSpec` singles out
+one `mode` for special schema treatment). In practice this rarely matters: an `Instant` flash's
+entire life is usually shorter than one flicker cycle, so the effect is barely visible there — the
+useful case really is a long `Sustained` hold, which is why the doc comments and the
+`docs/fmstyle-format.md` prose both frame it that way despite the field being mode-agnostic.
+
+**Sample updated**: `key_glow` in `crates/project/examples/dump_sample_styles.rs` (and the
+regenerated `examples/styles/key-glow.fmstyle.ron`) now sets `flicker_speed: Constant(1.5)` /
+`flicker_intensity: Constant(0.25)` — a slow mutation rate and a shallow dim, tuned to read as
+"atmospheric waver" rather than "broken/strobing." Every other shipped sample with a `flash: Some
+(..)` got explicit `flicker_speed: Constant(0.0)` / `flicker_intensity: Constant(0.0)` (i.e. the
+default, spelled out) so the schema addition is visible in every regenerated file rather than
+silently absent from five of six.
+
+**Sample added**: `flickering_flash` (`examples/styles/flickering-flash.fmstyle.ron`), right after
+`key_glow` — a `FlashMode::Sustained` white flash with a strong, fast flicker
+(`flicker_speed: Constant(10.0)`, `flicker_intensity: Constant(1.0)`), a near-point core
+(`radius_x_px`/`radius_y_px: Constant(3.0)`), and hot, far-reaching corona layers
+(`[(12.0, 5.0), (4.5, 14.0), (1.3, 32.0)]`, amplitude/`sigma_px`, vs. `glow_layers`'s `[(2.6, 2.0),
+(1.1, 5.0), (0.38, 10.0)]`), so it reads as an intense radiating point light rather than a
+flat-topped spotlight or a subtle difference from `key_glow`'s tuned-down waver.
+
+**Tests**: `crates/project/src/style.rs` gained `flash_without_flicker_fields_loads_with_zero_default`
+(an old-shaped `.fmstyle.ron` fragment omitting both fields loads them as `Constant(0.0)`), and
+`particle_and_flash_shape_scalars_round_trip` was extended to cover `ByVelocity`-ramped
+`flicker_speed`/`flicker_intensity` alongside the other `FlashSpec` scalars it already checked.
+`crates/render/src/effects.rs` gained its first `#[cfg(test)] mod tests` (this crate had none
+before): pure-math checks that `flash_flicker`/`noise2` stay bounded to their documented ranges,
+that `flash_flicker` isn't perfectly periodic (the whole point of using noise over a sine), and that
+different seeds at the same instant generally disagree.
+
+**Verified**: `cargo build --workspace --all-targets`, `cargo test --workspace`, and `cargo
+fmt`/`cargo clippy --all-targets --workspace` all clean; `scripts/refresh-sample-styles.sh` was run
+and its diff limited to exactly the two new fields on the six samples with a flash, with no
+unrelated reformatting churn. **Not yet manually run** (per the "never run the app yourself" rule)
+— worth confirming: import `key-glow.fmstyle.ron`, hold a key down, and watch for a slow, irregular
+brightness waver on the sustained glow rather than a perfectly steady one.
+

@@ -240,6 +240,13 @@ struct Flash {
     margin_px: f32,
     layer_amp: [f32; 3],
     layer_sigma: [f32; 3],
+    /// See `flash_flicker`'s doc comment. `flicker_intensity == 0.0` (the default) makes this a
+    /// no-op regardless of `flicker_speed`.
+    flicker_speed: f32,
+    flicker_intensity: f32,
+    /// Random per-spawn seed so simultaneous flashes don't flicker in lockstep — see
+    /// `flash_flicker`'s `seed` parameter.
+    flicker_seed: f32,
 }
 
 /// Linearly interpolates between two already-linear colors.
@@ -280,6 +287,52 @@ fn resample_gradient_stops(
         *stop = mix3(colors[i0], colors[i1], scaled - i0 as f32);
     }
     out
+}
+
+/// Cheap 2D value-noise hash (fract-based, no textures) — same formula as `barrier.wgsl`'s
+/// `hash21`, ported to the CPU side for `flash_flicker` below. Pseudo-random but continuous.
+fn hash21(x: f32, y: f32) -> f32 {
+    let mut p3 = [
+        (x * 0.1031).fract(),
+        (y * 0.1030).fract(),
+        (x * 0.0973).fract(),
+    ];
+    let d = p3[0] * (p3[1] + 33.33) + p3[1] * (p3[2] + 33.33) + p3[2] * (p3[0] + 33.33);
+    for v in &mut p3 {
+        *v += d;
+    }
+    ((p3[0] + p3[1]) * p3[2]).fract()
+}
+
+/// Bilinearly-interpolated (smoothstepped) value noise, range [-1, 1] — CPU port of
+/// `barrier.wgsl`'s `noise2`, used below by `flash_flicker` instead of a literal sine wave so a
+/// flicker reads as genuinely irregular rather than periodic.
+fn noise2(x: f32, y: f32) -> f32 {
+    let ix = x.floor();
+    let iy = y.floor();
+    let fx = x - ix;
+    let fy = y - iy;
+    let a = hash21(ix, iy);
+    let b = hash21(ix + 1.0, iy);
+    let c = hash21(ix, iy + 1.0);
+    let d = hash21(ix + 1.0, iy + 1.0);
+    let ux = fx * fx * (3.0 - 2.0 * fx);
+    let uy = fy * fy * (3.0 - 2.0 * fy);
+    let mix_ab = a + (b - a) * ux;
+    let mix_cd = c + (d - c) * ux;
+    (mix_ab + (mix_cd - mix_ab) * uy) * 2.0 - 1.0
+}
+
+/// A `FlashSpec::flicker_speed`/`flicker_intensity`-driven brightness multiplier in `[0, 1]` for a
+/// sustained flash, sampled fresh every frame from the current transport time — same value-noise
+/// approach (and the same `pow(.., 1.4)` contrast shaping) as `barrier.wgsl`'s per-strand flicker,
+/// ported here since a flash's alpha is computed CPU-side rather than in a fragment shader.
+/// `seed` decorrelates simultaneous flashes (each spawned flash gets its own random seed — see
+/// `EffectsRenderer::spawn_flash`) so they don't flicker in lockstep. `speed <= 0.0` still returns
+/// a well-defined (just time-invariant) value; callers gate the whole effect on `intensity` instead.
+fn flash_flicker(seed: f32, time_seconds: f32, speed: f32) -> f32 {
+    let n = noise2(seed * 7.0, time_seconds * speed + seed * 3.0);
+    (n * 0.5 + 0.5).clamp(0.0, 1.0).powf(1.4)
 }
 
 /// Tiny deterministic xorshift32 PRNG for particle spawn jitter — not worth pulling in a `rand`
@@ -893,6 +946,17 @@ impl EffectsRenderer {
         let radius_y_px =
             spec.radius_y_px
                 .resolve_for_note(interval.velocity, interval.pitch, interval.track_id);
+        let flicker_speed = spec.flicker_speed.resolve_for_note(
+            interval.velocity,
+            interval.pitch,
+            interval.track_id,
+        );
+        let flicker_intensity = spec.flicker_intensity.resolve_for_note(
+            interval.velocity,
+            interval.pitch,
+            interval.track_id,
+        );
+        let flicker_seed = self.rng.range(0.0, 1000.0);
         let layer_amp = [
             spec.layers[0].amplitude * brightness,
             spec.layers[1].amplitude * brightness,
@@ -918,6 +982,9 @@ impl EffectsRenderer {
             margin_px,
             layer_amp,
             layer_sigma,
+            flicker_speed,
+            flicker_intensity: flicker_intensity.clamp(0.0, 1.0),
+            flicker_seed,
         });
     }
 
@@ -938,7 +1005,15 @@ impl EffectsRenderer {
             // spawn time), so `elapsed` stays clamped to 0 (t == 1.0, full intensity) for the
             // note's entire held duration and only starts decaying once the note actually ends.
             let elapsed = (time_seconds - flash.decay_start_seconds).max(0.0);
-            let t = 1.0 - (elapsed / flash.decay_seconds).clamp(0.0, 1.0);
+            let mut t = 1.0 - (elapsed / flash.decay_seconds).clamp(0.0, 1.0);
+            // `flicker_intensity == 0.0` (the default) makes this an exact no-op: `1.0 - 0.0 +
+            // 0.0 * flick == 1.0`. Otherwise dims `t` toward `1.0 - flicker_intensity` at the
+            // flicker's trough and leaves it unchanged at its peak — see `flash_flicker`'s doc
+            // comment for why this is most visible on a long-held `FlashMode::Sustained` flash.
+            if flash.flicker_intensity > 0.0 {
+                let flick = flash_flicker(flash.flicker_seed, time_seconds, flash.flicker_speed);
+                t *= 1.0 - flash.flicker_intensity + flash.flicker_intensity * flick;
+            }
             let core_radius = [flash.radius_x_px, flash.radius_y_px];
             // `Fixed` stops are unchanged from spawn; `MatchNote` is re-evaluated against the
             // current `time_seconds` every frame, so a `FlashMode::Sustained` flash keeps sliding
@@ -1046,6 +1121,51 @@ impl EffectsRenderer {
                 0,
                 0..self.alpha_instances.len() as u32,
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flash_flicker_stays_in_unit_range_across_time_and_seeds() {
+        for seed in [0.0, 1.0, 13.7, 250.0] {
+            for i in 0..200 {
+                let t = i as f32 * 0.1;
+                let f = flash_flicker(seed, t, 2.0);
+                assert!((0.0..=1.0).contains(&f), "seed={seed} t={t} flick={f}");
+            }
+        }
+    }
+
+    #[test]
+    fn flash_flicker_is_not_perfectly_periodic() {
+        // A literal sine wave would repeat exactly every period; value noise shouldn't, so two
+        // widely separated samples at speed 1.0 (period-ish 1.0) should generally disagree.
+        let a: Vec<f32> = (0..20).map(|i| flash_flicker(0.0, i as f32, 1.0)).collect();
+        let all_equal = a.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-6);
+        assert!(!all_equal, "flicker should vary across samples, got {a:?}");
+    }
+
+    #[test]
+    fn flash_flicker_decorrelates_by_seed() {
+        let a = flash_flicker(1.0, 5.0, 2.0);
+        let b = flash_flicker(999.0, 5.0, 2.0);
+        assert!(
+            (a - b).abs() > 1e-4,
+            "different seeds at the same time should generally differ, got a={a} b={b}"
+        );
+    }
+
+    #[test]
+    fn noise2_stays_in_signed_unit_range() {
+        for i in 0..50 {
+            let x = i as f32 * 0.37;
+            let y = i as f32 * 1.13;
+            let n = noise2(x, y);
+            assert!((-1.0..=1.0).contains(&n), "x={x} y={y} n={n}");
         }
     }
 }

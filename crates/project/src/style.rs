@@ -422,6 +422,13 @@ fn default_glow_layers() -> [GlowLayer; 3] {
     ]
 }
 
+/// Shared `ScalarBinding` default for fields where `0.0` means "off"/no-op (unlike
+/// `ScalarBinding::default()`'s own `Constant(1.0)`, tuned for multiplier fields instead) — e.g.
+/// `FlashSpec::flicker_speed`/`flicker_intensity`.
+fn default_zero_scalar() -> ScalarBinding {
+    ScalarBinding::Constant(0.0)
+}
+
 /// Soft outer halo around a note's silhouette, or the barrier bar's — this struct is shared by
 /// `NoteLayer::glow` and `BarrierLayer::glow`. The halo itself is an **additive** sum of `layers`
 /// (see `GlowLayer`'s doc comment) rather than a single alpha-blended ring — this is what lets it
@@ -912,6 +919,21 @@ pub struct FlashSpec {
     /// renders additively, so this always applies.
     #[serde(default = "default_glow_layers")]
     pub layers: [GlowLayer; 3],
+    /// How fast the flash's brightness flickers over transport time, in the same value-noise-based
+    /// units as `StrandSpec::flicker_speed` (not a literal Hz — bigger mutates the noise field
+    /// faster). `0.0` (default) is a no-op: `render::effects::flash_flicker` degenerates to a
+    /// constant, and `flicker_intensity` defaulting to `0.0` means that constant never gets read
+    /// anyway. Most useful on `FlashMode::Sustained` (a long-held glow has time to visibly flicker);
+    /// harmless but subtle on `Instant`, whose whole life is usually shorter than one flicker cycle.
+    /// Resolved once per spawned flash against the *triggering* note's velocity/pitch/track, same
+    /// mechanism as `brightness` above.
+    #[serde(default = "default_zero_scalar")]
+    pub flicker_speed: ScalarBinding,
+    /// How much the flicker dims the flash at its darkest point: `0.0` (default) never dims at all
+    /// (full brightness regardless of `flicker_speed`); `1.0` can dim all the way to fully dark at
+    /// the trough. Resolved once per spawned flash, same mechanism as `flicker_speed` above.
+    #[serde(default = "default_zero_scalar")]
+    pub flicker_intensity: ScalarBinding,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -1243,6 +1265,8 @@ mod tests {
                     mode: FlashMode::Instant,
                     brightness: ScalarBinding::Constant(6.0),
                     layers: default_glow_layers(),
+                    flicker_speed: ScalarBinding::Constant(0.0),
+                    flicker_intensity: ScalarBinding::Constant(0.0),
                 }),
             }),
             background: default_background_color(),
@@ -1253,9 +1277,9 @@ mod tests {
     }
 
     /// `ParticleSpec`'s five shape scalars (`lifetime_seconds`/`size_px`/`speed_px`/
-    /// `spread_degrees`/`gravity_px`) and `FlashSpec`'s three (`radius_x_px`/`radius_y_px`/
-    /// `decay_seconds`) round-trip in their `ByVelocity` form, not just the `Constant` shape the
-    /// previous test above covers for `brightness`.
+    /// `spread_degrees`/`gravity_px`) and `FlashSpec`'s five (`radius_x_px`/`radius_y_px`/
+    /// `decay_seconds`/`flicker_speed`/`flicker_intensity`) round-trip in their `ByVelocity` form,
+    /// not just the `Constant` shape the previous test above covers for `brightness`.
     #[test]
     fn particle_and_flash_shape_scalars_round_trip() {
         let ramp = |low: f32, high: f32| ScalarBinding::ByVelocity { low, high };
@@ -1286,6 +1310,8 @@ mod tests {
                     mode: FlashMode::Instant,
                     brightness: ScalarBinding::Constant(1.0),
                     layers: default_glow_layers(),
+                    flicker_speed: ramp(0.5, 3.0),
+                    flicker_intensity: ramp(0.2, 0.8),
                 }),
             }),
             background: default_background_color(),
@@ -1447,11 +1473,24 @@ mod tests {
                 mode: FlashMode::Instant,
                 brightness: ScalarBinding::Constant(1.0),
                 layers: default_glow_layers(),
+                flicker_speed: ScalarBinding::Constant(0.0),
+                flicker_intensity: ScalarBinding::Constant(0.0),
             };
             let text = ron::ser::to_string_pretty(&spec, ron::ser::PrettyConfig::new()).unwrap();
             let parsed: FlashSpec = ron::from_str(&text).unwrap();
             assert_eq!(spec, parsed);
         }
+    }
+
+    /// A `.fmstyle.ron` file missing the `flicker_speed`/`flicker_intensity` keys on `FlashSpec`
+    /// should load them as `Constant(0.0)` (no flicker), same "old file still parses" contract as
+    /// `glow_without_brightness_field_loads_with_default` above.
+    #[test]
+    fn flash_without_flicker_fields_loads_with_zero_default() {
+        let text = "(radius_x_px: Constant(20.0), radius_y_px: Constant(20.0), decay_seconds: Constant(0.2))";
+        let spec: FlashSpec = ron::from_str(text).unwrap();
+        assert_eq!(spec.flicker_speed, ScalarBinding::Constant(0.0));
+        assert_eq!(spec.flicker_intensity, ScalarBinding::Constant(0.0));
     }
 
     /// Guards the shipped `examples/styles/*.fmstyle.ron` samples against drifting out of sync

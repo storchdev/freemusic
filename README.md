@@ -67,7 +67,6 @@ Ideas being considered for future work, roughly grouped:
 - Octave lines
 - Experiment with more barrier settings
 - Experiment with more wispy/bubbly particles
-- Flickering speed/intensity for continuous (`FlashMode::Sustained`) flashes
 - Reflectivity settings, for a metal-bar look
 - Custom shaders
 

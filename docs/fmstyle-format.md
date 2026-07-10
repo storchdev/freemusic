@@ -487,6 +487,8 @@ from exactly one source:
 | `mode` | `FlashMode` | `Instant` (default) or `Sustained`. |
 | `brightness` | `ScalarBinding` | Default `Constant(1.0)`. Resolved once per spawned flash against the *triggering* note's velocity/pitch/track (`ScalarBinding::resolve_for_note`), then baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `Constant(1.0)` is a no-op. **Breaking change** (Phase R): older files with a bare float here need `brightness: Constant(1.0)` instead — see [Migration history](#migration-history). |
 | `layers` | `[GlowLayer; 3]` | Default tight/mid/wide, same as `Glow`. A flash is always additive, so this is always read (unlike `ParticleSpec::layers`, which non-additive particles ignore). |
+| `flicker_speed` | `ScalarBinding` | Default `Constant(0.0)` (no flicker). How fast the flash's brightness flickers over transport time — see below. |
+| `flicker_intensity` | `ScalarBinding` | Default `Constant(0.0)` (no flicker). How much the flicker dims the flash at its darkest point, `0.0`-`1.0`. |
 
 A flash always renders additively. It is fully "on" at spawn/at the start of its hold (see
 `mode`), fading to 0 over `decay_seconds`.
@@ -497,6 +499,20 @@ flash against the *triggering* note's velocity/pitch/track — same call site an
 and/or longer-lived flash than a soft one. **Breaking change**: an older `.fmstyle.ron` with a bare
 float on any of these three (e.g. `radius_x_px: 40.0`) needs `radius_x_px: Constant(40.0)` instead
 — see [Migration history](#migration-history).
+
+`flicker_speed`/`flicker_intensity` (Phase U) add an optional flicker to the flash's brightness,
+resolved once per spawned flash the same way as the other scalars above. Internally
+(`render::effects::flash_flicker`) this samples a seeded 2D value-noise field (the same
+hash-based, non-periodic approach `barrier.wgsl`'s strand-bundle flicker already uses — see
+[the strand-bundle section](fmstyle-milestone.md) — ported to the CPU side since a flash's alpha
+is computed there, not in a shader) rather than a literal sine wave, so it reads as an irregular
+waver rather than a metronomic pulse. Each spawned flash gets its own random seed, so multiple
+simultaneous flashes (e.g. a held chord) don't flicker in lockstep. `flicker_intensity: 0.0` is an
+exact no-op regardless of `flicker_speed` — both default to `0.0`, so omitting these fields
+entirely (or loading an older `.fmstyle.ron` that predates them) reproduces the previous, perfectly
+steady behavior. Most noticeable on `FlashMode::Sustained` (a long hold has time to visibly
+flicker); on `Instant` the flash usually decays before more than a fraction of a flicker cycle
+plays out.
 
 ### `FlashColor`
 

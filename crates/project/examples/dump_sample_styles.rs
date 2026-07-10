@@ -278,6 +278,8 @@ fn main() {
                 mode: FlashMode::Instant,
                 brightness: ScalarBinding::Constant(1.0),
                 layers: glow_layers(2.0, 5.0, 10.0),
+                flicker_speed: ScalarBinding::Constant(0.0),
+                flicker_intensity: ScalarBinding::Constant(0.0),
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -298,6 +300,8 @@ fn main() {
                 mode: FlashMode::Instant,
                 brightness: ScalarBinding::Constant(1.0),
                 layers: glow_layers(2.0, 5.0, 10.0),
+                flicker_speed: ScalarBinding::Constant(0.0),
+                flicker_intensity: ScalarBinding::Constant(0.0),
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -329,6 +333,9 @@ fn main() {
         background: ColorBinding::Constant([0, 0, 0]),
     };
 
+    // `flicker_speed`/`flicker_intensity` give the sustained hold a gentle candle-like waver
+    // instead of a perfectly steady glow — subtle values here (a slow mutation rate, a shallow dim)
+    // since a strong flicker on every held key would read as broken rather than atmospheric.
     let key_glow = Style {
         version: 1,
         notes: Timed::Static(NoteLayer::default()),
@@ -344,6 +351,49 @@ fn main() {
                 mode: FlashMode::Sustained,
                 brightness: ScalarBinding::Constant(0.5),
                 layers: glow_layers(2.0, 5.0, 10.0),
+                flicker_speed: ScalarBinding::Constant(1.5),
+                flicker_intensity: ScalarBinding::Constant(0.25),
+            }),
+        }),
+        background: ColorBinding::Constant([0, 0, 0]),
+    };
+
+    // A `FlashMode::Sustained` white flash with a strong, fast flicker and a near-point core, so it
+    // reads as a radiating point light rather than a flat-topped spotlight.
+    let flickering_flash = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer::default()),
+        barrier: Timed::Static(visible_barrier()),
+        transition: Timed::Static(TransitionLayer {
+            kind: TransitionKind::Flash,
+            particles: None,
+            flash: Some(FlashSpec {
+                radius_x_px: ScalarBinding::Constant(3.0),
+                radius_y_px: ScalarBinding::Constant(3.0),
+                color: FlashColor::Solid(ColorBinding::Constant([255, 255, 255])),
+                decay_seconds: ScalarBinding::Constant(0.15),
+                mode: FlashMode::Sustained,
+                brightness: ScalarBinding::Constant(1.0),
+                layers: [
+                    GlowLayer {
+                        amplitude: 2.0,
+                        sigma_px: 5.0,
+                    },
+                    GlowLayer {
+                        amplitude: 2.0,
+                        sigma_px: 8.0,
+                    },
+                    GlowLayer {
+                        amplitude: 1.3,
+                        sigma_px: 10.0,
+                    },
+                ],
+                flicker_speed: ScalarBinding::Constant(10.0),
+                // `flash_flicker`'s output is folded into alpha as `1.0 - intensity + intensity *
+                // flick` (`rebuild_instances`), already clamped to `[0, 1]` at spawn
+                // (`spawn_flash`) — `1.0` is the deepest a flicker can dim, so this is the max
+                // meaningful value.
+                flicker_intensity: ScalarBinding::Constant(0.5),
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -477,6 +527,8 @@ fn main() {
                 decay_seconds: ScalarBinding::Constant(0.22),
                 mode: FlashMode::Sustained,
                 brightness: ScalarBinding::Constant(1.0),
+                flicker_speed: ScalarBinding::Constant(0.0),
+                flicker_intensity: ScalarBinding::Constant(0.0),
                 layers: [
                     GlowLayer {
                         amplitude: 1.4,
@@ -631,6 +683,8 @@ fn main() {
                 mode: FlashMode::Sustained,
                 brightness: ScalarBinding::Constant(2.0),
                 layers: glow_layers(2.0, 5.0, 10.0),
+                flicker_speed: ScalarBinding::Constant(0.0),
+                flicker_intensity: ScalarBinding::Constant(0.0),
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -804,6 +858,8 @@ fn main() {
                     high: 1.6,
                 },
                 layers: glow_layers(2.0, 5.0, 10.0),
+                flicker_speed: ScalarBinding::Constant(0.0),
+                flicker_intensity: ScalarBinding::Constant(0.0),
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -821,6 +877,7 @@ fn main() {
     print_style("grinding-particles", &grinding_particles);
     print_style("ygradient-particles", &ygradient_particles);
     print_style("key-glow", &key_glow);
+    print_style("flickering-flash", &flickering_flash);
     print_style("dark-background", &dark_background);
     print_style("showcase_blue_purple", &showcase_blue_purple);
     print_style("velocity-colored-notes", &velocity_colored_notes);

@@ -273,16 +273,19 @@ touching that area of the code:
   (Phase O, `project::StrandSpec`/`WavySpec::strands`, gated to `WavyMode::Edge` — see
   `docs/fmstyle-format.md` and `docs/fmstyle-milestone.md`); the sliding-filament/wisp controls in
   the lab remain unported experiments.
-- **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–R) of the
+- **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–U) of the
   `.fmstyle.ron` extensible visual style format: schema/plumbing, the vendored note pipeline
   (dropping the `neothesia-core` dependency), note fill effects (gradient/sheen/glow), barrier
   glow/pulse, transition particles/flash, per-key-color/wavy-barrier/elliptical-flash/continuous-
   particle follow-ups, the brightness/overexposure + white-hot-corona redesign, canvas background
   color, the barrier strand bundle ported from `explorations/barrier-fx-lab`, the canvas-Y-position
   note gradient (`Fill::CanvasGradient`, Phase P), flashes/particles/glow that match note color
-  plus multicolor (author-painted or note-derived) flash gradients (Phase Q), and real per-note
-  resolution for `ColorBinding::ByVelocity`/`ByPitchClass`/`ByTrack` plus the
-  `ScalarBinding`-typed `brightness` follow-up (Phase R).
+  plus multicolor (author-painted or note-derived) flash gradients (Phase Q), real per-note
+  resolution for `ColorBinding::ByVelocity`/`ByPitchClass`/`ByTrack` plus the `ScalarBinding`-typed
+  `brightness` follow-up (Phase R), per-note alpha/transparency (Phase S), `ByPitch` scaling
+  continuously across the whole 88-key range (Phase T), and value-noise-based flicker
+  speed/intensity for `FlashMode::Sustained` flashes, ported from the barrier strand bundle's own
+  flicker (Phase U).
 - **`docs/fmstyle-format.md`** — the living field-by-field `.fmstyle.ron` format spec (defaults,
   meaning, RON snippets, breaking-change log) — keep this in sync whenever the schema changes,
   it's the spec, not narrative.

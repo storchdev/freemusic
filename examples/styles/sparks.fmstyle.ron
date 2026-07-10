@@ -59,6 +59,8 @@
                 amplitude: 0.38,
                 sigma_px: 10.0,
             )),
+            flicker_speed: Constant(0.0),
+            flicker_intensity: Constant(0.0),
         )),
     )),
     background: Constant((0, 0, 0)),
