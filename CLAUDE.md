@@ -8,6 +8,28 @@ decision, a gotcha) gets a note here in the same session it happens, in whatever
 best (or a new one). This file is the fastest way for the next agent to get oriented — don't let
 it drift from what the code actually does.
 
+**Decision history / bugfix / what-worked-vs-didn't narrative does not belong in source, config,
+or spec files.** `.rs` files, `Cargo.toml`, CI workflow YAML, scripts, example asset files
+(`examples/styles/*.fmstyle.ron`, etc.), and reference-only "spec" docs (e.g.
+`docs/fmstyle-format.md`, explicitly called out below as "the spec, not narrative") are off-limits
+for this kind of writing — no "we used to do X until we found Y" comments in code, no
+worked/didn't-work progress log bolted onto a format spec. Code comments stay to the normal rule
+(short, only for non-obvious WHY, never a running history); specs stay current-state-only. When
+something from a session is worth recording, put it in whichever `docs/*.md` narrative file
+already owns that area (`architecture.md`, `ui-milestones.md`, `fmstyle-milestone.md`,
+`verification.md`, `building.md` — see the doc index under "Architecture" below), or create a new
+`docs/*.md` and add it to that index if none of the existing ones fit. This file (`CLAUDE.md`)
+itself stays reserved for short, load-bearing orientation notes — anything longer goes to `docs/`.
+
+**Pre-1.0: don't design for backward compatibility.** This project hasn't shipped a 1.0 yet, so
+`.fmproj.ron`/`.fmstyle.ron` are not stable formats — either can change shape at any time, and a
+schema change that breaks existing project/style files is fine as-is. Don't add migration shims,
+format-version fields, or bare-value/legacy-syntax parsing fallbacks to soften a breaking change
+(see the Phase R `ScalarBinding` breaking change below, where a compat shim was tried and then
+deliberately removed). If a real file breaks, hand-migrate it by hand; don't grow the schema or
+parser to avoid breaking it. Revisit this policy once the app is actually heading toward a 1.0
+release.
+
 **Commit as the repo owner, no AI attribution, short message only.** Do not append a
 `Co-Authored-By: Claude ...` trailer (or any other AI-attribution line) to commit messages —
 commits should read like ordinary commits from the repo owner. The actual git author/committer
@@ -30,9 +52,10 @@ show, does a slider/drag/dialog behave correctly — ask the user to run the app
 report back, rather than trying to observe it yourself. Two ways to ask, depending on what's
 needed:
 - **Visual/interactive behavior** (drag handles, dialogs, on-screen correctness): ask the user to
-  drive the app and describe or screenshot what they see — see "Screenshotting/driving the app
-  under native Hyprland" below for why automating this yourself is also unreliable on this
-  machine (tiling-WM coordinates drift between screenshots), on top of the blanket rule above.
+  drive the app and describe or screenshot what they see — see `docs/verification.md`'s
+  "Screenshotting/driving the app under native Hyprland" section for why automating this yourself
+  is also unreliable on this machine (tiling-WM coordinates drift between screenshots), on top of
+  the blanket rule above.
 - **Non-visual/diagnostic evidence** (timing, decode stats, crashes, a specific code path
   firing): ask the user to set the relevant environment variable(s) — e.g. `RUST_LOG=debug`, or
   an app-specific one like `FREEMUSIC_DECODE_THREADS`/`WGPU_BACKEND` — and tee the run's output
@@ -43,11 +66,11 @@ needed:
   then share back that file's contents (or the relevant excerpt) for you to read with the `Read`
   tool.
 
-The rest of this document (the "Verifying ..." sections, the WSL2/Hyprland screenshotting
-sections, the milestone 3-5 click/drag/screenshot patterns) predates this rule and documents *how
-the app has been verified historically* and what tooling exists for the user's own use — read it
-for context on what to ask the user to do and what output to expect, not as instructions for you
-to execute those scripts yourself.
+`docs/verification.md` (the "Verifying ..." sections, the WSL2/Hyprland screenshotting sections,
+the milestone 3-5 click/drag/screenshot patterns) predates this rule and documents *how the app
+has been verified historically* and what tooling exists for the user's own use — read it for
+context on what to ask the user to do and what output to expect, not as instructions for you to
+execute those scripts yourself.
 
 ## What this is
 
@@ -122,41 +145,6 @@ since neither path was part of either change.
 only `.zshenv` is read unconditionally by every zsh invocation, login or not). New sessions
 should have `cargo` on `PATH` without the manual `source` above; if a given shell was already
 running before that fix landed, it won't retroactively pick it up.
-
-### `scripts/` — prefer these over ad-hoc `xdotool`/`ffmpeg` invocations
-
-```sh
-scripts/check.sh                          # cargo fmt + cargo clippy --all-targets
-scripts/run-app.sh [video] [midi]         # forces the X11 backend; run in the FOREGROUND of a
-                                           # backgrounded Bash call (run_in_background:true), do
-                                           # NOT add `&`/`disown` inside the script itself — see
-                                           # "Screenshotting the app under WSL2" below for why
-scripts/kill-app.sh                       # kills a leftover run-app.sh instance by binary path
-scripts/find-window.sh                    # prints the app's X11 window id, or nothing if not running
-scripts/screenshot.sh <out.png> [WxH+X+Y] # screenshots the app window, optional ImageMagick crop
-scripts/click.sh <x> <y> [button]         # click at WINDOW-RELATIVE coordinates
-scripts/drag.sh <x1> <y1> <x2> <y2> [btn] # drag between two WINDOW-RELATIVE coordinates
-scripts/gen-test-video.sh <out.mp4> [sec] # synthetic frame-counter test clip, default 30s (see
-                                           # the video-pipeline verification section for why not 10s)
-scripts/refresh-sample-styles.sh          # regenerates examples/styles/*.fmstyle.ron from
-                                           # `cargo run -p project --example dump_sample_styles`'s
-                                           # stdout, raw (no reformatting) — diff before committing,
-                                           # see docs/fmstyle-milestone.md's Phase O follow-ups
-```
-
-All of `click.sh`/`drag.sh`/`screenshot.sh` resolve the window id themselves via
-`find-window.sh` and operate in coordinates relative to it (`xdotool ... --window <id> x y`).
-Milestone 4's manual testing burned real time on exactly this distinction: several slider drags
-were issued as bare `xdotool mousemove x y` (absolute screen coordinates) against coordinates
-read off a window-relative screenshot crop, and every one of them silently no-opped — no error,
-the click/drag just landed wherever the pointer already was, often outside the window entirely.
-Going through these scripts instead of typing raw `xdotool` makes that mistake structurally
-harder to make again.
-
-No automated test suite exists or is planned to substitute for manual verification — the plan
-explicitly calls this out: each milestone has a demoable checkpoint that should be run and
-eyeballed (and, ideally, screenshotted) rather than covered by unit tests, given the visual/timing
-nature of the tool.
 
 ### System dependencies (Linux dev environment)
 
