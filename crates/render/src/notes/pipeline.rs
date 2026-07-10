@@ -1,9 +1,7 @@
 //! Owns the note-highway render pipeline: geometry (a single reusable unit quad, instanced),
 //! the view/time uniforms, and the instance buffer. Deliberately hand-rolled rather than reusing
-//! `wgpu_jumpstart`'s generic `Uniform`/`Instances`/`Shape` helpers (see `video_quad.rs` for the
-//! same style already used elsewhere in this crate) — now that we own the shader there's no
-//! reason to keep depending on Neothesia's renderer-side crate at all, matching the precedent
-//! `mp4-encoder` set for forking rather than reusing upstream code that needed real changes.
+//! `wgpu_jumpstart`'s generic `Uniform`/`Instances`/`Shape` helpers, matching the manual-wgpu-calls
+//! style `video_quad.rs` already uses elsewhere in this crate.
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -78,13 +76,10 @@ struct QuadVertex {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct StyleUniform {
-    /// x unused (was a style-wide solid-vs-gradient flag; removed because it was derived only
-    /// from the white-key `fill`, so the shader ignored `color_bottom` for every note — including
-    /// a `BlackKeyFill::Custom` gradient on the sharp keys — whenever the white-key fill was
-    /// `Solid`. The shader now always blends `color_top`/`color_bottom` per note instead, which is
-    /// an exact no-op for any note whose two colors are equal), y = sheen_enabled,
-    /// z = glow_enabled, w = `Glow::match_note_color` (1.0 = corona/rim use the note's own fill
-    /// color sampled at the nearest edge point instead of `glow_color`).
+    /// x unused (previously a style-wide solid-vs-gradient flag — see `docs/fmstyle-history.md`'s
+    /// "Black-key gradient bug"), y = sheen_enabled, z = glow_enabled, w = `Glow::match_note_color`
+    /// (1.0 = corona/rim use the note's own fill color sampled at the nearest edge point instead
+    /// of `glow_color`).
     fill_and_flags: [f32; 4],
     sheen_params: [f32; 4],
     /// xyz = halo color (linear), w unused (was glow radius pre-Phase-M).
@@ -92,10 +87,9 @@ struct StyleUniform {
     /// x = glow brightness (scales the corona's own additive light in `fs_glow`, and the note-edge
     /// rim's target color in `fs_core` — see that shader's comment), y = `Glow::edge_blend_px`
     /// (`0.0` sentinel meaning "fall back to `glow_layers_ab.y`", see that field's doc comment),
-    /// zw unused. `x` used to also carry `Glow::intensity`, removed as a redundant axis once
-    /// brightness alone drove the whole look.
+    /// zw unused.
     glow_params: [f32; 4],
-    /// Phase M additive corona layers: x = layer[0].amplitude, y = layer[0].sigma_px,
+    /// Additive corona layers: x = layer[0].amplitude, y = layer[0].sigma_px,
     /// z = layer[1].amplitude, w = layer[1].sigma_px.
     glow_layers_ab: [f32; 4],
     /// x = layer[2].amplitude, y = layer[2].sigma_px, z = precomputed glow margin (px), w unused.
@@ -241,9 +235,9 @@ impl NotesPipeline {
                 label: Some("notes_view_bind_group_layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    // Read by both stages now: the vertex shader still needs the full transform,
-                    // and the fragment shader (Phase P) needs `size.y`/`barrier_fraction` to
-                    // normalize `Fill::CanvasGradient`'s canvas-Y UV in `fill_color`.
+                    // Read by both stages: the vertex shader needs the full transform, and the
+                    // fragment shader needs `size.y`/`barrier_fraction` to normalize
+                    // `Fill::CanvasGradient`'s canvas-Y UV in `fill_color`.
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,

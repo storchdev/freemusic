@@ -281,10 +281,14 @@ touching that area of the code:
   color, the barrier strand bundle ported from `explorations/barrier-fx-lab`, the canvas-Y-position
   note gradient (`Fill::CanvasGradient`, Phase P), flashes/particles/glow that match note color
   plus multicolor (author-painted or note-derived) flash gradients (Phase Q), and real per-note
-  resolution for `ColorBinding::ByVelocity`/`ByPitchClass`/`ByTrack` (Phase R — see below).
+  resolution for `ColorBinding::ByVelocity`/`ByPitchClass`/`ByTrack` plus the
+  `ScalarBinding`-typed `brightness` follow-up (Phase R).
 - **`docs/fmstyle-format.md`** — the living field-by-field `.fmstyle.ron` format spec (defaults,
   meaning, RON snippets, breaking-change log) — keep this in sync whenever the schema changes,
   it's the spec, not narrative.
+- **`docs/fmstyle-history.md`** — design history, migration notes, and bug-fix postmortems for the
+  style format/renderer (e.g. the black-key gradient bug, the three-generation glow/brightness
+  redesign) that are too bulky to keep as inline code comments.
 - **`docs/verification.md`** — how to verify changes to `app`/`video-pipeline`/export: generating
   synthetic test clips, screenshotting under WSL2 vs. native Hyprland, the drag-interaction/
   persistence verification pattern (milestones 3–4), and the MP4 export verification pattern
@@ -295,34 +299,7 @@ touching that area of the code:
   helper scripts, every static-build gotcha found on each OS (two `ffmpeg-sys-next` MSVC bugs, the
   shared-libx264 search-order trap, the Windows libx264 architecture-mismatch saga, Developer Shell
   shortcut and PowerShell encoding pitfalls), and how the GitHub Releases binaries get built.
-
-### `ColorBinding::ByVelocity`/`ByPitchClass`/`ByTrack` now really vary rendering (Phase R)
-
-These three `ColorBinding` variants used to parse/round-trip but always resolve to one fixed
-representative color (`resolve_constant()`), regardless of which note was being drawn. They now
-resolve for real, per note, via a new `ColorBinding::resolve_for_note(velocity, pitch, track_id)`
-— see `docs/fmstyle-format.md`'s `ColorBinding`/`ScalarBinding` section for the exact per-variant
-mapping and `docs/fmstyle-milestone.md`'s Phase R for the full narrative (call sites touched,
-what deliberately still uses `resolve_constant()` and why, new example styles). Short version:
-note fill (`crates/render/src/notes/mod.rs`) and particle/flash colors triggered by a specific
-note (`crates/render/src/effects.rs`) resolve per note now; the canvas background, the barrier
-bar/glow (`crates/render/src/barrier.rs`), and the note-glow GPU uniform
-(`crates/render/src/notes/pipeline.rs`) still use `resolve_constant()` on purpose — those contexts
-have no single note to key off of. Four new sample styles demonstrate this:
-`examples/styles/velocity-colored-notes.fmstyle.ron`, `pitch-rainbow.fmstyle.ron`,
-`track-colored-notes.fmstyle.ron`, and `velocity-sparks.fmstyle.ron` (the last one exercises the
-`effects.rs` particle/flash wiring specifically, not note fill).
-
-**Follow-up in the same phase**: `ParticleSpec::brightness`/`FlashSpec::brightness` changed from a
-plain `f32` to `ScalarBinding` (the numeric counterpart of `ColorBinding`, same four variants),
-resolved per triggering note the same way particle/flash *color* already is. **This is a breaking
-`.fmstyle.ron`/`.fmproj.ron` schema change** — a bare float (`brightness: 1.0`) no longer parses; it
-needs `brightness: Constant(1.0)`. No backward-compat parsing shim was added for this (one was
-tried and then deliberately removed per instruction) — a real project file that breaks on this gets
-hand-migrated instead, not the schema growing bare-number-parsing logic to avoid it.
-`Glow::brightness`/`Pulse::brightness` are untouched (stay a plain `f32`) — they're baked into a
-shared GPU uniform / a canvas-wide barrier pulse, same "no single note to resolve against"
-reasoning as `Glow::color` above. `velocity-sparks.fmstyle.ron` now uses `ScalarBinding::ByVelocity`
-for brightness too, alongside its `ColorBinding::ByVelocity` color, so a soft keypress sparks a dim
-burst/flash and a hard one a bright one. See `docs/fmstyle-milestone.md`'s "Phase R follow-up" for
-the full narrative.
+- **`docs/implementation-notes.md`** — historical debugging context and design rationale for
+  `app`/`video-pipeline`/`export` (decode-thread tuning, seek/reseek timing bugs, preview color
+  management, keyboard-layout edge cases, and the static-build troubleshooting history) that's too
+  bulky to keep as inline code comments.

@@ -101,10 +101,9 @@ pub struct VideoPipeline {
 
 /// Purely-CPU sub-stage timings for a single `decode_ref` call — see [`VideoPipeline::last_timings`].
 ///
-/// `demux + send + receive` together are the old `h264` bucket, now split so we can tell whether
-/// the stage that balloons under mouse-move load is file I/O (demux) or the frame-threaded decode
-/// workers (receive) — the earlier round already established the whole `h264` bucket balloons ~100×
-/// while `scale`/`copy` (main-thread userspace) stay flat.
+/// Split so the perf log can show whether a slowdown is file I/O (`demux`) or the frame-threaded
+/// decode workers (`receive`) versus main-thread userspace work (`scale`/`copy`) — see
+/// `docs/architecture.md`'s mouse-move lag investigation for why this split mattered.
 #[derive(Clone, Copy, Default)]
 pub struct DecodeTimings {
     /// Advancing `input.packets()` to the next packet: demux + the underlying file read. Blocking
@@ -288,16 +287,10 @@ impl VideoPipeline {
             .as_ref()
             .is_some_and(|frame| target_seconds < frame.pts_seconds + self.frame_duration_seconds)
         {
-            // Already covered by the held frame — nothing to decode. This shortcut used to live
-            // behind `!exact` (i.e. only ordinary playback ticks got it, never a caller passing
-            // `exact = true`), but it's unconditionally safe: it only returns early when the
-            // held frame already satisfies `target_seconds`, which `exact` doesn't change the
-            // meaning of. Gating it behind `!exact` had no effect on `export` (which always
-            // requests strictly increasing targets, so the held frame is never already ahead)
-            // but mattered once interactive playback started passing `exact = true` too (see
-            // below) — without this, every redraw would force a fresh decode even when the
-            // currently displayed frame was still perfectly valid, subtly speeding up playback
-            // on any redraw cadence faster than the video's own frame rate.
+            // Already covered by the held frame — nothing to decode. Safe unconditionally
+            // (independent of `exact`): it only returns early when the held frame already
+            // satisfies `target_seconds`. See `docs/ui-milestones.md`'s note on the
+            // playback-jump/looping bug for why this must not be gated behind `!exact`.
             return Ok(DecodedFrameRef {
                 frame: self
                     .current_frame
@@ -347,12 +340,9 @@ impl VideoPipeline {
                     .map(|pts| pts as f64 * f64::from(self.time_base))
                     .unwrap_or(target_seconds);
 
-                // Only scale+copy the frame we're actually about to hand back. During a
-                // catch-up burst (`exact = true` and several frames between the last held one
-                // and `target_seconds`), every earlier frame in the burst used to still pay for
-                // a full-frame swscale conversion plus an ~8MB `Vec` allocation/copy in
-                // `to_decoded_frame`, immediately thrown away once the next `receive_frame` came
-                // back — real, measured cost (not skipped work) for frames nobody ever saw.
+                // Only scale+copy the frame we're actually about to hand back — see
+                // `docs/architecture.md`'s note on catch-up-burst waste for why skipping earlier
+                // frames in a burst (rather than scaling+copying every one) matters.
                 if exact && pts_seconds < target_seconds {
                     continue;
                 }

@@ -23,9 +23,7 @@ const MAX_ORDINARY_STEP_SECONDS: f32 = 0.35;
 /// gradient of arbitrary length gets resampled to this many stops) and for
 /// `project::FlashColor::MatchNote` (which just fills every stop with the note's single color at
 /// the barrier — see `FlashColorSource::MatchNote`'s doc comment for why this isn't a finer
-/// per-pixel sample of the note). Unrelated to notes themselves, unlike the identically-valued
-/// constant this replaced (`notes::FLASH_GRADIENT_STOPS`, removed) — nothing here depends on note
-/// geometry anymore.
+/// per-pixel sample of the note).
 const FLASH_GRADIENT_STOPS: usize = 5;
 
 /// Cutoff distance past which a `GlowLayer`'s `exp(-d / sigma_px)` contribution is treated as
@@ -57,11 +55,10 @@ impl Default for ViewUniform {
     }
 }
 
-/// Phase M: `radius`/`softness` replaced by a `core_radius`/`quad_radius` split (same idea as
-/// `notes::NoteInstance`'s `true_size`/`draw_size`) plus per-instance additive corona layers,
-/// baked in at spawn time (`spawn_one_particle`/`spawn_flash`) rather than read from a shared
-/// uniform, since particles/flashes already bake their final linear color into the instance this
-/// way. `core_radius` is the configured half-extent (ellipse-aware); `quad_radius` is
+/// `core_radius`/`quad_radius` split plus per-instance additive corona layers, baked in at spawn
+/// time (`spawn_one_particle`/`spawn_flash`) rather than read from a shared uniform, since
+/// particles/flashes already bake their final linear color into the instance this way.
+/// `core_radius` is the configured half-extent (ellipse-aware); `quad_radius` is
 /// `core_radius + margin` for glow instances (flashes, additive particles) or exactly
 /// `core_radius` for non-additive "puff" particles (`fs_puff` never reads `layer_amp`/
 /// `layer_sigma` at all, so leaving them zeroed for puffs is not a footgun).
@@ -145,7 +142,7 @@ fn srgb_to_linear([r, g, b]: [u8; 3]) -> [f32; 3] {
 /// toward pure white as `brightness` climbs past `1.0`, rather than just scaling its channels up
 /// (which doesn't converge to white unless they already share the same magnitude) — same
 /// rationale as those shaders' doc comments. `brightness <= 1.0` is a plain dimmer;
-/// `brightness == 1.0` is an exact no-op. Since Phase M this is only used for non-additive "puff"
+/// `brightness == 1.0` is an exact no-op. This is only used for non-additive "puff"
 /// particles (which have no separate opaque core to whiten, unlike barrier/notes, so the fill
 /// color itself is whitened) — flashes and additive particles instead pre-multiply `brightness`
 /// into their additive corona `layer_amp`, letting additive saturation whiten for free.
@@ -397,8 +394,7 @@ impl EffectsRenderer {
         // stacking on light, `fs_glow`'s additive-layered-sum formula); premultiplied-alpha
         // (`One, OneMinusSrcAlpha`) for particles with `ParticleSpec::additive = false`
         // (soft/smoke-like puffs that should occlude, not just brighten — `fs_puff`'s unchanged
-        // hard-edge shape). Each pipeline uses a different fragment entry point (Phase M) since
-        // the two formulas no longer share one `mix(hard_edge, soft_glow, softness)` shader.
+        // hard-edge shape). Each pipeline uses a different fragment entry point.
         let additive_blend = wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -596,7 +592,7 @@ impl EffectsRenderer {
                             if interval.start_seconds <= time_seconds
                                 && time_seconds <= interval.end_seconds
                             {
-                                // Color no longer depends on spawn x (see `resolve_particle_color`),
+                                // Color doesn't depend on spawn x (see `resolve_particle_color`),
                                 // so it's resolved once per held note per frame rather than once
                                 // per spawned particle — re-resolved fresh each frame from the
                                 // current `time_seconds`, which is what makes `ParticleColor::
@@ -762,8 +758,7 @@ impl EffectsRenderer {
     /// resolve_for_note`) against the same triggering/held note `color` was resolved against —
     /// both callers resolve once per note (not once per particle) and pass the result in, rather
     /// than re-resolving per spawned particle, since neither varies within one note's burst.
-    /// Before `ParticleSpec::layers` are baked in (Phase M): non-additive "puff" particles keep
-    /// the pre-Phase-M behavior exactly (`hot_color` whitens the fill itself, no corona); additive
+    /// Non-additive "puff" particles get `hot_color`-whitened fill color (no corona); additive
     /// particles instead leave `color` unwhitened and pre-multiply `brightness` into `layer_amp`,
     /// since their corona is additive and whitens via saturation instead. `y_gradient`, if `Some`,
     /// is stored on the particle so `update`'s per-step loop can keep recomputing `color` as the
@@ -832,10 +827,10 @@ impl EffectsRenderer {
         decay_start_seconds: f32,
     ) {
         let x_px = interval.x_center();
-        // A flash always renders additively (Phase M): color stops stay unwhitened, `brightness`
+        // A flash always renders additively: color stops stay unwhitened, `brightness`
         // is pre-multiplied into `layer_amp` instead of baked in via `hot_color` — additive
         // saturation whitens for free. A flash is always fully "on" at spawn, fading to 0 over
-        // `decay_seconds` as before.
+        // `decay_seconds`.
         let color = match &spec.color {
             FlashColor::Solid(binding) => {
                 let resolved = srgb_to_linear(binding.resolve_for_note(
@@ -897,10 +892,9 @@ impl EffectsRenderer {
         for flash in &self.flashes {
             // Pure function of current transport time vs. the flash's stored decay-start
             // threshold — for `FlashMode::Instant` that threshold is the spawn time, so `elapsed`
-            // grows immediately (identical curve to before this phase); for `Sustained` it's the
-            // note's `end_seconds` (in the future at spawn time), so `elapsed` stays clamped to
-            // 0 (t == 1.0, full intensity) for the note's entire held duration and only starts
-            // decaying once the note actually ends.
+            // grows immediately; for `Sustained` it's the note's `end_seconds` (in the future at
+            // spawn time), so `elapsed` stays clamped to 0 (t == 1.0, full intensity) for the
+            // note's entire held duration and only starts decaying once the note actually ends.
             let elapsed = (time_seconds - flash.decay_start_seconds).max(0.0);
             let t = 1.0 - (elapsed / flash.decay_seconds).clamp(0.0, 1.0);
             let core_radius = [flash.radius_x_px, flash.radius_y_px];

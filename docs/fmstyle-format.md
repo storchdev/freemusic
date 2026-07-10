@@ -198,7 +198,7 @@ brackets `layers: [...]`**.
 edge the rim described above takes to fade back to the note's true fill color — independent of
 `layers[0].sigma_px` (the corona's own innermost falloff distance), so you can tune how gradual the
 handoff *looks* without changing how far the corona itself visually reaches. `0.0` falls back to
-`layers[0].sigma_px`, matching the behavior before this field existed. Larger values (try
+`layers[0].sigma_px`. Larger values (try
 `4.0`–`10.0`) spread the blend over more pixels for a smoother, more gradual look; smaller values
 snap to the corona's color more abruptly, closer to a hard seam. **Only wired up for
 `NoteLayer::glow`** (`crates/render/src/notes/shader.wgsl`'s `fs_core`) — `BarrierLayer::glow`
@@ -430,8 +430,7 @@ enum ParticleColor {
 A single mutually-exclusive mode selector (not independent toggles) — a particle's color comes
 from exactly one source:
 
-- `Fixed(binding)` (default: white): every particle from this spec gets the same resolved color —
-  the only behavior that existed before this enum did.
+- `Fixed(binding)` (default: white): every particle from this spec gets the same resolved color.
 - `MatchNote`: every particle spawned for a given note is colored by *that note's own* fill at
   whichever point is currently crossing the barrier — see
   [Note color sampling at the barrier](#note-color-sampling-at-the-barrier) below for exactly what
@@ -476,8 +475,7 @@ enum FlashColor {
 }
 ```
 
-- `Solid(binding)` (default: white): one flat color, resolved once — the only behavior that
-  existed before this enum did.
+- `Solid(binding)` (default: white): one flat color, resolved once.
 - `HorizontalGradient(stops)`: a hand-authored horizontal gradient — any number of evenly-spaced
   left-to-right `ColorBinding` stops across the flash's own width (`2 * radius_x_px`), including
   just one (equivalent to `Solid`). The renderer resamples this list onto its fixed internal

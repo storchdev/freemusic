@@ -75,8 +75,7 @@ pub struct UiState {
     /// When `Some`, this is the effective style the renderer should use instead of one
     /// synthesized from `barrier_style`/`note_style` (see `project::Style::from_legacy`) — the
     /// Keyboard tab's sliders still edit those legacy fields, but they're overridden while a
-    /// style is imported. `None` means "use the legacy sliders", the only state before this
-    /// milestone existed.
+    /// style is imported. `None` means "use the legacy sliders".
     pub style: Option<project::Style>,
     /// Set by the "Import style…" button; the app loop consumes and clears it each redraw,
     /// popping a native `rfd` file picker and loading whatever the user chose into `style`.
@@ -221,8 +220,7 @@ fn canvas_aspect(state: &UiState) -> f32 {
 
 /// Centers a rect of the given aspect ratio inside `container`, contain-fit (letterboxed, never
 /// cropped) — this is the rect the preview image is drawn into, and the rect all the
-/// calibration/crop drag handles hit-test and draw against (replacing the old assumption that
-/// the video filled the whole window, back when it was painted directly onto the swapchain).
+/// calibration/crop drag handles hit-test and draw against.
 fn fit_rect(container: egui::Rect, aspect: f32) -> egui::Rect {
     let container_w = container.width().max(1.0);
     let container_h = container.height().max(1.0);
@@ -240,11 +238,8 @@ fn fit_rect(container: egui::Rect, aspect: f32) -> egui::Rect {
 const SIDE_PANEL_COLLAPSED_WIDTH: f32 = 28.0;
 const SIDE_PANEL_COLLAPSED_MAX_WIDTH: f32 = 56.0;
 
-/// Hand-rolled tab strip + content for the persistent side panel — replaces the four floating
-/// windows milestones 3-5 used (Sync & Project / Video Transform / Export, plus a keyboard
-/// calibration readout folded into the first). A real `egui::SidePanel`-equivalent (`egui::
-/// Panel::left`) only became viable once the video moved to a shrinkable `egui::Image` in the
-/// central panel instead of being painted directly under floating windows — see CLAUDE.md.
+/// Hand-rolled tab strip + content for the persistent side panel — see `docs/ui-milestones.md`'s
+/// 6c notes for why this replaced the four floating windows milestones 3-5 used.
 ///
 /// Collapsible via `egui::Panel::show_switched`, so the video/timeline can reclaim its width:
 /// dragging the expanded panel's edge past its `min_size` collapses it to a narrow strip, and
@@ -288,18 +283,13 @@ fn draw_side_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     }
                 });
                 ui.separator();
-                // `both()`, not `vertical()`: with horizontal scrolling *disabled*,
-                // `auto_shrink([false, false])`'s width behavior is "expand to fit content" (see
-                // `egui::ScrollArea::end`'s `(direction_enabled, auto_shrink)` match), so any tab
-                // whose content is wider than the current panel width would silently force the
-                // panel itself wider — which is exactly what made the panel's resize drag refuse
-                // to shrink past each tab's own widest single widget (worst on the Keyboard tab,
-                // whose "Align notes to camera stretch…" button and note-editor table are the
-                // widest content of any tab). Enabling horizontal scrolling keeps this area's own
-                // width pinned to whatever's available and lets any wider content scroll sideways
-                // inside it instead — the resize drag can now always reach `min_size` regardless
-                // of which tab is open. See `docs/ui-milestones.md`'s note on this for the
-                // underlying egui behavior in more detail.
+                // `both()`, not `vertical()`: with horizontal scrolling disabled,
+                // `auto_shrink([false, false])` means "expand to fit content" (see
+                // `egui::ScrollArea::end`), so a tab wider than the panel would force the panel
+                // itself wider. Enabling horizontal scrolling pins this area's width to whatever's
+                // available and lets wider content scroll sideways instead, so the panel's resize
+                // drag can always reach `min_size` regardless of which tab is open — see
+                // `docs/ui-milestones.md`'s note on this egui behavior for more detail.
                 egui::ScrollArea::both()
                     .auto_shrink([false, false])
                     .show(ui, |ui| match state.active_tab {
@@ -562,9 +552,8 @@ fn draw_note_editor(ui: &mut egui::Ui, state: &mut UiState) {
 
     ui.add_space(6.0);
     // `horizontal_wrapped` (not `horizontal`) so this row folds onto multiple lines instead of
-    // demanding more width than the side panel's `max_size` when narrow — an unwrapped row here
-    // previously forced the panel wider than its cap, which is what broke the panel's own resize
-    // drag (see `draw_side_panel`'s doc comment).
+    // demanding more width than the side panel's `max_size` when narrow — see
+    // `draw_side_panel`'s doc comment for the panel-width-overflow failure mode this avoids.
     ui.horizontal_wrapped(|ui| {
         ui.label("Add note:");
         ui.add(

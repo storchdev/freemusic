@@ -169,7 +169,7 @@ fn main() {
         background: ColorBinding::Constant([0, 0, 0]),
     };
 
-    // Phase O: the strand bundle ported from `explorations/barrier-fx-lab` — several thin,
+    // The strand bundle ported from `explorations/barrier-fx-lab` — several thin,
     // independently-flickering filament threads fraying off the wavy top edge, rather than one
     // smooth wavy line. `mode: Edge` is required for strands to render at all (see `StrandSpec`'s
     // doc comment). Values here are the `explorations/barrier-fx-lab/presets/seemusic-found.json`
@@ -187,8 +187,8 @@ fn main() {
     //   directly into each layer's amplitude instead); `layerSigmaN` -> `layers[N].sigma_px`
     //   unchanged (`glowSizeScale` was `1`, a no-op).
     // - `waveAmp`/`waveLen`/`waveSpeed`/`slideSpeed`/`wavyMode` -> `amplitude_px`/`wavelength_px`/
-    //   `speed`/`slide_speed`/`mode` directly (`slide_speed` ported after this phase originally
-    //   shipped — see `WavySpec::slide_speed`'s own doc comment for how it differs from `speed`).
+    //   `speed`/`slide_speed`/`mode` directly (see `WavySpec::slide_speed`'s own doc comment for
+    //   how it differs from `speed`).
     // - `strandCount`/`strandSpread`/`strandJitter`/`strandThickness`/`strandHaloAmp`/
     //   `strandHaloSigma`/`strandGlow`/`strandFlicker` -> `StrandSpec`'s identically-purposed
     //   fields, 1:1, no translation needed. Several of these (`spread_px`/`thickness_px`/
@@ -197,7 +197,7 @@ fn main() {
     //   the current look.
     // - `filamentIntensity`/`filamentSpeed`/`filamentScale` (sliding filament) and
     //   `wispDensity`/`wispHeight`/`wispFlicker`/`wispSway`/`wispIntensity` (wisps) have no
-    //   real-app equivalent — out of scope for this phase, per its own doc comment.
+    //   real-app equivalent — unported lab-only experiments.
     // - `barrierYFrac`/`keyWidth`/`vignette`/`exposure` are lab-scene-only (mock piano/vignette/
     //   tonemapping for the standalone preview canvas), not part of this schema at all.
     let barrier_strands = Style {
@@ -348,10 +348,10 @@ fn main() {
         background: ColorBinding::Constant([0, 0, 0]),
     };
 
-    // Phase N: `background` is the one field being demonstrated here — everything else stays at
-    // (or close to) its default so the dark-navy canvas color, not any other effect, is what
-    // reads as the point of this sample. `show_bar: false` on a modest glow keeps the barrier from
-    // reading as a plain white line against the new background, without adding an unrelated look.
+    // `background` is the one field being demonstrated here — everything else stays at (or close
+    // to) its default so the dark-navy canvas color, not any other effect, is what reads as the
+    // point of this sample. `show_bar: false` on a modest glow keeps the barrier from reading as a
+    // plain white line against the new background, without adding an unrelated look.
     let dark_background = Style {
         version: 1,
         notes: Timed::Static(NoteLayer {
@@ -494,7 +494,7 @@ fn main() {
         background: ColorBinding::Constant([4, 2, 14]),
     };
 
-    // Phase P: `Fill::CanvasGradient` — color depends on the note's current position on the
+    // `Fill::CanvasGradient` — color depends on the note's current position on the
     // canvas (deep blue near the top of the frame, warm gold approaching the barrier) rather than
     // each note's own local top/bottom, so every note reads the same color at a given height
     // regardless of pitch, and shifts color as it falls. `black_key_fill` is an independently

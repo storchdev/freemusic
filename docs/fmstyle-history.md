@@ -62,5 +62,7 @@ at `distance == 0`.
 | N | `Style` gained `background: ColorBinding`, defaulting to black. `Project` gained `background_color` for the legacy/no-imported-style path. |
 | O | `WavySpec` gained `strands: Option<StrandSpec>` (`StrandSpec`, only meaningful when `mode` is `Edge`, requires `BarrierLayer::glow` to be `Some(..)` to render) and `slide_speed: f32`. Both additive/`#[serde(default)]`; old files render an unchanged flat/still edge. |
 | P | `Fill` gained a third variant, `CanvasGradient { top: ColorBinding, bottom: ColorBinding }` — same shape as `VerticalGradient`, but blended across the canvas's own Y position (top of frame -> barrier line) instead of each note's own local height. Additive; old files (which can only ever construct `Solid`/`VerticalGradient`) are unaffected. |
+| Q | Breaking: `ParticleSpec.color: ColorBinding` became `color: ParticleColor` (`Fixed`/`MatchNote`/`YGradient`); wrap an existing `Constant(...)` etc. value as `Fixed(...)`. `FlashSpec.color: ColorBinding` became `color: FlashColor` (`Solid`/`HorizontalGradient`/`MatchNote`); wrap as `Solid(...)`. `Glow` gained `match_note_color: bool`, additive/defaulting to `false`. |
+| R | Breaking: `ParticleSpec.brightness: f32` and `FlashSpec.brightness: f32` became `ScalarBinding`; wrap an existing bare float as `Constant(...)`, e.g. `brightness: 1.0` -> `brightness: Constant(1.0)`. `Glow.brightness`/`Pulse.brightness` are unaffected, still a plain `f32`. Non-breaking in the same phase: `ColorBinding` gained `resolve_for_note`, so `ByVelocity`/`ByPitchClass`/`ByTrack` now really vary per note instead of resolving to one fixed representative color. |
 
-The schema-breaking phases so far are H, K, L, and M.
+The schema-breaking phases so far are H, K, L, M, Q, and R.

@@ -1,16 +1,16 @@
-//! Per-note instance data uploaded to the GPU. Mirrors the shape of Neothesia's own vendored
-//! `NoteInstance` (`position`/`size`/`color`/`radius`) plus four fields it never had —
-//! `color_bottom`, `velocity`, `track_index`, `canvas_gradient` — added ahead of need.
-//! `color_bottom` lets a note carry a vertical-gradient fill (`Fill::VerticalGradient`) baked in
-//! at build time rather than needing a second draw call; for a solid fill it's simply equal to
-//! `color_top`. `velocity`/`track_index` are for `ColorBinding::ByVelocity`/`ByTrack`
-//! (`project::style`) once a future phase wires them up — v1's shader ignores both.
-//! `canvas_gradient` (Phase P) picks which span `color_top`/`color_bottom` are blended across in
-//! the shader: `0.0` (default) blends across the note's own local height
-//! (`Fill::Solid`/`Fill::VerticalGradient`), `1.0` blends across the canvas's own Y position
-//! (`Fill::CanvasGradient`) — see `shader.wgsl`'s `fill_color` and `project::Fill`'s doc comment.
-//! Baked per-note (not a style-wide uniform) since `BlackKeyFill::Custom` can give sharp keys a
-//! different `Fill` variant, and therefore a different gradient basis, than natural keys.
+//! Per-note instance data uploaded to the GPU: `position`/`size`/`color_top`/`color_bottom`/
+//! `radius` plus `velocity`, `track_index`, and `canvas_gradient`. `color_bottom` lets a note
+//! carry a vertical-gradient fill (`Fill::VerticalGradient`) baked in at build time rather than
+//! needing a second draw call; for a solid fill it's simply equal to `color_top`.
+//! `velocity`/`track_index` are unused by the shader — `ColorBinding::ByVelocity`/`ByTrack`
+//! already vary fill color per note CPU-side (`notes/mod.rs::resolve_fill_for_note`), baked into
+//! `color_top`/`color_bottom` before upload. `canvas_gradient` picks which span
+//! `color_top`/`color_bottom` are blended across in the shader: `0.0` (default) blends across the
+//! note's own local height (`Fill::Solid`/`Fill::VerticalGradient`), `1.0` blends across the
+//! canvas's own Y position (`Fill::CanvasGradient`) — see `shader.wgsl`'s `fill_color` and
+//! `project::Fill`'s doc comment. Baked per-note (not a style-wide uniform) since
+//! `BlackKeyFill::Custom` can give sharp keys a different `Fill` variant, and therefore a
+//! different gradient basis, than natural keys.
 
 use bytemuck::{Pod, Zeroable};
 

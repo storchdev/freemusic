@@ -1,7 +1,7 @@
-//! `.fmstyle.ron` format: a data-driven description of note/barrier/transition visuals, designed
-//! to be extended without breaking older files (every field is `#[serde(default)]`-compatible via
-//! the wrapper types below). This module only defines the schema and its resolution helpers —
-//! nothing here renders anything yet; see `CLAUDE.md` for which renderer phase consumes it.
+//! `.fmstyle.ron` format: a data-driven description of note/barrier/transition visuals. Every
+//! field is `#[serde(default)]`-compatible via the wrapper types below, so the schema can grow new
+//! fields without breaking existing files. This module only defines the schema and its resolution
+//! helpers — see `crates/render` for the renderer that consumes it.
 //!
 //! For the field-by-field contract (defaults, meaning, RON snippets, breaking-change log), see
 //! `docs/fmstyle-format.md` — keep it in sync whenever this module's schema changes.
@@ -16,9 +16,8 @@ fn current_style_version() -> u32 {
     1
 }
 
-/// Black, matching the hardcoded clear color both `app` and `export` used before this field
-/// existed — an old/simple `.fmstyle.ron` (or the no-imported-style legacy path, see
-/// `from_legacy`) gets the same canvas background as before, not an arbitrary default.
+/// Black — the canvas background for a `.fmstyle.ron` that doesn't set `background` explicitly
+/// (or the no-imported-style legacy path, see `from_legacy`).
 fn default_background_color() -> ColorBinding {
     ColorBinding::Constant([0, 0, 0])
 }
@@ -73,7 +72,7 @@ impl Style {
     }
 
     /// Produces the exact look the legacy `NoteStyle`/`BarrierStyle` sliders already draw —
-    /// `Fill::Solid`, no sheen/glow, `BarrierKind::Line`, `TransitionKind::None` — so the renderer
+    /// `Fill::Solid`, no sheen/glow, no barrier glow, `TransitionKind::None` — so the renderer
     /// can always consume a `Style`, whether it was imported from a file or synthesized from
     /// whatever the Keyboard tab's sliders currently hold. `background_color` is the Keyboard
     /// tab's own background color picker (`Project::background_color`), not part of `NoteStyle`/
@@ -340,9 +339,9 @@ fn default_brightness() -> f32 {
     1.0
 }
 
-/// See `ParticleColor::YGradient`'s doc comment for why `0.0`/`0.8` (rather than e.g. `0.0`/`1.0`)
-/// is the closest available approximation of this field's pre-existing hardcoded "top of frame ->
-/// barrier line" span, absent a real per-project barrier position to default to.
+/// `0.0`/`0.8` approximates "top of frame -> barrier line" (rather than e.g. `0.0`/`1.0`), absent
+/// a real per-project barrier position to default to — see `ParticleColor::YGradient`'s doc
+/// comment for the practical implications of this default span.
 fn default_y_gradient_top_fraction() -> f32 {
     0.0
 }
@@ -351,13 +350,13 @@ fn default_y_gradient_bottom_fraction() -> f32 {
     0.8
 }
 
-/// One exponential falloff term in an additive corona sum (Phase M): `amplitude *
-/// exp(-d / sigma_px)`, where `d` is distance outside the glowing surface's opaque edge. A
-/// `Glow`/`FlashSpec`/`ParticleSpec` sums three of these (tight/mid/wide, see
-/// `default_glow_layers`) to build a light source that reads as a genuine white-hot core fading
-/// through a tinted halo, rather than a single flat (possibly whitened) color at one spatial
-/// scale — see `docs/fmstyle-format.md`'s "Brightness/overexposure" section for the full
-/// before/after rationale.
+/// One exponential falloff term in an additive corona sum: `amplitude * exp(-d / sigma_px)`,
+/// where `d` is distance outside the glowing surface's opaque edge. A `Glow`/`FlashSpec`/
+/// `ParticleSpec` sums three of these (tight/mid/wide, see `default_glow_layers`) to build a
+/// light source that reads as a genuine white-hot core fading through a tinted halo, rather than
+/// a single flat (possibly whitened) color at one spatial scale — see
+/// `docs/fmstyle-format.md`'s "Brightness/overexposure" section for the formula and design
+/// history in `docs/fmstyle-history.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GlowLayer {
     pub amplitude: f32,
@@ -384,25 +383,23 @@ fn default_glow_layers() -> [GlowLayer; 3] {
     ]
 }
 
-/// Soft outer halo around a note's silhouette (or, since Phase K, the barrier bar too — this
-/// struct is shared by `NoteLayer::glow` and `BarrierLayer::glow`). Since Phase M the halo itself
-/// is an **additive** sum of `layers` (see `GlowLayer`'s doc comment) rather than a single
-/// alpha-blended ring — this is what lets it read as light radiating from a bright core instead
-/// of a flat lighter color. `brightness` scales how much light the corona adds — for the barrier's
-/// own opaque bar (`BarrierLayer::glow`) it also still drives a `hot_color` desaturate-toward-white
-/// mix on the bar itself (`barrier.wgsl`'s `fs_core`). Notes (`NoteLayer::glow`) used to have that
-/// same white-hot-rim effect on their own opaque fill too; it was removed (see `shader.wgsl`'s
-/// `fs_core` comment) because whitening the note's own fill read as an unwanted artifact. What
-/// notes have instead: right at the boundary where the opaque fill meets the corona, the fill
-/// blends toward `color * (sum of layer amplitudes) * brightness` (clamped to a displayable 0–1
-/// range) — matching, not just this halo's raw color but its actual computed brightness right at
-/// the edge, which is what the corona (`fs_glow`) itself evaluates to there — over
-/// `edge_blend_px` pixels, so the fill's true color hands off continuously into the corona's
-/// color/brightness instead of meeting it at a seam. This isn't a separate toggle; it's just how
-/// `NoteLayer::glow` renders whenever `glow` is `Some(..)`. `brightness <= 1.0` behaves as a plain
-/// dimmer, pushed past `1.0` the look reads as overexposure. `brightness = 1.0` is an exact no-op.
-/// Unlike before Phase M, `brightness` no longer widens how far the corona reaches — reach is
-/// purely `layers[i].sigma_px`-driven now.
+/// Soft outer halo around a note's silhouette, or the barrier bar's — this struct is shared by
+/// `NoteLayer::glow` and `BarrierLayer::glow`. The halo itself is an **additive** sum of `layers`
+/// (see `GlowLayer`'s doc comment) rather than a single alpha-blended ring — this is what lets it
+/// read as light radiating from a bright core instead of a flat lighter color. `brightness` scales
+/// how much light the corona adds — for the barrier's own opaque bar (`BarrierLayer::glow`) it
+/// also drives a `hot_color` desaturate-toward-white mix on the bar itself (`barrier.wgsl`'s
+/// `fs_core`). Notes (`NoteLayer::glow`) don't whiten their own opaque fill the same way (see
+/// `docs/fmstyle-history.md`'s "Glow and brightness design" for why); instead, right at the
+/// boundary where the opaque fill meets the corona, the fill blends toward
+/// `color * (sum of layer amplitudes) * brightness` (clamped to a displayable 0–1 range) —
+/// matching not just this halo's raw color but its actual computed brightness right at the edge,
+/// which is what the corona (`fs_glow`) itself evaluates to there — over `edge_blend_px` pixels,
+/// so the fill's true color hands off continuously into the corona's color/brightness instead of
+/// meeting it at a seam. This isn't a separate toggle; it's just how `NoteLayer::glow` renders
+/// whenever `glow` is `Some(..)`. `brightness <= 1.0` behaves as a plain dimmer, pushed past `1.0`
+/// the look reads as overexposure. `brightness = 1.0` is an exact no-op. `brightness` does not
+/// affect how far the corona reaches — reach is purely `layers[i].sigma_px`-driven.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Glow {
     pub color: ColorBinding,
@@ -414,9 +411,9 @@ pub struct Glow {
     /// this struct's own doc comment) blends from the note's true fill color to the corona's own
     /// color/brightness — independent of `layers[0].sigma_px` (the corona's own innermost falloff
     /// distance) so the rim's smoothness can be tuned without changing how far the corona itself
-    /// visually reaches. `0.0` (default) falls back to `layers[0].sigma_px`, matching the behavior
-    /// before this field existed. Larger values spread the handoff over more pixels (smoother,
-    /// more gradual); smaller values make it snap to the corona's color more abruptly. Renderer-
+    /// visually reaches. `0.0` (default) falls back to `layers[0].sigma_px`. Larger values spread
+    /// the handoff over more pixels (smoother, more gradual); smaller values make it snap to the
+    /// corona's color more abruptly. Renderer-
     /// side: see `shader.wgsl`'s `fs_core` (notes) — not yet wired up for the barrier's own glow
     /// (`barrier.wgsl`), even though `Glow` is shared between `NoteLayer`/`BarrierLayer`.
     #[serde(default)]
@@ -428,8 +425,7 @@ pub struct Glow {
     /// beneath it, rather than one fixed halo color for the whole note. **Only meaningful for
     /// `NoteLayer::glow`** — `BarrierLayer::glow` has no per-note fill to sample, so this field is
     /// a documented no-op there (`barrier.wgsl` never reads it), same precedent as
-    /// `edge_blend_px` being notes-only. `false` (default) is an exact no-op, preserving every
-    /// style's look from before this field existed.
+    /// `edge_blend_px` being notes-only. `false` (default) is an exact no-op.
     #[serde(default)]
     pub match_note_color: bool,
 }
@@ -499,10 +495,7 @@ fn default_pulse_brightness() -> f32 {
 /// barrier's own `Glow::brightness` if it has one, else a plain `1.0`/no-op). `brightness` is the
 /// peak color multiplier at the instant a note arrives, decaying linearly to that resting
 /// baseline over `decay_seconds` — see `Glow`'s doc comment for the white-hot-core/corona
-/// mechanism this shares. There used to be a separate `intensity` (0..1 peak amplitude) knob
-/// multiplying into `brightness`; removed as a redundant axis — `brightness` alone is now the
-/// peak, so what used to be `intensity: 0.8, brightness: 1.6` (peak effective multiplier `1.48`)
-/// becomes simply `brightness: 1.48` (or whatever peak look is wanted) with no amplitude term.
+/// mechanism this shares.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Pulse {
     pub decay_seconds: f32,
@@ -652,8 +645,7 @@ pub struct WavySpec {
     /// place, leaving its x-position fixed). A positive value gives a "current flowing through the
     /// wire" look: the whole ripple (and, since strands re-sample the same field, the whole strand
     /// bundle too) visibly crawls sideways rather than just wobbling in place. `0.0` (default) is
-    /// an exact no-op — the field's x-position never moves, matching behavior before this field
-    /// existed.
+    /// an exact no-op — the field's x-position never moves.
     #[serde(default)]
     pub slide_speed: f32,
     /// Independent filament threads riding just above the wavy top edge. See `StrandSpec`'s own
@@ -663,18 +655,14 @@ pub struct WavySpec {
     pub strands: Option<StrandSpec>,
 }
 
-/// The horizontal barrier where falling notes stop. `glow` (Phase K) replaced the earlier
-/// `kind: BarrierKind` + `glow_radius_px: f32` pair — presence of a `Glow` *is* the on/off switch
-/// now (`None` = flat line, the only look before this phase), the same pattern `NoteLayer::glow`
-/// already used. **Breaking change**: old `.fmstyle.ron` files with
-/// `barrier: (kind: ..., glow_radius_px: ...)` need manual editing to the new
-/// `glow: Some((color: ..., brightness: 1.0))` / `glow: None` shape — see
-/// `docs/fmstyle-format.md`'s changelog. `show_bar` (Phase M) is independent of `glow` — whether
-/// the flat/opaque bar itself renders at all, separate from whether it has a corona. Defaults to
-/// `false` (an old `.fmstyle.ron` predating this field, or one that never bothered to set it,
-/// gets pure glow with no visible bar) — the additive corona, not the flat opaque bar, is the look
-/// this format is designed around; a style that actually wants the bar has to opt in explicitly.
-/// A note has no equivalent field since a note without its own fill isn't a sensible look.
+/// The horizontal barrier where falling notes stop. Presence of a `Glow` on `glow` is the on/off
+/// switch for the corona (`None` = flat line), the same pattern `NoteLayer::glow` uses — see
+/// `docs/fmstyle-history.md`'s breaking-change log for the older `kind`/`glow_radius_px` shape
+/// this replaced. `show_bar` is independent of `glow` — whether the flat/opaque bar itself
+/// renders at all, separate from whether it has a corona. Defaults to `false` — the additive
+/// corona, not the flat opaque bar, is the look this format is designed around; a style that
+/// wants the bar has to opt in explicitly. A note has no equivalent field since a note without
+/// its own fill isn't a sensible look.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BarrierLayer {
     pub color: ColorBinding,
@@ -724,10 +712,9 @@ pub enum EmissionMode {
     Continuous { rate_per_second: f32 },
 }
 
-/// How a particle's color is chosen. `Fixed` is the original (pre-this-feature) behavior — every
-/// particle from a spec gets the same resolved color. `MatchNote` and `YGradient` are a single
-/// mutually-exclusive mode selector (not independent toggles), since a particle's color has to
-/// come from exactly one source:
+/// How a particle's color is chosen. `Fixed` gives every particle from a spec the same resolved
+/// color. `MatchNote` and `YGradient` are a single mutually-exclusive mode selector (not
+/// independent toggles), since a particle's color has to come from exactly one source:
 /// - `MatchNote`: every particle spawned for a given note is colored by that note's fill at
 ///   whichever point is currently crossing the barrier (`render::notes::NoteInterval::
 ///   color_at_barrier`) — the leading edge's color right at arrival, sliding toward the trailing
@@ -742,13 +729,12 @@ pub enum EmissionMode {
 ///   canvas height, `0.0` = top of frame, `1.0` = bottom) — unlike `Fixed`/`MatchNote` (baked once
 ///   at spawn), this is recomputed every frame as a particle falls/rises, so a particle visibly
 ///   shifts color as it moves through the scene. `top_fraction`/`bottom_fraction` default to
-///   `0.0`/`0.8` (top of frame to a typical default barrier position — this was the *only* span
-///   available before these fields existed, when it was hardcoded to "top of frame -> barrier
-///   line"), but since particles spawn at the barrier and rarely travel far from it, that default
-///   span is usually far wider than where particles actually live — most of their travel maps to
-///   a narrow sliver near `t == 1.0`, so the color barely changes. Narrowing the span to bracket
-///   where particles actually travel (e.g. just above and below the barrier) makes the gradient
-///   actually visible across a particle's motion.
+///   `0.0`/`0.8` (top of frame to a typical default barrier position), but since particles spawn
+///   at the barrier and rarely travel far from it, that default span is usually far wider than
+///   where particles actually live — most of their travel maps to a narrow sliver near `t == 1.0`,
+///   so the color barely changes. Narrowing the span to bracket where particles actually travel
+///   (e.g. just above and below the barrier) makes the gradient actually visible across a
+///   particle's motion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ParticleColor {
     Fixed(ColorBinding),
@@ -784,18 +770,17 @@ pub struct ParticleSpec {
     pub additive: bool,
     #[serde(default)]
     pub emission: EmissionMode,
-    /// Color multiplier applied at spawn time (Phase K) — see `Glow`'s doc comment for the
-    /// overdrive mechanism; `Constant(1.0)` is a no-op, reproducing every particle look that
-    /// existed before this field did. Since Phase R this is a `ScalarBinding`, not a plain `f32` —
-    /// resolved once per spawned burst/continuous-emission tick against the *triggering* note's
-    /// velocity/pitch/track (`render::effects`'s `spawn_particles`/continuous-emission loop),
-    /// same mechanism as `ParticleColor::Fixed`'s `ColorBinding`. **Breaking change**: an older
-    /// `.fmstyle.ron` with a bare float here (e.g. `brightness: 1.0`) needs updating to
-    /// `brightness: Constant(1.0)` — see `docs/fmstyle-format.md`'s migration history.
+    /// Color multiplier applied at spawn time — see `Glow`'s doc comment for the overdrive
+    /// mechanism; `Constant(1.0)` is a no-op. Resolved once per spawned burst/continuous-emission
+    /// tick against the *triggering* note's velocity/pitch/track (`render::effects`'s
+    /// `spawn_particles`/continuous-emission loop), same mechanism as `ParticleColor::Fixed`'s
+    /// `ColorBinding`. **Breaking change**: an older `.fmstyle.ron` with a bare float here (e.g.
+    /// `brightness: 1.0`) needs updating to `brightness: Constant(1.0)` — see
+    /// `docs/fmstyle-format.md`'s migration history.
     #[serde(default)]
     pub brightness: ScalarBinding,
-    /// Additive corona layers (Phase M), same mechanism and default as `Glow::layers` — only
-    /// meaningful when `additive` is true (a non-additive "puff" particle never reads this field).
+    /// Additive corona layers, same mechanism and default as `Glow::layers` — only meaningful
+    /// when `additive` is true (a non-additive "puff" particle never reads this field).
     #[serde(default = "default_glow_layers")]
     pub layers: [GlowLayer; 3],
 }
@@ -817,7 +802,7 @@ pub enum FlashMode {
 /// horizontal multi-stop gradient, either hand-authored or auto-derived from a note.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FlashColor {
-    /// One flat color, resolved once — today's behavior before this feature existed.
+    /// One flat color, resolved once.
     Solid(ColorBinding),
     /// A hand-authored horizontal gradient: evenly spaced left-to-right color stops across the
     /// flash's own width (`2 * radius_x_px`). Any number of stops (including 1, equivalent to
@@ -842,12 +827,9 @@ impl Default for FlashColor {
     }
 }
 
-/// Decaying radial flash spawned on note arrival. Since a flash always renders additively, its
-/// peak opacity and its color-brightness had the exact same visual effect (both just scale the
-/// additive contribution) — the old separate `intensity` (peak alpha) knob was redundant with
-/// `brightness` and has been removed; a flash is always fully opaque at spawn (fading to 0 over
-/// `decay_seconds`, as before) and `brightness` alone controls how hot/white it looks, same
-/// mechanism as `Glow`'s doc comment.
+/// Decaying radial flash spawned on note arrival. A flash is always fully opaque at spawn, fading
+/// to 0 over `decay_seconds`; `brightness` alone controls how hot/white it looks, same mechanism
+/// as `Glow`'s doc comment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlashSpec {
     pub radius_x_px: f32,
@@ -857,18 +839,17 @@ pub struct FlashSpec {
     pub decay_seconds: f32,
     #[serde(default)]
     pub mode: FlashMode,
-    /// Color multiplier applied at spawn time (Phase K) — see `Glow`'s doc comment for the
-    /// overdrive mechanism; `Constant(1.0)` is a no-op, reproducing every flash look that existed
-    /// before this field did (including `FlashMode::Sustained`'s "key glow" look). Since Phase R
-    /// this is a `ScalarBinding`, not a plain `f32` — resolved once per spawned flash against the
-    /// *triggering* note's velocity/pitch/track (`render::effects::spawn_flash`), same mechanism
-    /// as `FlashColor::Solid`'s `ColorBinding`. **Breaking change**: an older `.fmstyle.ron` with a
-    /// bare float here (e.g. `brightness: 1.0`) needs updating to `brightness: Constant(1.0)` —
-    /// see `docs/fmstyle-format.md`'s migration history.
+    /// Color multiplier applied at spawn time — see `Glow`'s doc comment for the overdrive
+    /// mechanism; `Constant(1.0)` is a no-op (including for `FlashMode::Sustained`'s "key glow"
+    /// look). Resolved once per spawned flash against the *triggering* note's velocity/pitch/track
+    /// (`render::effects::spawn_flash`), same mechanism as `FlashColor::Solid`'s `ColorBinding`.
+    /// **Breaking change**: an older `.fmstyle.ron` with a bare float here (e.g. `brightness: 1.0`)
+    /// needs updating to `brightness: Constant(1.0)` — see `docs/fmstyle-format.md`'s migration
+    /// history.
     #[serde(default)]
     pub brightness: ScalarBinding,
-    /// Additive corona layers (Phase M), same mechanism and default as `Glow::layers` — a flash
-    /// always renders additively, so this always applies.
+    /// Additive corona layers, same mechanism and default as `Glow::layers` — a flash always
+    /// renders additively, so this always applies.
     #[serde(default = "default_glow_layers")]
     pub layers: [GlowLayer; 3],
 }
@@ -1063,9 +1044,8 @@ mod tests {
         assert_eq!(style, parsed);
     }
 
-    /// An old `.fmstyle.ron` file predating `background` (or one that just never sets it) has no
-    /// `background` key at all — `serde(default)` should load it as black, matching the hardcoded
-    /// clear color every renderer used before this field existed, not an arbitrary fallback.
+    /// A `.fmstyle.ron` file with no `background` key at all should load it as black, not an
+    /// arbitrary fallback.
     #[test]
     fn style_without_background_field_loads_as_black() {
         let text = "(notes: Static((fill: Solid(Constant((1, 2, 3))), roundedness: 1.0, fall_speed: 400.0)))";
@@ -1073,8 +1053,8 @@ mod tests {
         assert_eq!(style.background, ColorBinding::Constant([0, 0, 0]));
     }
 
-    /// Phase K: `BarrierLayer::glow` (replacing the earlier `kind`/`glow_radius_px` pair) and the
-    /// new `brightness` fields on `Pulse`/`FlashSpec`/`ParticleSpec` round-trip through RON.
+    /// `BarrierLayer::glow` and the `brightness` fields on `Pulse`/`FlashSpec`/`ParticleSpec`
+    /// round-trip through RON.
     #[test]
     fn barrier_layer_with_glow_and_pulse_brightness_round_trips() {
         let mut style =
@@ -1148,9 +1128,8 @@ mod tests {
         assert_eq!(style, parsed);
     }
 
-    /// Old `.fmstyle.ron` files predating Phase K's `brightness` field (and Phase M's `layers`
-    /// field) have neither key on `Glow`/`Pulse`/`FlashSpec`/`ParticleSpec` — `serde(default)`
-    /// should load them with the documented defaults rather than failing to parse.
+    /// A `.fmstyle.ron` file missing the `brightness`/`layers` keys on `Glow`/`Pulse`/`FlashSpec`/
+    /// `ParticleSpec` should load them with the documented defaults rather than failing to parse.
     #[test]
     fn glow_without_brightness_field_loads_with_default() {
         let text = "(color: Constant((1, 2, 3)))";
@@ -1203,9 +1182,9 @@ mod tests {
         assert_eq!(glow, parsed);
     }
 
-    /// `show_bar` (Phase M) is a plain `#[serde(default)]` `bool`, so it defaults to `false` when
-    /// a `.fmstyle.ron` predates the field or just never sets it explicitly — an old/simple style
-    /// gets pure corona with no visible opaque bar unless it opts in with `show_bar: true`.
+    /// `show_bar` is a plain `#[serde(default)]` `bool`, so it defaults to `false` when a
+    /// `.fmstyle.ron` doesn't set it explicitly — a style gets pure corona with no visible opaque
+    /// bar unless it opts in with `show_bar: true`.
     #[test]
     fn barrier_layer_show_bar_defaults_to_false_when_omitted() {
         let text = "(color: Constant((1, 2, 3)), thickness: 4.0)";

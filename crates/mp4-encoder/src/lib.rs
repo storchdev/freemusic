@@ -1,11 +1,7 @@
 //! Forked from https://github.com/PolyMeilex/Neothesia (`ffmpeg-encoder` crate) at commit
 //! e61639b12cc8e466b90406c564da5f9f54d8d1a3, under GPL-3.0 (see LICENSE) — this whole app is
-//! already GPL-3.0-only, so relicensing at the fork point isn't an issue. Real deltas from
-//! upstream (see CLAUDE.md for the full "why"): `fps` is a parameter instead of a hardcoded
-//! 60fps constant (and `gop_size` scales with it instead of being tuned for 60fps specifically);
-//! video/audio codec selection is explicit (`libx264`/`aac` by name) instead of trusting
-//! whatever `avcodec_find_encoder` resolves the container's default codec ID to; and the audio
-//! stream is optional, since a source video may have no audio track at all.
+//! already GPL-3.0-only, so relicensing at the fork point isn't an issue. See
+//! `docs/architecture.md`'s mp4-encoder section for the deltas from upstream.
 //!
 //! Based on: https://ffmpeg.org/doxygen/trunk/mux_8c-example.html
 

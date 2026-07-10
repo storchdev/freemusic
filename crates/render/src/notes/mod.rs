@@ -24,9 +24,8 @@ use pipeline::NotesPipeline;
 
 /// Raw wgpu handles needed to build the notes pipeline, taken instead of a single app-specific
 /// `Gpu` struct so this works identically for the interactive window's GPU and export's headless
-/// one. `instance`/`adapter` are unused now that we no longer construct a `neothesia_core::Gpu`
-/// wrapper, but kept so `Compositor`'s callers (`app::gpu_handles`, `export::run_inner`) don't
-/// need to change what they build.
+/// one. `instance`/`adapter` are unused by this module but kept so `Compositor`'s callers
+/// (`app::gpu_handles`, `export::run_inner`) don't need to change what they build.
 pub struct GpuHandles<'a> {
     pub instance: &'a wgpu::Instance,
     pub adapter: &'a wgpu::Adapter,
@@ -366,7 +365,7 @@ impl NotesRenderer {
         let keys = keyboard_layout(viewport, calibration);
         let left_x = viewport.0 * calibration.left_fraction;
 
-        // Phase P: whether each key group's fill should blend by canvas Y position
+        // Whether each key group's fill should blend by canvas Y position
         // (`Fill::CanvasGradient`) instead of the note's own local top/bottom — `Auto`/`Same`
         // inherit the natural-key fill's basis (they only ever darken or copy its colors, never
         // change what those colors mean), `Custom` uses its own independently chosen fill.
@@ -456,14 +455,12 @@ impl NotesRenderer {
             // Resolved per note (not hoisted outside the loop) so `ColorBinding::ByVelocity`/
             // `ByPitchClass`/`ByTrack` can actually vary by this note's own velocity/pitch/track —
             // see `resolve_fill_for_note`. For `Fill::Solid` both ends are the same color, so the
-            // shader's gradient mix is a no-op and every note just renders flat, matching the
-            // pre-Phase-C look exactly for `Constant` bindings.
+            // shader's gradient mix is a no-op and every note just renders flat for `Constant`
+            // bindings.
             let (light_top_base, light_bottom_base) =
                 resolve_fill_for_note(&note_layer.fill, note.velocity, note.note, note.track_id);
             let (color_top, color_bottom, canvas_gradient) = if key.is_sharp {
-                // `Auto`'s output is byte-identical to the pre-Phase-F behavior (same
-                // `darken(_, 0.6)` call on the same base colors) — the required no-regression
-                // guarantee.
+                // `Auto` unconditionally darkens both base colors by a fixed 0.6 factor.
                 let (dark_top_base, dark_bottom_base) = match &note_layer.black_key_fill {
                     BlackKeyFill::Auto => {
                         (darken(light_top_base, 0.6), darken(light_bottom_base, 0.6))
@@ -667,7 +664,7 @@ fn keyboard_layout(
 }
 
 /// Resolves a `Fill` to its (top, bottom) base colors for one specific note — shared by the
-/// white-key fill and, since Phase F, `BlackKeyFill::Custom`'s independently resolved fill. Real
+/// white-key fill and `BlackKeyFill::Custom`'s independently resolved fill. Real
 /// per-note resolution (`ColorBinding::resolve_for_note`) is what makes `ByVelocity`/
 /// `ByPitchClass`/`ByTrack` actually vary rendering instead of falling back to one representative
 /// color for every note.
@@ -723,13 +720,9 @@ fn color_to_linear([r, g, b]: [u8; 3]) -> [f32; 3] {
 mod tests {
     use super::*;
 
-    /// Regression test for a real crash: the vendored `piano_layout` crate's octave-chunking
-    /// (`split_range_by_octaves`) mis-slices when a queried range starts mid-octave and ends
-    /// before that octave completes — exactly the A0-B0 segment (`21..24`) hits this if queried
-    /// directly, panicking with "slice index starts at 9 but ends at 3" the moment a MIDI file
-    /// was loaded. `keyboard_layout` works around it by always querying through to the real
-    /// keyboard end and discarding the extra keys (see its `full_range` comment) — this just
-    /// confirms that holds for every segment, with and without a camera-stretch calibration.
+    /// Regression test for the mid-octave truncation crash `keyboard_layout`'s `full_range` works
+    /// around (see `docs/implementation-notes.md`) — confirms every segment lays out correctly,
+    /// with and without a camera-stretch calibration.
     #[test]
     fn keyboard_layout_does_not_panic_and_covers_all_88_keys() {
         let calibration = KeyboardCalibration::default();

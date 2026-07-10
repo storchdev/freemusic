@@ -23,7 +23,7 @@ const GLOW_CUTOFF_SIGMAS: f32 = 5.0;
 struct Uniforms {
     /// x = canvas width, y = canvas height, z = barrier center y (pixels), w = thickness (pixels).
     geometry: [f32; 4],
-    /// xyz = bar color (linear), w unused (was glow radius pre-Phase-M).
+    /// xyz = bar color (linear), w unused.
     bar_color: [f32; 4],
     /// x = glow enabled (0/1), y = pulse curve (0..1, decaying), z = wavy enabled (0/1),
     /// w = wavy mode (0=TopOnly, 1=Mirrored, 2=BothEdges; only meaningful when z is set).
@@ -38,7 +38,7 @@ struct Uniforms {
     /// peak brightness at `pulse = 1.0` (the bar's `Pulse::brightness`, or the resting value when
     /// no pulse is configured so a no-pulse mix is an exact no-op), zw unused.
     glow_brightness_pulse: [f32; 4],
-    /// Phase M additive corona layers: x = layer[0].amplitude, y = layer[0].sigma_px,
+    /// Additive corona layers: x = layer[0].amplitude, y = layer[0].sigma_px,
     /// z = layer[1].amplitude, w = layer[1].sigma_px.
     glow_layers_ab: [f32; 4],
     /// x = layer[2].amplitude, y = layer[2].sigma_px, z = precomputed glow margin in pixels
@@ -47,7 +47,7 @@ struct Uniforms {
     /// opaque core's footprint (only correct when that core is actually drawn) or shine straight
     /// through instead (`show_bar: false`, see `fs_glow`'s doc comment).
     glow_layers_c: [f32; 4],
-    /// Strand bundle (Phase O — `project::StrandSpec`), part a: x = strand count (0 = disabled,
+    /// Strand bundle (`project::StrandSpec`), part a: x = strand count (0 = disabled,
     /// otherwise capped at 8 by `barrier.wgsl`'s loop), y = `spread_px`, z = `jitter` (0..1),
     /// w = `thickness_px`. Uploaded unconditionally whenever `WavySpec::strands` is `Some(..)`,
     /// regardless of `mode` — `barrier.wgsl`'s `fs_glow` is the sole place that gates actual
@@ -105,8 +105,8 @@ pub struct BarrierRenderer {
     /// Stashed from the last `set_style` call so `update_pulse` (called separately, every frame)
     /// doesn't need the whole `BarrierLayer` threaded through again just for this one field.
     pulse: Option<Pulse>,
-    /// Stashed from the last `set_style` call, read directly by `render` (Phase M) — independent
-    /// of `data.flags[0]` (glow enabled), see the module doc comment.
+    /// Stashed from the last `set_style` call, read directly by `render` — independent of
+    /// `data.flags[0]` (glow enabled), see the module doc comment.
     show_bar: bool,
 }
 

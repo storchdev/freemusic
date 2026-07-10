@@ -46,9 +46,9 @@ const MAX_AUDIO_SYNC_PLAYBACK_DT_SECONDS: f64 = 1.0;
 /// Bundles the raw handles `render::Compositor` needs from our interactive-window `Gpu`.
 ///
 /// `texture_format` is always `PREVIEW_TEXTURE_FORMAT`, not the swapchain's own format — the
-/// compositor now always renders into the offscreen preview texture (see `AppState::redraw`),
-/// never directly onto the swapchain, so it needs to be built against the offscreen texture's
-/// format regardless of what the window surface happens to use.
+/// compositor renders into the offscreen preview texture (see `AppState::redraw`), never
+/// directly onto the swapchain, so it needs to be built against the offscreen texture's format
+/// regardless of what the window surface happens to use.
 fn gpu_handles(gpu: &Gpu) -> render::GpuHandles<'_> {
     render::GpuHandles {
         instance: &gpu.instance,
@@ -218,14 +218,9 @@ struct AppState {
     last_instant: Instant,
     /// Transport position `pipeline.seek_and_decode` was last called with, so a redraw that
     /// fires for an unrelated reason while paused (cursor blink in a text field, hover
-    /// animations, mouse movement) doesn't re-invoke video decode at all — previously it called
-    /// `seek_and_decode` unconditionally every redraw, which is usually a cheap no-op but isn't
-    /// always: if the frozen paused position sits even slightly ahead of the last decoded
-    /// frame's own timestamp (routine — the displayed frame's pts is always <= the transport
-    /// position it was shown for), `seek_and_decode`'s "not yet caught up" branch decodes one
-    /// more frame forward and keeps doing so each time it's re-entered, which is exactly what a
-    /// repaint storm while "paused" turns into: visible frame-by-frame stutter with the video
-    /// never actually settling. `None` until the first frame is decoded.
+    /// animations, mouse movement) doesn't re-invoke video decode at all — see
+    /// `docs/ui-milestones.md`'s "paused playback stuttering" note for the failure mode this
+    /// guard avoids. `None` until the first frame is decoded.
     last_decoded_position: Option<f64>,
     /// `Some` while a background export thread is running; polled each redraw and cleared once
     /// it reports `Done`/`Cancelled`/`Error`.
@@ -271,11 +266,10 @@ struct PerfStats {
     cache_hits: u32,
     decode: Duration,
     // Purely-CPU sub-stages of `decode` (from `VideoPipeline::last_timings`), broken out so the
-    // log can show *which* CPU stage balloons under mouse-move load rather than one lumped number.
-    // None of these issue a GPU call, so `decode` (and thus these) ballooning while `acquire`/
-    // `render_submit` stay low points at CPU/IO contention, not GPU/compositor contention. An
-    // earlier round already showed the old `h264` bucket (= demux+send+receive) balloons ~100×
-    // while scale/copy stay flat; these split that bucket to pinpoint I/O vs the decode workers.
+    // log can show *which* CPU stage balloons under load rather than one lumped number — see
+    // `docs/architecture.md`'s mouse-move lag investigation for why this split mattered. None of
+    // these issue a GPU call, so ballooning here (while `acquire`/`render_submit` stay low)
+    // points at CPU/IO contention, not GPU/compositor contention.
     demux: Duration,
     send: Duration,
     receive: Duration,
@@ -1030,11 +1024,8 @@ impl AppState {
         }
 
         // Skip decode entirely if the transport position hasn't actually moved since the last
-        // decoded frame — see `last_decoded_position`'s doc comment for why this guard matters
-        // beyond just avoiding wasted work: without it, a redraw firing for an unrelated reason
-        // while paused (cursor blink, hover, mouse movement) can re-enter `seek_and_decode`'s
-        // "not caught up yet" branch and decode one more frame forward each time, which looks
-        // like the paused video stuttering/looping instead of holding still.
+        // decoded frame — see `last_decoded_position`'s doc comment and
+        // `docs/ui-milestones.md`'s paused-playback-stuttering note for why this guard matters.
         if self.last_decoded_position != Some(self.ui_state.position_seconds) {
             let trace_active = self.interaction_trace_active();
             if let Some(pipeline) = self.pipeline.as_mut() {
@@ -1395,9 +1386,8 @@ impl AppState {
 
         let stage_start = Instant::now();
         {
-            // `Clear`, not `Load` — the swapchain no longer has a prior pass drawn onto it (the
-            // compositor now renders into the offscreen preview texture above instead), so this
-            // is the only pass touching it this frame.
+            // `Clear`, not `Load` — the compositor renders into the offscreen preview texture
+            // above, so no prior pass touches the swapchain this frame; this is the only one.
             let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1443,12 +1433,10 @@ impl AppState {
             .handle_platform_output(&self.window, full_output.platform_output);
 
         // egui requests its own repaints (side-panel collapse/expand slide, menu open/hover
-        // animations, button flash, etc.) via each viewport's `repaint_delay` —
-        // `Duration::MAX` means "nothing to animate", anything else is a real deadline
-        // (`ZERO` meaning "now"). `about_to_wait` folds this in alongside the playback
-        // schedule; without it, an in-progress animation only advances when some unrelated
-        // event (e.g. mouse movement) happens to trigger the next repaint, which is exactly
-        // why the collapse/expand slide and the File menu's open animation looked stuck.
+        // animations, button flash, etc.) via each viewport's `repaint_delay` — `Duration::MAX`
+        // means "nothing to animate", anything else is a real deadline (`ZERO` meaning "now").
+        // `about_to_wait` folds this in alongside the playback schedule — see
+        // `docs/ui-milestones.md`'s egui-animation-repaint note for why this matters.
         self.next_ui_redraw_at = full_output
             .viewport_output
             .get(&egui::ViewportId::ROOT)
@@ -1568,19 +1556,16 @@ impl ApplicationHandler for App {
         };
 
         let response = state.egui_state.on_window_event(&state.window, &event);
-        // egui-winit sets `repaint: true` for `WindowEvent::RedrawRequested` itself (see
-        // egui-winit's `on_window_event`, which treats it as "a repaint just happened, the
-        // platform may want another one queued"). Requesting another redraw here unconditionally
-        // turns every `RedrawRequested` into its own trigger for the next one — a self-sustaining
-        // loop at the display's full vsync rate (measured ~120Hz on this machine) regardless of
-        // `ui_state.playing`/export state, completely bypassing `redraw`'s own end-of-frame
-        // throttle below. `redraw` (called from the `RedrawRequested` arm further down) already
-        // decides for itself whether to keep the loop going, so this generic repaint-on-any-event
-        // nudge should only fire for other events that actually need an immediate repaint.
-        // Passive pointer input during playback is deliberately excluded: otherwise simply
-        // moving or clicking the mouse turns playback into an input-rate redraw loop and bypasses
-        // the video-frame scheduler. Cursor movement while a button is held is still treated as
-        // active input, so timeline/crop/calibration drags remain responsive.
+        // `redraw` (called from the `RedrawRequested` arm further down) decides for itself
+        // whether to keep the loop going (see `next_playback_redraw_at`/`about_to_wait`), so this
+        // generic repaint-on-any-event nudge only fires for OTHER events that need an immediate
+        // repaint — requesting one here for `RedrawRequested` itself would create a
+        // self-sustaining loop at the display's full vsync rate; see `docs/architecture.md`'s
+        // unthrottled-redraw-loop section. Passive pointer input during playback is also
+        // excluded: otherwise simply moving or clicking the mouse turns playback into an
+        // input-rate redraw loop and bypasses the video-frame scheduler. Cursor movement while a
+        // button is held is still treated as active input, so timeline/crop/calibration drags
+        // remain responsive.
         let passive_playback_pointer_input = state.ui_state.playing
             && (matches!(event, WindowEvent::MouseInput { .. })
                 || (state.pointer_buttons_down == 0
@@ -1683,24 +1668,14 @@ impl ApplicationHandler for App {
             return;
         };
 
-        // Playback's own cadence (only relevant while playing) and egui's own animation
-        // deadline (relevant regardless of playback state — a menu can be open, or the side
-        // panel mid-collapse, while paused) are two independent reasons to wake up early.
-        //
-        // While PAUSED, whichever comes first wins (smooth menu/panel animations).
-        //
-        // While PLAYING, the video cadence governs and egui's deadline is NOT allowed to
-        // schedule a redraw *sooner* than the next frame. This matters because passive mouse
-        // movement makes egui request a repaint on every hover update, and that request flows
-        // through `next_ui_redraw_at` — bypassing the `passive_playback_cursor_move` guard in
-        // `window_event`, which only suppresses the *direct* redraw nudge. Left unclamped it
-        // drove the redraw rate to 40-54fps on a 30fps clip: extra full redraws that decode no
-        // new frame but pile main-thread work + event-loop wakeup churn onto an already
-        // oversubscribed core count, descheduling the frame-threaded H.264 decode workers so
-        // `send_packet` blocks waiting for a free worker slot (measured ~150x blowup during
-        // mouse-move — see the investigation section in CLAUDE.md). Any real egui animation
-        // still advances during playback, just at the video's frame cadence, which is
-        // imperceptible. A `next_ui_redraw_at` *later* than the frame deadline is irrelevant —
+        // Playback's own cadence and egui's own animation deadline (`next_ui_redraw_at`) are two
+        // independent reasons to wake up early. While PAUSED, whichever comes first wins (smooth
+        // menu/panel animations). While PLAYING, the video cadence governs and egui's deadline is
+        // NOT allowed to schedule a redraw *sooner* than the next frame — see
+        // `docs/architecture.md`'s mouse-move lag investigation for why an unclamped egui
+        // deadline during playback is a real problem, not just wasted work. Any real egui
+        // animation still advances during playback, just at the video's frame cadence
+        // (imperceptible). A `next_ui_redraw_at` *later* than the frame deadline is irrelevant —
         // the playback redraw fires first and services egui's repaint request anyway.
         let deadline = if state.ui_state.playing {
             state.next_playback_redraw_at

@@ -24,32 +24,27 @@ pub struct Project {
     pub barrier_style: BarrierStyle,
     pub note_style: NoteStyle,
     /// Canvas clear color for the legacy (no-imported-style) path — mirrors `Style::background`,
-    /// see its doc comment. Defaults to black, matching the hardcoded clear color every renderer
-    /// used before this field existed, so old `.fmproj.ron` files load unchanged.
+    /// see its doc comment. Defaults to black.
     #[serde(default)]
     pub background_color: [u8; 3],
-    /// A full imported `.fmstyle.ron` look, if one has been imported (see `style::Style`);
-    /// `None` for a project that has never had one imported, including every project saved
-    /// before this field existed (`serde(default)` makes old `.fmproj.ron` files load as
-    /// `None`). When present, this is the *effective* style the renderer should use instead of
-    /// one synthesized from `barrier_style`/`note_style` — see `Style::from_legacy`.
+    /// A full imported `.fmstyle.ron` look, if one has been imported (see `style::Style`); `None`
+    /// if no style has been imported. When present, this is the *effective* style the renderer
+    /// should use instead of one synthesized from `barrier_style`/`note_style` — see
+    /// `Style::from_legacy`.
     #[serde(default)]
     pub style: Option<Style>,
     /// Notes manually deleted from the keyboard tab's note editor (`ui::draw_note_editor`) —
     /// excluded from rendering/playback everywhere a `NoteLayer` is applied, without ever
-    /// touching the source `.mid` file on disk. `#[serde(default)]` so `.fmproj.ron` files saved
-    /// before this field existed load with an empty list (nothing skipped).
+    /// touching the source `.mid` file on disk.
     #[serde(default)]
     pub skipped_notes: Vec<SkippedNote>,
     /// Per-note duration overrides applied from the note editor's duration field — same
     /// non-destructive philosophy as `skipped_notes`, the loaded `.mid` file is never touched.
-    /// `#[serde(default)]` so old `.fmproj.ron` files load with no overrides (every note keeps its
-    /// parsed duration).
     #[serde(default)]
     pub duration_edits: Vec<NoteDurationEdit>,
     /// Notes created entirely from the note editor's "Add note" form rather than parsed from the
     /// loaded `.mid` file — rendered/played back alongside the real notes, but never written back
-    /// to the MIDI file. `#[serde(default)]` so old `.fmproj.ron` files load with none added.
+    /// to the MIDI file.
     #[serde(default)]
     pub added_notes: Vec<AddedNote>,
 }
@@ -65,13 +60,12 @@ pub struct KeyboardCalibration {
     pub barrier_fraction: f32,
     /// Non-linear "camera stretch" correction for perspective-distorted footage (a real camera
     /// isn't at infinite distance, so a physically uniform 88-key keyboard doesn't map to evenly
-    /// spaced pixels). `None` — the default, and what every project saved before this field
-    /// existed loads as via `serde(default)` — means the 88 keys are spaced uniformly between
-    /// `left_fraction`/`right_fraction`, the original behavior. `Some` places the 8 interior
-    /// octave boundaries (the left edge of C1..C8) at the given calibrated fractions instead of
-    /// evenly spacing them, so each octave can stretch or compress independently to match the
-    /// footage. See `render::notes::keyboard_layout` for how this is turned into per-key
-    /// positions, and `ui::draw_camera_stretch_overlay` for how it's captured.
+    /// spaced pixels). `None` (default) means the 88 keys are spaced uniformly between
+    /// `left_fraction`/`right_fraction`. `Some` places the 8 interior octave boundaries (the left
+    /// edge of C1..C8) at the given calibrated fractions instead of evenly spacing them, so each
+    /// octave can stretch or compress independently to match the footage. See
+    /// `render::notes::keyboard_layout` for how this is turned into per-key positions, and
+    /// `ui::draw_camera_stretch_overlay` for how it's captured.
     #[serde(default)]
     pub stretch: Option<CameraStretch>,
 }
@@ -81,11 +75,9 @@ impl Default for KeyboardCalibration {
         Self {
             left_fraction: 0.0,
             right_fraction: 1.0,
-            // Matches the hit line's position in Neothesia's own vendored waterfall shader
-            // (`keyboard_y = size.y - size.y / 5.0`, i.e. always 80% down) at the time this
-            // default was picked. `render::notes` now owns the shader and reads
-            // `barrier_fraction` as a real uniform, so this is just a starting value, not a
-            // constraint imposed by any vendored code.
+            // 80% down the frame — a reasonable starting position for the barrier line;
+            // `render::notes` reads this as a real uniform, so it's just a default, not a
+            // constraint imposed by the shader.
             barrier_fraction: 0.8,
             stretch: None,
         }
@@ -193,8 +185,7 @@ impl Default for NoteStyle {
             color: [93, 188, 255],
             roundedness: 1.0,
             // Matches Neothesia's own vendored default (`default_animation_speed` in
-            // neothesia-core) so existing projects/behavior are unchanged until the user touches
-            // the slider.
+            // neothesia-core).
             fall_speed: 400.0,
             black_key_color: BlackKeyColorMode::default(),
         }
@@ -330,8 +321,8 @@ impl Project {
 mod tests {
     use super::*;
 
-    /// A `.fmproj.ron` file saved before the `style` field existed has no `style` key at all;
-    /// `serde(default)` should load it as `None` rather than failing to parse.
+    /// A `.fmproj.ron` file with no `style` key at all should load as `None` rather than
+    /// failing to parse.
     #[test]
     fn project_without_style_field_loads_with_none() {
         let text =
