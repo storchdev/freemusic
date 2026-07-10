@@ -21,10 +21,11 @@ const MAX_ORDINARY_STEP_SECONDS: f32 = 0.35;
 /// Number of evenly-spaced left-to-right color stops every `EffectInstance` carries — purely a
 /// rendering-resolution knob for `project::FlashColor::HorizontalGradient` (an author-painted
 /// gradient of arbitrary length gets resampled to this many stops) and for
-/// `project::FlashColor::MatchNoteBottom` (which just fills every stop with the note's single
-/// resolved `color_bottom` — see that variant's doc comment for why this isn't a finer per-pixel
-/// sample of the note). Unrelated to notes themselves, unlike the identically-valued constant this
-/// replaced (`notes::FLASH_GRADIENT_STOPS`, removed) — nothing here depends on note geometry anymore.
+/// `project::FlashColor::MatchNote` (which just fills every stop with the note's single color at
+/// the barrier — see `FlashColorSource::MatchNote`'s doc comment for why this isn't a finer
+/// per-pixel sample of the note). Unrelated to notes themselves, unlike the identically-valued
+/// constant this replaced (`notes::FLASH_GRADIENT_STOPS`, removed) — nothing here depends on note
+/// geometry anymore.
 const FLASH_GRADIENT_STOPS: usize = 5;
 
 /// Cutoff distance past which a `GlowLayer`'s `exp(-d / sigma_px)` contribution is treated as
@@ -173,7 +174,7 @@ struct Particle {
     life_seconds: f32,
     lifetime_seconds: f32,
     size_px: f32,
-    /// Current color — fixed for `ParticleColor::Fixed`/`MatchNoteBottom` (baked once at spawn),
+    /// Current color — fixed for `ParticleColor::Fixed`/`MatchNote` (baked once at spawn),
     /// recomputed every ordinary step from `y_gradient` (if set) using the particle's *current*
     /// canvas Y, since `ParticleColor::YGradient` is the one mode where color isn't fixed at
     /// spawn — a particle visibly shifts color as gravity/its initial velocity move it.
@@ -193,6 +194,20 @@ struct Particle {
     layer_sigma: [f32; 3],
 }
 
+/// How a `Flash`'s `color_stops` are produced each frame in `rebuild_instances`. `Solid`/
+/// `HorizontalGradient` bake to a fixed set of stops once at spawn (a flash doesn't move, so
+/// there's nothing about its position to re-sample); `MatchNote` instead keeps the triggering
+/// note's `NoteInterval` around and re-evaluates `color_at_barrier` every frame, since — unlike a
+/// fixed color — "whichever part of the note is currently at the barrier" keeps changing for as
+/// long as the flash stays lit. This mostly matters for `FlashMode::Sustained` (which holds a
+/// flash lit for a note's entire duration): without this, a long-held note's glow would stay
+/// pinned to its arrival color instead of sliding across the note's own gradient as more of it
+/// feeds past the barrier.
+enum FlashColorSource {
+    Fixed([[f32; 3]; FLASH_GRADIENT_STOPS]),
+    MatchNote(NoteInterval),
+}
+
 struct Flash {
     pos: [f32; 2],
     /// Absolute transport-time threshold at which decay begins — `time_seconds` at spawn for
@@ -204,9 +219,7 @@ struct Flash {
     decay_seconds: f32,
     radius_x_px: f32,
     radius_y_px: f32,
-    /// Baked once at spawn (a flash doesn't move, so unlike `Particle::color` this never needs
-    /// re-evaluating) — see `project::FlashColor` for the three ways this gets built.
-    color_stops: [[f32; 3]; FLASH_GRADIENT_STOPS],
+    color: FlashColorSource,
     margin_px: f32,
     layer_amp: [f32; 3],
     layer_sigma: [f32; 3],
@@ -526,7 +539,7 @@ impl EffectsRenderer {
                 if spawn_particles {
                     if let Some(spec) = &transition_layer.particles {
                         if matches!(spec.emission, EmissionMode::Burst) {
-                            self.spawn_particles(interval, barrier_y, spec);
+                            self.spawn_particles(interval, time_seconds, barrier_y, spec);
                         }
                     }
                 }
@@ -557,10 +570,13 @@ impl EffectsRenderer {
                             {
                                 // Color no longer depends on spawn x (see `resolve_particle_color`),
                                 // so it's resolved once per held note per frame rather than once
-                                // per spawned particle.
+                                // per spawned particle — re-resolved fresh each frame from the
+                                // current `time_seconds`, which is what makes `ParticleColor::
+                                // MatchNote` slide across the note's own gradient as it's held.
                                 let (color, y_gradient) = Self::resolve_particle_color(
                                     &spec.color,
                                     interval,
+                                    time_seconds,
                                     barrier_y,
                                     barrier_y,
                                 );
@@ -624,22 +640,25 @@ impl EffectsRenderer {
 
     /// Resolves a particle's spawn color, per `ParticleColor` (the single mutually-exclusive mode
     /// selector — see that enum's doc comment). Doesn't depend on the particle's spawn x at all —
-    /// `MatchNoteBottom` is just `interval.color_bottom`, the note's own already-resolved gradient
-    /// endpoint, not a finer per-pixel sample of it (see `NoteInterval::color_bottom`'s doc
+    /// `MatchNote` is `interval.color_at_barrier(time_seconds)`, whichever part of the note is
+    /// currently crossing the barrier, not a finer per-pixel sample of it (see that method's doc
     /// comment for why) — so this can be (and is) called once per note per frame and reused for
-    /// every particle spawned from it, rather than once per particle. `Fixed`/`MatchNoteBottom`
-    /// return `None` (nothing left to recompute after spawn); `YGradient` returns the color at the
-    /// *current* `y_px` plus `Some((top, bottom))` so the caller's `Particle::y_gradient` can keep
-    /// re-evaluating it as the particle moves.
+    /// every particle spawned from it, rather than once per particle. Under continuous emission
+    /// this is exactly what makes a held note's particle stream slide across the note's own
+    /// gradient over time instead of staying pinned to the color it had on arrival. `Fixed`/
+    /// `MatchNote` return `None` (nothing left to recompute after spawn); `YGradient` returns the
+    /// color at the *current* `y_px` plus `Some((top, bottom))` so the caller's `Particle::
+    /// y_gradient` can keep re-evaluating it as the particle moves.
     fn resolve_particle_color(
         color: &ParticleColor,
         interval: &NoteInterval,
+        time_seconds: f32,
         y_px: f32,
         barrier_y: f32,
     ) -> ([f32; 3], Option<YGradientEndpoints>) {
         match color {
             ParticleColor::Fixed(binding) => (srgb_to_linear(binding.resolve_constant()), None),
-            ParticleColor::MatchNoteBottom => (interval.color_bottom, None),
+            ParticleColor::MatchNote => (interval.color_at_barrier(time_seconds), None),
             ParticleColor::YGradient { top, bottom } => {
                 let top_c = srgb_to_linear(top.resolve_constant());
                 let bottom_c = srgb_to_linear(bottom.resolve_constant());
@@ -649,9 +668,15 @@ impl EffectsRenderer {
         }
     }
 
-    fn spawn_particles(&mut self, interval: &NoteInterval, barrier_y: f32, spec: &ParticleSpec) {
+    fn spawn_particles(
+        &mut self,
+        interval: &NoteInterval,
+        time_seconds: f32,
+        barrier_y: f32,
+        spec: &ParticleSpec,
+    ) {
         let (color, y_gradient) =
-            Self::resolve_particle_color(&spec.color, interval, barrier_y, barrier_y);
+            Self::resolve_particle_color(&spec.color, interval, time_seconds, barrier_y, barrier_y);
         for _ in 0..spec.count {
             self.spawn_one_particle(interval.x_center(), barrier_y, spec, color, y_gradient);
         }
@@ -728,20 +753,21 @@ impl EffectsRenderer {
         decay_start_seconds: f32,
     ) {
         let x_px = interval.x_center();
-        // A flash always renders additively (Phase M): `color_stops` stay unwhitened, `brightness`
+        // A flash always renders additively (Phase M): color stops stay unwhitened, `brightness`
         // is pre-multiplied into `layer_amp` instead of baked in via `hot_color` — additive
         // saturation whitens for free. A flash is always fully "on" at spawn, fading to 0 over
         // `decay_seconds` as before.
-        let color_stops = match &spec.color {
-            FlashColor::Solid(binding) => {
-                [srgb_to_linear(binding.resolve_constant()); FLASH_GRADIENT_STOPS]
+        let color = match &spec.color {
+            FlashColor::Solid(binding) => FlashColorSource::Fixed(
+                [srgb_to_linear(binding.resolve_constant()); FLASH_GRADIENT_STOPS],
+            ),
+            FlashColor::HorizontalGradient(list) => {
+                FlashColorSource::Fixed(resample_gradient_stops(list))
             }
-            FlashColor::HorizontalGradient(list) => resample_gradient_stops(list),
-            // The note's own already-resolved bottom color, not a finer per-pixel sample of it —
-            // see `NoteInterval::color_bottom`'s doc comment. Filling every stop equally here
-            // reuses the exact same "uniform stops" trick a plain particle color already relies
-            // on (see `rebuild_instances`), so this renders identically to a flat `Solid` color.
-            FlashColor::MatchNoteBottom => [interval.color_bottom; FLASH_GRADIENT_STOPS],
+            // Kept as the source `NoteInterval` rather than baked to a color now — see
+            // `FlashColorSource::MatchNote`'s doc comment for why this needs re-evaluating every
+            // frame instead of once at spawn.
+            FlashColor::MatchNote => FlashColorSource::MatchNote(*interval),
         };
         let layer_amp = [
             spec.layers[0].amplitude * spec.brightness,
@@ -764,7 +790,7 @@ impl EffectsRenderer {
             decay_seconds: spec.decay_seconds.max(0.01),
             radius_x_px: spec.radius_x_px.max(1.0),
             radius_y_px: spec.radius_y_px.max(1.0),
-            color_stops,
+            color,
             margin_px,
             layer_amp,
             layer_sigma,
@@ -791,6 +817,16 @@ impl EffectsRenderer {
             let elapsed = (time_seconds - flash.decay_start_seconds).max(0.0);
             let t = 1.0 - (elapsed / flash.decay_seconds).clamp(0.0, 1.0);
             let core_radius = [flash.radius_x_px, flash.radius_y_px];
+            // `Fixed` stops are unchanged from spawn; `MatchNote` is re-evaluated against the
+            // current `time_seconds` every frame, so a `FlashMode::Sustained` flash keeps sliding
+            // across the note's own gradient for as long as it stays lit (see
+            // `FlashColorSource::MatchNote`'s doc comment).
+            let color_stops = match &flash.color {
+                FlashColorSource::Fixed(stops) => *stops,
+                FlashColorSource::MatchNote(interval) => {
+                    [interval.color_at_barrier(time_seconds); FLASH_GRADIENT_STOPS]
+                }
+            };
             self.additive_instances.push(EffectInstance {
                 center: flash.pos,
                 core_radius,
@@ -799,7 +835,7 @@ impl EffectsRenderer {
                     core_radius[1] + flash.margin_px,
                 ],
                 alpha: t,
-                color_stops: flash.color_stops,
+                color_stops,
                 layer_amp: flash.layer_amp,
                 layer_sigma: flash.layer_sigma,
             });

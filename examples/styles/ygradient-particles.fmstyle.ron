@@ -1,0 +1,50 @@
+(
+    version: 1,
+    notes: Static((
+        fill: Solid(Constant((255, 255, 255))),
+        sheen: None,
+        glow: None,
+        roundedness: 1.0,
+        fall_speed: 400.0,
+        border: None,
+        black_key_fill: Auto,
+    )),
+    barrier: Static((
+        color: Constant((255, 255, 255)),
+        thickness: 4.0,
+        glow: None,
+        pulse: None,
+        wavy: None,
+        show_bar: true,
+    )),
+    transition: Static((
+        kind: Particles,
+        particles: Some((
+            count: 20,
+            lifetime_seconds: 1.1,
+            size_px: 1.0,
+            speed_px: 260.0,
+            spread_degrees: 90.0,
+            gravity_px: 150.0,
+            color: YGradient(
+                top: Constant((60, 90, 255)),
+                bottom: Constant((255, 60, 60)),
+            ),
+            additive: true,
+            emission: Burst,
+            brightness: 1.0,
+            layers: ((
+                amplitude: 3.0,
+                sigma_px: 0.5,
+            ), (
+                amplitude: 2.0,
+                sigma_px: 1.0,
+            ), (
+                amplitude: 0.85,
+                sigma_px: 2.0,
+            )),
+        )),
+        flash: None,
+    )),
+    background: Constant((0, 0, 0)),
+)

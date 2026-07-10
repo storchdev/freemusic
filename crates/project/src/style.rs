@@ -671,23 +671,26 @@ pub enum EmissionMode {
 }
 
 /// How a particle's color is chosen. `Fixed` is the original (pre-this-feature) behavior — every
-/// particle from a spec gets the same resolved color. `MatchNoteBottom` and `YGradient` are a
-/// single mutually-exclusive mode selector (not independent toggles), since a particle's color has
-/// to come from exactly one source:
-/// - `MatchNoteBottom`: every particle from a given note gets that note's own already-resolved
-///   bottom gradient endpoint (`render::notes::NoteInterval::color_bottom` — the exact value baked
-///   into that note's own `color_bottom`), not a finer per-pixel sample of its actual rendered
-///   fill/sheen. One color per note (not per particle), so it stays correct for any current or
-///   future `Fill` without needing anything ported to Rust — see `docs/fmstyle-format.md`'s
-///   "Note-bottom color sampling" section for the tradeoff this makes.
+/// particle from a spec gets the same resolved color. `MatchNote` and `YGradient` are a single
+/// mutually-exclusive mode selector (not independent toggles), since a particle's color has to
+/// come from exactly one source:
+/// - `MatchNote`: every particle spawned for a given note is colored by that note's fill at
+///   whichever point is currently crossing the barrier (`render::notes::NoteInterval::
+///   color_at_barrier`) — the leading edge's color right at arrival, sliding toward the trailing
+///   edge's color as the note is held (relevant under `EmissionMode::Continuous`, which spawns
+///   particles continuously for as long as a note is held, rather than once at arrival). Resolved
+///   once per note per frame (not a finer per-pixel sample of its actual rendered fill/sheen), so
+///   it stays correct for any current or future `Fill` without needing anything ported to Rust —
+///   see `docs/fmstyle-format.md`'s "Note color sampling at the barrier" section for the tradeoff
+///   this makes.
 /// - `YGradient`: particles are tinted by their own *current* canvas Y position (top of frame ->
 ///   `top`, barrier line -> `bottom`), the same span `Fill::CanvasGradient` blends notes across —
-///   unlike `Fixed`/`MatchNoteBottom` (baked once at spawn), this is recomputed every frame as a
+///   unlike `Fixed`/`MatchNote` (baked once at spawn), this is recomputed every frame as a
 ///   particle falls/rises, so a particle visibly shifts color as it moves through the scene.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ParticleColor {
     Fixed(ColorBinding),
-    MatchNoteBottom,
+    MatchNote,
     YGradient {
         top: ColorBinding,
         bottom: ColorBinding,
@@ -750,12 +753,16 @@ pub enum FlashColor {
     /// `Solid`) is accepted; the renderer resamples this list to its fixed internal stop count at
     /// spawn time.
     HorizontalGradient(Vec<ColorBinding>),
-    /// Auto-derived from the note that triggered this flash: one flat color, the note's own
-    /// already-resolved bottom gradient endpoint (`render::notes::NoteInterval::color_bottom`) —
-    /// the same value `ParticleColor::MatchNoteBottom` uses, not a finer per-pixel sample of the
-    /// note's actual rendered fill/sheen. See `docs/fmstyle-format.md`'s "Note-bottom color
-    /// sampling" section. For a genuinely multicolor flash, use `HorizontalGradient` instead.
-    MatchNoteBottom,
+    /// Auto-derived from the note that triggered this flash: one flat color, sampled continuously
+    /// from whichever point of that note is currently at the barrier
+    /// (`render::notes::NoteInterval::color_at_barrier`) — the same mechanism
+    /// `ParticleColor::MatchNote` uses, not a finer per-pixel sample of the note's actual rendered
+    /// fill/sheen. Under `FlashMode::Sustained` this keeps re-evaluating for as long as the flash
+    /// stays lit, so a held note's glow shifts color as more of it feeds past the barrier rather
+    /// than staying pinned to its arrival color. See `docs/fmstyle-format.md`'s "Note color
+    /// sampling at the barrier" section. For a genuinely multicolor flash, use
+    /// `HorizontalGradient` instead.
+    MatchNote,
 }
 
 impl Default for FlashColor {
@@ -1077,12 +1084,12 @@ mod tests {
     }
 
     /// `ParticleColor`'s three variants (the single mutually-exclusive mode selector — see its own
-    /// doc comment for why `MatchNoteBottom`/`YGradient` aren't independent toggles) round-trip.
+    /// doc comment for why `MatchNote`/`YGradient` aren't independent toggles) round-trip.
     #[test]
     fn particle_color_variants_round_trip() {
         for color in [
             ParticleColor::Fixed(ColorBinding::Constant([1, 2, 3])),
-            ParticleColor::MatchNoteBottom,
+            ParticleColor::MatchNote,
             ParticleColor::YGradient {
                 top: ColorBinding::Constant([10, 20, 30]),
                 bottom: ColorBinding::Constant([200, 210, 220]),
@@ -1108,7 +1115,7 @@ mod tests {
     }
 
     /// `FlashColor`'s three variants (solid, an author-painted multi-stop gradient, and the
-    /// auto-derived note-bottom cross-section) round-trip.
+    /// auto-derived note-at-barrier color) round-trip.
     #[test]
     fn flash_color_variants_round_trip() {
         for color in [
@@ -1118,7 +1125,7 @@ mod tests {
                 ColorBinding::Constant([0, 255, 0]),
                 ColorBinding::Constant([0, 0, 255]),
             ]),
-            FlashColor::MatchNoteBottom,
+            FlashColor::MatchNote,
         ] {
             let spec = FlashSpec {
                 radius_x_px: 20.0,

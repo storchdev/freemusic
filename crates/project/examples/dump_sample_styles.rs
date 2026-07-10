@@ -525,12 +525,49 @@ fn main() {
         background: ColorBinding::Constant([0, 0, 0]),
     };
 
+    // `ParticleColor::YGradient` — unlike `Fixed`/`MatchNote` (baked once at spawn), each
+    // particle's color is recomputed every frame from its own *current* canvas Y position (top of
+    // frame -> `top`, barrier line -> `bottom`), the same span `Fill::CanvasGradient` blends notes
+    // across. A wide `spread_degrees` plus real `gravity_px` sends particles up past the barrier
+    // and back down, so they visibly sweep from `bottom`'s red back toward `top`'s blue and down
+    // again as they rise and fall, rather than holding one fixed color for their whole lifetime.
+    let ygradient_particles = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer::default()),
+        barrier: Timed::Static(visible_barrier()),
+        transition: Timed::Static(TransitionLayer {
+            kind: TransitionKind::Particles,
+            particles: Some(ParticleSpec {
+                count: 20,
+                lifetime_seconds: 1.1,
+                size_px: 1.0,
+                speed_px: 260.0,
+                spread_degrees: 90.0,
+                gravity_px: 150.0,
+                color: ParticleColor::YGradient {
+                    top: ColorBinding::Constant([60, 90, 255]),
+                    bottom: ColorBinding::Constant([255, 60, 60]),
+                },
+                additive: true,
+                emission: project::EmissionMode::Burst,
+                brightness: 1.0,
+                layers: hot_layers(0.5, 1.0, 2.0),
+            }),
+            flash: None,
+        }),
+        background: ColorBinding::Constant([0, 0, 0]),
+    };
+
     // Demonstrates the "match note color" family in one place: the note glow's corona/rim samples
     // the note's own gradient+sheen at whichever point it's closest to (rather than one fixed
-    // `Glow::color`); the particle burst and the flash both derive their color from a
-    // cross-section of the note's own bottom edge at the instant it hits the barrier (see
-    // `project::ParticleColor::MatchNoteBottom`/`project::FlashColor::MatchNoteBottom`) instead of
-    // a separately-authored fixed color.
+    // `Glow::color`); the particle stream and the flash both derive their color from whichever
+    // point of the note is currently at the barrier (see `project::ParticleColor::MatchNote`/
+    // `project::FlashColor::MatchNote`) instead of a separately-authored fixed color. Particles use
+    // `EmissionMode::Continuous` and the flash uses `FlashMode::Sustained` (rather than a one-shot
+    // burst/`Instant` pulse) so the color-sliding part of `MatchNote` is actually visible: a held
+    // note feeds a steady stream of particles, and keeps its flash lit, whose color keeps sliding
+    // from the note's leading-edge color toward its trailing-edge color for as long as the note
+    // stays held, instead of a one-shot cue frozen at the note's arrival color.
     let match_note_color = Style {
         version: 1,
         notes: Timed::Static(NoteLayer {
@@ -559,24 +596,26 @@ fn main() {
         transition: Timed::Static(TransitionLayer {
             kind: TransitionKind::ParticlesAndFlash,
             particles: Some(ParticleSpec {
-                count: 10,
+                count: 0,
                 lifetime_seconds: 1.0,
                 size_px: 1.0,
                 speed_px: 200.0,
                 spread_degrees: 70.0,
                 gravity_px: 200.0,
-                color: ParticleColor::MatchNoteBottom,
+                color: ParticleColor::MatchNote,
                 additive: true,
-                emission: project::EmissionMode::Burst,
+                emission: project::EmissionMode::Continuous {
+                    rate_per_second: 25.0,
+                },
                 brightness: 4.0,
                 layers: hot_layers(0.5, 1.0, 2.0),
             }),
             flash: Some(FlashSpec {
                 radius_x_px: 20.0,
                 radius_y_px: 10.0,
-                color: FlashColor::MatchNoteBottom,
+                color: FlashColor::MatchNote,
                 decay_seconds: 0.18,
-                mode: FlashMode::Instant,
+                mode: FlashMode::Sustained,
                 brightness: 2.0,
                 layers: glow_layers(2.0, 5.0, 10.0),
             }),
@@ -594,6 +633,7 @@ fn main() {
     print_style("sparks", &sparks);
     print_style("ellipse-flash", &ellipse_flash);
     print_style("grinding-particles", &grinding_particles);
+    print_style("ygradient-particles", &ygradient_particles);
     print_style("key-glow", &key_glow);
     print_style("dark-background", &dark_background);
     print_style("showcase_blue_purple", &showcase_blue_purple);

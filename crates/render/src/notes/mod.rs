@@ -54,21 +54,52 @@ pub struct NoteInterval {
     pub end_seconds: f32,
     pub x_left: f32,
     pub x_right: f32,
-    /// This note's own resolved bottom gradient endpoint (linear color) — the exact same value
-    /// baked into its `NoteInstance::color_bottom`. `project::ParticleColor::MatchNoteBottom`/
-    /// `project::FlashColor::MatchNoteBottom` read this directly, rather than sampling a finer
-    /// cross-section of the note's actual rendered pixels: every `Fill` variant — current or
-    /// future — resolves to a `(top, bottom)` pair by construction (see `resolve_fill_base`), so
-    /// this stays correct for any future fill/sheen/glow effect with no render-side code to keep
-    /// in sync, at the cost of not reflecting horizontal detail (e.g. a diagonal `Sheen` stripe) a
-    /// fine-grained per-pixel sample would have. See `docs/fmstyle-format.md`'s "Note-bottom color
-    /// sampling" section for the full rationale.
+    /// This note's own resolved gradient endpoints (linear color) — the exact same values baked
+    /// into its `NoteInstance::color_top`/`color_bottom`. Used by `color_at_barrier` below rather
+    /// than read directly, so `project::ParticleColor::MatchNote`/`project::FlashColor::MatchNote`
+    /// track *whichever part of the note is currently at the barrier* instead of a fixed sample:
+    /// every `Fill` variant — current or future — resolves to a `(top, bottom)` pair by
+    /// construction (see `resolve_fill_base`), so this stays correct for any future fill/sheen/glow
+    /// effect with no render-side code to keep in sync, at the cost of not reflecting horizontal
+    /// detail (e.g. a diagonal `Sheen` stripe) a fine-grained per-pixel sample would have. See
+    /// `docs/fmstyle-format.md`'s "Note color sampling at the barrier" section for the full
+    /// rationale.
+    pub color_top: [f32; 3],
     pub color_bottom: [f32; 3],
+    /// Whether this note's fill is `Fill::CanvasGradient` (blended by canvas Y position) rather
+    /// than a note-local gradient (`Fill::Solid`/`VerticalGradient`) — changes how
+    /// `color_at_barrier` interpolates, see that method.
+    pub canvas_gradient: bool,
 }
 
 impl NoteInterval {
     pub fn x_center(&self) -> f32 {
         (self.x_left + self.x_right) * 0.5
+    }
+
+    /// This note's fill color at whichever point of it currently sits at the barrier — `
+    /// color_bottom` (the leading edge) right at arrival, sliding toward `color_top` as the note
+    /// is held past the barrier and more of its length feeds through. Mirrors `shader.wgsl`'s
+    /// `fill_color_at` evaluated at the barrier's fixed canvas position:
+    /// - Note-local gradients (`canvas_gradient == false`): the barrier position within the note
+    ///   advances linearly from the leading edge to the trailing edge over the note's own
+    ///   `[start_seconds, end_seconds]` window, so this mixes `color_bottom` -> `color_top` by
+    ///   elapsed fraction.
+    /// - `Fill::CanvasGradient` (`canvas_gradient == true`): the gradient is keyed to canvas
+    ///   position, not note-local progress, and the barrier is a fixed canvas position — so the
+    ///   color there is always `color_bottom` (the gradient's barrier-line endpoint), regardless
+    ///   of how long the note has been held.
+    pub fn color_at_barrier(&self, time_seconds: f32) -> [f32; 3] {
+        if self.canvas_gradient {
+            return self.color_bottom;
+        }
+        let duration = (self.end_seconds - self.start_seconds).max(0.0001);
+        let elapsed = ((time_seconds - self.start_seconds) / duration).clamp(0.0, 1.0);
+        [
+            self.color_bottom[0] + (self.color_top[0] - self.color_bottom[0]) * elapsed,
+            self.color_bottom[1] + (self.color_top[1] - self.color_bottom[1]) * elapsed,
+            self.color_bottom[2] + (self.color_top[2] - self.color_bottom[2]) * elapsed,
+        ]
     }
 }
 
@@ -465,7 +496,9 @@ impl NotesRenderer {
                     end_seconds: start_seconds + duration,
                     x_left: note_x,
                     x_right: note_x + key.width,
+                    color_top,
                     color_bottom,
+                    canvas_gradient,
                 });
             }
             active_notes.push(ActiveNote {

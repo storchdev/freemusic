@@ -416,7 +416,7 @@ down" rather than sparking once. `count` has no effect in this mode.
 ```rust
 enum ParticleColor {
     Fixed(ColorBinding),
-    MatchNoteBottom,
+    MatchNote,
     YGradient { top: ColorBinding, bottom: ColorBinding },
 }
 ```
@@ -426,13 +426,16 @@ from exactly one source:
 
 - `Fixed(binding)` (default: white): every particle from this spec gets the same resolved color —
   the only behavior that existed before this enum did.
-- `MatchNoteBottom`: every particle from a given note gets *that note's own* resolved bottom
-  color — see [Note-bottom color sampling](#note-bottom-color-sampling) below for exactly what
+- `MatchNote`: every particle spawned for a given note is colored by *that note's own* fill at
+  whichever point is currently crossing the barrier — see
+  [Note color sampling at the barrier](#note-color-sampling-at-the-barrier) below for exactly what
   this does and doesn't reflect. One color per note (not per particle), resolved once per note per
-  frame and reused for every particle it spawns that frame.
+  frame and reused for every particle it spawns that frame — under `EmissionMode::Continuous` this
+  is what makes a held note's particle stream slide across the note's own gradient over time
+  instead of staying pinned to its arrival color.
 - `YGradient { top, bottom }`: particles are tinted by their own *current* canvas Y position (top
   of frame -> `top`, barrier line -> `bottom` — the same span `Fill::CanvasGradient` blends notes
-  across). Unlike `Fixed`/`MatchNoteBottom` (baked once at spawn), this is recomputed every frame
+  across). Unlike `Fixed`/`MatchNote` (baked once at spawn), this is recomputed every frame
   as a particle falls/rises under `gravity_px`, so a particle visibly shifts color as it moves.
 
 ### `FlashSpec`
@@ -455,7 +458,7 @@ A flash always renders additively. It is fully "on" at spawn/at the start of its
 enum FlashColor {
     Solid(ColorBinding),
     HorizontalGradient(Vec<ColorBinding>),
-    MatchNoteBottom,
+    MatchNote,
 }
 ```
 
@@ -465,41 +468,66 @@ enum FlashColor {
   left-to-right `ColorBinding` stops across the flash's own width (`2 * radius_x_px`), including
   just one (equivalent to `Solid`). The renderer resamples this list onto its fixed internal
   5-stop representation at spawn time, so any stop count works.
-- `MatchNoteBottom`: auto-derived from the note that triggered this flash — one flat color, the
-  same note-bottom value `ParticleColor::MatchNoteBottom` uses (see
-  [Note-bottom color sampling](#note-bottom-color-sampling)). Internally this fills the flash's
-  gradient stops with that one color (the same "uniform stops" trick a plain particle color
-  already uses), so it renders identically to `Solid` with that color — the distinction is purely
-  *which* color, not that this variant makes the flash itself multicolored. For a genuinely
+- `MatchNote`: auto-derived from the note that triggered this flash — one flat color, sampled from
+  whichever point of that note is currently at the barrier, the same mechanism
+  `ParticleColor::MatchNote` uses (see
+  [Note color sampling at the barrier](#note-color-sampling-at-the-barrier)). Internally this fills
+  the flash's gradient stops with that one color (the same "uniform stops" trick a plain particle
+  color already uses), so it renders identically to `Solid` with that color at any given instant —
+  the distinction is purely *which* color and that it keeps re-evaluating over time, not that this
+  variant makes the flash itself multicolored at once. Under `FlashMode::Sustained` this
+  re-evaluates every frame for as long as the flash stays lit, so a held note's glow slides across
+  the note's own gradient rather than staying pinned to its arrival color. For a genuinely
   multicolor flash, use `HorizontalGradient` instead (optionally hand-picking colors that
   complement the note, e.g. reading them off the style's own `NoteLayer::fill`).
 
-### Note-bottom color sampling
+### Note color sampling at the barrier
 
-`ParticleColor::MatchNoteBottom` and `FlashColor::MatchNoteBottom` both resolve to **the
-triggering note's own already-computed `color_bottom`** (`render::notes::NoteInterval::
-color_bottom` — the exact same value baked into that note's `NoteInstance::color_bottom`) — one
-flat color per note, evaluated fresh for each note rather than a style-wide constant, but not a
-finer per-pixel sample of that note's actual rendered bottom edge.
+`ParticleColor::MatchNote` and `FlashColor::MatchNote` both resolve to **the triggering note's own
+fill color at whichever point is currently crossing the barrier**
+(`render::notes::NoteInterval::color_at_barrier`) — one flat color per note, evaluated fresh every
+frame rather than a style-wide constant or a value fixed at the note's arrival, but not a finer
+per-pixel sample of that note's actual rendered fill.
 
-An earlier version of this feature instead sampled several points *across* a note's bottom edge,
+Concretely, `color_at_barrier` mixes the note's own resolved `color_bottom` (its leading edge —
+the color visible right at arrival) toward `color_top` (its trailing edge) by how far the note has
+been held past arrival, mirroring `shader.wgsl`'s note-local fill math evaluated at the barrier's
+fixed canvas position. This is why the two `MatchNote` variants no longer talk about "the note's
+bottom color" the way an earlier version of this feature did: for a `Solid` or flat-colored note
+the leading- and trailing-edge colors are identical, so sampling only ever "the bottom" and
+sampling "whichever part is at the barrier" looked the same — but for a `VerticalGradient` note
+(or a flash/particle stream spawned continuously while a note is held), the part of the note
+actually crossing the barrier keeps advancing from the leading edge toward the trailing edge, so a
+fixed "always the bottom" sample would visibly stop matching the note's own color partway through
+a long-held note. `Fill::CanvasGradient` notes are the one case where this collapses back to a
+constant: that gradient is keyed to canvas position, not note-local progress, and the barrier is a
+fixed canvas position, so the color there is always the gradient's own barrier-line endpoint
+regardless of how long the note has been held.
+
+For a burst/`FlashMode::Instant` trigger this is evaluated once, right as the note arrives, so it
+behaves exactly as a "match the color at arrival" sample would — the general barrier-tracking
+formula is a strict superset of that behavior, not a separate mode. It only visibly differs from a
+fixed arrival-color sample for `EmissionMode::Continuous` particles and `FlashMode::Sustained`
+flashes, both of which stay active for a note's whole held duration.
+
+An earlier version of this feature instead sampled several points *across* a note's leading edge,
 specifically to reproduce a diagonal `Sheen` stripe's horizontal brightening band (the only thing
 that varies a note's color left-to-right — plain `Fill::Solid`/`VerticalGradient`/`CanvasGradient`
 are all uniform across a note's width, only ever varying color top-to-bottom or by canvas height).
 That was retracted: it meant hand-porting `shader.wgsl`'s fill/sheen math into Rust
 (`render::notes::mod.rs`, since removed), which only stayed correct for sheen specifically — any
 *other* future note-color effect (a different stripe/pattern, a texture, anything not already
-mirrored in that Rust port) would silently be invisible to `MatchNoteBottom` while still rendering
+mirrored in that Rust port) would silently be invisible to `MatchNote` while still rendering
 correctly on the note itself, a maintenance trap that would only get worse as note styles grow.
-`color_bottom` alone doesn't have this problem: every `Fill` variant, current or future, resolves
-to a `(top, bottom)` pair by construction (`resolve_fill_base`'s contract), so `MatchNoteBottom`
+The `(color_top, color_bottom)` pair alone doesn't have this problem: every `Fill` variant, current
+or future, resolves to that pair by construction (`resolve_fill_base`'s contract), so `MatchNote`
 stays correct with zero additional code for anything built on top of that contract — the tradeoff
 is giving up the sheen-driven cross-section fidelity in exchange for that guarantee.
 
 Note that `Glow::match_note_color` (the *note's own* halo/rim matching its own fill — a different
-mechanism from `ParticleColor`/`FlashColor::MatchNoteBottom`) doesn't have this tradeoff at all: it
-calls back into the note shader's own `fill_color_at` function rather than a separate Rust port, so
-it automatically reflects sheen (and any future fill-affecting change) with no porting required.
+mechanism from `ParticleColor`/`FlashColor::MatchNote`) doesn't have this tradeoff at all: it calls
+back into the note shader's own `fill_color_at` function rather than a separate Rust port, so it
+automatically reflects sheen (and any future fill-affecting change) with no porting required.
 
 `FlashMode`:
 - `Instant`: decays over `decay_seconds` starting immediately at note-on — a quick pulse.
@@ -584,3 +612,7 @@ If a previously-working `.fmstyle.ron` file fails to load after an upgrade, chec
   etc. value as `Fixed(...)`)
 - `FlashSpec.color: ColorBinding` -> `color: FlashColor` (wrap an existing `Constant(...)` etc.
   value as `Solid(...)`)
+- `ParticleColor::MatchNoteBottom` -> `MatchNote`, `FlashColor::MatchNoteBottom` -> `MatchNote`
+  (rename only, no other field shape change — see
+  [Note color sampling at the barrier](#note-color-sampling-at-the-barrier) for why "bottom" no
+  longer describes what these sample)

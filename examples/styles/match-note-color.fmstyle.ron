@@ -42,15 +42,17 @@
     transition: Static((
         kind: ParticlesAndFlash,
         particles: Some((
-            count: 10,
+            count: 0,
             lifetime_seconds: 1.0,
             size_px: 1.0,
             speed_px: 200.0,
             spread_degrees: 70.0,
             gravity_px: 200.0,
-            color: MatchNoteBottom,
+            color: MatchNote,
             additive: true,
-            emission: Burst,
+            emission: Continuous(
+                rate_per_second: 25.0,
+            ),
             brightness: 4.0,
             layers: ((
                 amplitude: 3.0,
@@ -64,11 +66,11 @@
             )),
         )),
         flash: Some((
-            radius_x_px: 40.0,
+            radius_x_px: 20.0,
             radius_y_px: 10.0,
-            color: MatchNoteBottom,
+            color: MatchNote,
             decay_seconds: 0.18,
-            mode: Instant,
+            mode: Sustained,
             brightness: 2.0,
             layers: ((
                 amplitude: 2.6,
