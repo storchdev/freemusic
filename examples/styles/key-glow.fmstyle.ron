@@ -23,7 +23,7 @@
         flash: Some((
             radius_x_px: 20.0,
             radius_y_px: 5.0,
-            color: Constant((255, 220, 140)),
+            color: Solid(Constant((255, 220, 140))),
             decay_seconds: 0.1,
             mode: Sustained,
             brightness: 0.5,

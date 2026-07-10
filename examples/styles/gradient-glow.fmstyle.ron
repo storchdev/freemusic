@@ -24,6 +24,7 @@
                 sigma_px: 10.0,
             )),
             edge_blend_px: 6.0,
+            match_note_color: false,
         )),
         roundedness: 1.0,
         fall_speed: 400.0,

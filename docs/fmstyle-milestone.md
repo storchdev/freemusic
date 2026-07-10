@@ -1313,3 +1313,100 @@ carrying one fixed color or a fixed per-note gradient; confirm sharp keys render
 confirm switching back to a `VerticalGradient`/`Solid` style still looks exactly as before (the new
 per-instance flag defaults to `0.0`/note-local for every other fill).
 
+### Phase Q: flashes/particles/glow that match note color, and multicolor flashes
+
+Off the README's roadmap: "Flashes/particles that match note color." Full field-by-field spec is
+in `docs/fmstyle-format.md` (`Glow.match_note_color`, `ParticleColor`, `FlashColor`, and the
+"Note-bottom color sampling" section) — this is the narrative of what was built and why.
+
+Three genuinely ambiguous design questions were asked before implementing (all answered before any
+code was written):
+1. Whether particles' "match note color" and "y-level gradient" should be independent toggles or
+   one mutually-exclusive mode selector — **answered: single enum** (`ParticleColor`).
+2. Whether flashes should get a general-purpose author-painted gradient in addition to the
+   auto-derived note-matching look — **answered: both** (`FlashColor::HorizontalGradient` alongside
+   `FlashColor::MatchNoteBottom`).
+3. Whether `ParticleSpec.color`/`FlashSpec.color` could be a clean breaking rename (from
+   `ColorBinding` to a new enum) rather than a parallel field — **answered: yes**, same precedent as
+   Phase H's `FlashSpec.radius_px` rename.
+
+**Schema** (`crates/project/src/style.rs`):
+- `Glow` gained `match_note_color: bool` (`#[serde(default)]`, `false`). Only meaningful for
+  `NoteLayer::glow` — documented no-op for `BarrierLayer::glow`, same precedent as `edge_blend_px`.
+- New `ParticleColor` enum (`Fixed(ColorBinding)` / `MatchNoteBottom` / `YGradient { top, bottom }`)
+  replaces `ParticleSpec.color: ColorBinding`.
+- New `FlashColor` enum (`Solid(ColorBinding)` / `HorizontalGradient(Vec<ColorBinding>)` /
+  `MatchNoteBottom`) replaces `FlashSpec.color: ColorBinding`.
+- Every shipped `examples/styles/*.fmstyle.ron` with a particle/flash `color:` field was hand-edited
+  to the new enum shape (`Constant(...)` -> `Fixed(Constant(...))`/`Solid(Constant(...))`, targeted
+  edits per this milestone's usual convention, not a wholesale regenerate); every `Glow` literal
+  (in both the generator and the checked-in files) gained `match_note_color: false`. New sample
+  `examples/styles/match-note-color.fmstyle.ron` demonstrates all three "match note" mechanisms
+  together: a gradient+sheen note whose glow samples its own fill, plus a particle burst and a
+  flash both colored from the note's own bottom color.
+
+**`MatchNoteBottom`, for both `ParticleColor` and `FlashColor`, resolves to the triggering note's
+own already-computed `color_bottom`** — a single flat color per note (`render::notes::
+NoteInterval::color_bottom`, the exact value baked into that note's own `NoteInstance`), not a
+finer per-pixel sample of its actual rendered fill/sheen. This is a deliberate simplicity/fidelity
+tradeoff, not an oversight: every `Fill` variant, current or future, resolves to a `(top, bottom)`
+pair by construction (`resolve_fill_base`'s contract), so this stays correct for any future
+fill/sheen effect with zero render-side code to keep in sync — the alternative (sampling several
+points across the note's rendered bottom edge to also catch things like a diagonal `Sheen` stripe)
+was tried first and retracted, since it meant hand-porting the note shader's fill/sheen math into a
+separate Rust function that would only ever track the one effect it was written against, silently
+falling behind any other future note-color effect. `ParticleColor::MatchNoteBottom` is resolved
+once per note per frame and reused for every particle that note spawns that frame (`effects.rs`'s
+`resolve_particle_color`, called from `spawn_particles`/the continuous-emission loop);
+`FlashColor::MatchNoteBottom` fills every one of a flash's `FLASH_GRADIENT_STOPS` (5) gradient
+stops with that same one color (the same "uniform stops" trick a plain particle color already
+uses), so it renders identically to `Solid` with that color — for a genuinely multicolor flash,
+`HorizontalGradient` is the mechanism to reach for.
+
+**Note glow's `match_note_color`, by contrast, doesn't have (or need) this tradeoff**: it calls
+back into the note shader's own `fill_color_at` function (`crates/render/src/notes/shader.wgsl`,
+refactored from `fill_color(in)` to `fill_color_at(in, at: vec2<f32>)` so it can be evaluated at an
+arbitrary point, not just the current fragment) rather than a separate Rust port — a new
+`note_edge_color(in)` clamps the fragment position into the note's true box (an approximation of
+"nearest point on the silhouette" that ignores corner rounding, which only ever affects alpha, not
+color) and evaluates `fill_color_at` there. `fs_core`'s rim-target and `fs_glow`'s corona color both
+`select()` between `style_uniform.glow_color.rgb` and `note_edge_color(in)` based on a new
+`StyleUniform.fill_and_flags.w` flag, so a note's halo automatically reflects sheen (and any future
+fill-affecting shader change) with nothing to keep in sync — the particle/flash CPU simulation
+just can't reach the fragment shader directly, so `color_bottom` is the pragmatic equivalent there.
+
+**`FlashColor::HorizontalGradient`** (an author-painted, arbitrary-length gradient, independent of
+note-matching) resamples onto `effects.rs`'s `FLASH_GRADIENT_STOPS`-stop (5) internal
+representation at spawn time (`resample_gradient_stops`) — the same fixed stop count every
+`EffectInstance` carries as `color_stops: [[f32; 3]; FLASH_GRADIENT_STOPS]` (replacing a single
+`color: vec3`; a particle just has every stop baked equal, pixel-identical to a plain `color`
+field). `wgpu::vertex_attr_array!` can't loop over a `const`, so the 5 stops are hand-unrolled to
+explicit locations in both `EffectInstance::attributes()` and `effects.wgsl`, guarded by a
+`const _: () = assert!(FLASH_GRADIENT_STOPS == 5, ...)` tripwire; `effects.wgsl`'s `fs_puff`/
+`fs_glow` interpolate across the 5 stops by the fragment's horizontal position within `core_radius`
+(not `quad_radius`, so the gradient doesn't distort into the glow margin).
+
+**`ParticleColor::YGradient`** is the one mode where a particle's color isn't fixed at spawn:
+`Particle` gained `y_gradient: Option<(top, bottom)>` plus `brightness`/`additive`, so `update`'s
+per-step loop can recompute `color` from the particle's *current* canvas Y every frame — and reapply
+the same post-processing `spawn_one_particle` applied once at spawn (additive particles' `color` is
+never whitened, only `layer_amp` carries brightness, so the recompute is a plain `mix3`;
+non-additive "puff" particles have `color` whitened via `hot_color` at spawn, so the recompute
+reapplies `hot_color` too — the one correctness bug caught before shipping: an earlier draft
+dropped this and silently lost `brightness`'s whitening on the very next frame after spawn).
+
+**Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
+clean; `shipped_sample_styles_parse` finds the new `match-note-color.fmstyle.ron` alongside every
+existing sample (all migrated to the new `color` enum shapes, with no schema/RON changes needed for
+the `MatchNoteBottom` simplification itself). New unit tests in `crates/project/src/style.rs`
+round-trip `Glow.match_note_color`, all three `ParticleColor` variants, and all three `FlashColor`
+variants (including a multi-stop `HorizontalGradient`). **Not yet manually run** (per the "never
+run the app yourself" rule) — worth confirming, next time someone has hands on the app: importing
+`match-note-color.fmstyle.ron` shows the note's own halo shifting color top-to-bottom rather than
+one flat glow color, and both the particle burst and the flash pick up the note's own bottom color;
+a `YGradient` particle style visibly shifts a particle's color as it falls/rises rather than
+staying fixed from spawn; a `HorizontalGradient` flash (multiple hand-picked stops) shows a genuine
+left-to-right color sweep across the ellipse, not a flat color; and every pre-existing sample style
+(`sparks`, `grinding-particles`, `key-glow`, `ellipse-flash`, `showcase_blue_purple`) still looks
+pixel-identical to before this phase now that their `color` fields are `Fixed(...)`/`Solid(...)`.
+

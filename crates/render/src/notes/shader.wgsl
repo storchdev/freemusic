@@ -158,10 +158,13 @@ fn dist(
     return sqrt(dist.x * dist.x + dist.y * dist.y);
 }
 
-// Shared fill/sheen fragment color computation (independent of glow), used by `fs_core` — kept
-// separate from `dist`'s edge-distance math so `fs_glow` doesn't need to duplicate it, and vice
-// versa.
-fn fill_color(in: VertexOutput) -> vec3<f32> {
+// Shared fill/sheen fragment color computation (independent of glow), evaluated `at` an arbitrary
+// canvas-space point rather than always the fragment's own position — `fill_color` (below) is the
+// fragment's own color; `note_edge_color` (further below, used only when `Glow::match_note_color`
+// is set) reuses this exact math at the nearest point on the note's silhouette instead, so a
+// corona/rim can be tinted by "whichever part of the note it's closest to" rather than one fixed
+// glow color.
+fn fill_color_at(in: VertexOutput, at: vec2<f32>) -> vec3<f32> {
     // Two possible bases to blend `color_top`/`color_bottom` across, picked per-instance by
     // `canvas_gradient` (Phase P) rather than a style-wide flag, since `BlackKeyFill::Custom` can
     // give sharp-key notes a different `Fill` variant (and therefore basis) than natural keys:
@@ -169,20 +172,20 @@ fn fill_color(in: VertexOutput) -> vec3<f32> {
     //    down the note's own true (unpadded) box. For a solid fill `color_top == color_bottom`
     //    per instance, so this mix is a no-op and matches Phase B's flat color exactly.
     //  - canvas (`Fill::CanvasGradient`): fraction of the way from the top of the canvas down to
-    //    the barrier line, using the fragment's absolute framebuffer position instead of its
-    //    position within the note — so whatever note currently occupies a given on-screen height
-    //    shows the same color there, regardless of key, and a falling note's own color changes
-    //    over time as it descends.
-    let note_uv_y = clamp((in.position.y - in.note_pos.y) / max(in.size.y, 0.0001), 0.0, 1.0);
+    //    the barrier line, using `at`'s absolute framebuffer position instead of its position
+    //    within the note — so whatever note currently occupies a given on-screen height shows the
+    //    same color there, regardless of key, and a falling note's own color changes over time as
+    //    it descends.
+    let note_uv_y = clamp((at.y - in.note_pos.y) / max(in.size.y, 0.0001), 0.0, 1.0);
     let keyboard_y = view_uniform.size.y * view_uniform.barrier_fraction;
-    let canvas_uv_y = clamp(in.position.y / max(keyboard_y, 0.0001), 0.0, 1.0);
+    let canvas_uv_y = clamp(at.y / max(keyboard_y, 0.0001), 0.0, 1.0);
     let shape_uv_y = select(note_uv_y, canvas_uv_y, in.canvas_gradient > 0.5);
     var color = mix(in.color_top, in.color_bottom, shape_uv_y);
 
     // Diagonal specular stripe, swept across the note's fill at a fixed angle.
     if style_uniform.fill_and_flags.y > 0.5 {
         let angle = style_uniform.sheen_params.z;
-        let local = in.position.xy - in.note_pos;
+        let local = at - in.note_pos;
         let span = in.size.x * abs(cos(angle)) + in.size.y * abs(sin(angle));
         let d_axis = local.x * cos(angle) + local.y * sin(angle);
         let center = span * 0.5;
@@ -192,6 +195,24 @@ fn fill_color(in: VertexOutput) -> vec3<f32> {
     }
 
     return color;
+}
+
+fn fill_color(in: VertexOutput) -> vec3<f32> {
+    return fill_color_at(in, in.position.xy);
+}
+
+// Only meaningful when `Glow::match_note_color` is set (`fill_and_flags.w > 0.5`): the note's own
+// fill color at whichever point on the note's true (unpadded) box the fragment is closest to,
+// rather than a fixed `glow_color` — clamping the fragment position into the box is an
+// approximation of "nearest point on the rounded-rect silhouette" (it ignores corner rounding,
+// which only ever affects alpha, not color), simple and exact away from the rounded corners
+// themselves.
+fn note_edge_color(in: VertexOutput) -> vec3<f32> {
+    let nearest = vec2<f32>(
+        clamp(in.position.x, in.note_pos.x, in.note_pos.x + in.size.x),
+        clamp(in.position.y, in.note_pos.y, in.note_pos.y + in.size.y),
+    );
+    return fill_color_at(in, nearest);
 }
 
 // Opaque core: the note's own fill (solid/gradient + optional sheen) — a note with `glow:
@@ -225,8 +246,9 @@ fn fs_core(in: VertexOutput) -> @location(0) vec4<f32> {
         let rim_sigma = max(rim_sigma_source, 0.5);
         let rim_weight = exp(-inward_dist / rim_sigma);
         let total_amplitude = style_uniform.glow_layers_ab.x + style_uniform.glow_layers_ab.z + style_uniform.glow_layers_c.x;
+        let rim_color = select(style_uniform.glow_color.rgb, note_edge_color(in), style_uniform.fill_and_flags.w > 0.5);
         let rim_target = clamp(
-            style_uniform.glow_color.rgb * total_amplitude * style_uniform.glow_params.x,
+            rim_color * total_amplitude * style_uniform.glow_params.x,
             vec3<f32>(0.0),
             vec3<f32>(1.0)
         );
@@ -253,7 +275,8 @@ fn fs_glow(in: VertexOutput) -> @location(0) vec4<f32> {
     strength += style_uniform.glow_layers_ab.z * exp(-d_past_edge / max(style_uniform.glow_layers_ab.w, 0.01));
     strength += style_uniform.glow_layers_c.x * exp(-d_past_edge / max(style_uniform.glow_layers_c.y, 0.01));
 
+    let glow_color = select(style_uniform.glow_color.rgb, note_edge_color(in), style_uniform.fill_and_flags.w > 0.5);
     // Don't add light where the opaque core will draw over it anyway (drawn after this pass).
-    let light = style_uniform.glow_color.rgb * strength * brightness * (1.0 - base_alpha);
+    let light = glow_color * strength * brightness * (1.0 - base_alpha);
     return vec4<f32>(light, 1.0);
 }

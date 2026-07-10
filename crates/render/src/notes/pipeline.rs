@@ -83,7 +83,8 @@ struct StyleUniform {
     /// a `BlackKeyFill::Custom` gradient on the sharp keys — whenever the white-key fill was
     /// `Solid`. The shader now always blends `color_top`/`color_bottom` per note instead, which is
     /// an exact no-op for any note whose two colors are equal), y = sheen_enabled,
-    /// z = glow_enabled, w unused.
+    /// z = glow_enabled, w = `Glow::match_note_color` (1.0 = corona/rim use the note's own fill
+    /// color sampled at the nearest edge point instead of `glow_color`).
     fill_and_flags: [f32; 4],
     sheen_params: [f32; 4],
     /// xyz = halo color (linear), w unused (was glow radius pre-Phase-M).
@@ -139,36 +140,44 @@ impl StyleUniform {
             }) => (1.0, [intensity, width, angle_degrees.to_radians(), 0.0]),
             None => (0.0, [0.0; 4]),
         };
-        let (glow_enabled, glow_color, glow_params, glow_layers_ab, glow_layers_c) =
-            match &note_layer.glow {
-                Some(Glow {
-                    color,
-                    brightness,
-                    layers,
-                    edge_blend_px,
-                }) => {
-                    let [r, g, b] = srgb_to_linear(color.resolve_constant());
-                    let margin = layers
-                        .iter()
-                        .fold(0.0f32, |acc, layer| acc.max(layer.sigma_px))
-                        * GLOW_CUTOFF_SIGMAS;
-                    (
-                        1.0,
-                        [r, g, b, 0.0],
-                        [*brightness, *edge_blend_px, 0.0, 0.0],
-                        [
-                            layers[0].amplitude,
-                            layers[0].sigma_px,
-                            layers[1].amplitude,
-                            layers[1].sigma_px,
-                        ],
-                        [layers[2].amplitude, layers[2].sigma_px, margin, 0.0],
-                    )
-                }
-                None => (0.0, [0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4]),
-            };
+        let (
+            glow_enabled,
+            match_note_color,
+            glow_color,
+            glow_params,
+            glow_layers_ab,
+            glow_layers_c,
+        ) = match &note_layer.glow {
+            Some(Glow {
+                color,
+                brightness,
+                layers,
+                edge_blend_px,
+                match_note_color,
+            }) => {
+                let [r, g, b] = srgb_to_linear(color.resolve_constant());
+                let margin = layers
+                    .iter()
+                    .fold(0.0f32, |acc, layer| acc.max(layer.sigma_px))
+                    * GLOW_CUTOFF_SIGMAS;
+                (
+                    1.0,
+                    if *match_note_color { 1.0 } else { 0.0 },
+                    [r, g, b, 0.0],
+                    [*brightness, *edge_blend_px, 0.0, 0.0],
+                    [
+                        layers[0].amplitude,
+                        layers[0].sigma_px,
+                        layers[1].amplitude,
+                        layers[1].sigma_px,
+                    ],
+                    [layers[2].amplitude, layers[2].sigma_px, margin, 0.0],
+                )
+            }
+            None => (0.0, 0.0, [0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4]),
+        };
         Self {
-            fill_and_flags: [0.0, sheen_enabled, glow_enabled, 0.0],
+            fill_and_flags: [0.0, sheen_enabled, glow_enabled, match_note_color],
             sheen_params,
             glow_color,
             glow_params,

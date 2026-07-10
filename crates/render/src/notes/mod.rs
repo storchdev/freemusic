@@ -54,6 +54,16 @@ pub struct NoteInterval {
     pub end_seconds: f32,
     pub x_left: f32,
     pub x_right: f32,
+    /// This note's own resolved bottom gradient endpoint (linear color) — the exact same value
+    /// baked into its `NoteInstance::color_bottom`. `project::ParticleColor::MatchNoteBottom`/
+    /// `project::FlashColor::MatchNoteBottom` read this directly, rather than sampling a finer
+    /// cross-section of the note's actual rendered pixels: every `Fill` variant — current or
+    /// future — resolves to a `(top, bottom)` pair by construction (see `resolve_fill_base`), so
+    /// this stays correct for any future fill/sheen/glow effect with no render-side code to keep
+    /// in sync, at the cost of not reflecting horizontal detail (e.g. a diagonal `Sheen` stripe) a
+    /// fine-grained per-pixel sample would have. See `docs/fmstyle-format.md`'s "Note-bottom color
+    /// sampling" section for the full rationale.
+    pub color_bottom: [f32; 3],
 }
 
 impl NoteInterval {
@@ -455,6 +465,7 @@ impl NotesRenderer {
                     end_seconds: start_seconds + duration,
                     x_left: note_x,
                     x_right: note_x + key.width,
+                    color_bottom,
                 });
             }
             active_notes.push(ActiveNote {

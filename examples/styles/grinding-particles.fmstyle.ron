@@ -26,7 +26,7 @@
             speed_px: 140.0,
             spread_degrees: 100.0,
             gravity_px: 250.0,
-            color: Constant((255, 210, 90)),
+            color: Fixed(Constant((255, 210, 90))),
             additive: true,
             emission: Continuous(
                 rate_per_second: 30.0,

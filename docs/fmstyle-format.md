@@ -162,7 +162,10 @@ the note wide, blended in at `intensity`.
 ### `Glow`
 
 ```rust
-struct Glow { color: ColorBinding, brightness: f32, layers: [GlowLayer; 3], edge_blend_px: f32 }
+struct Glow {
+    color: ColorBinding, brightness: f32, layers: [GlowLayer; 3], edge_blend_px: f32,
+    match_note_color: bool,
+}
 struct GlowLayer { amplitude: f32, sigma_px: f32 }
 ```
 
@@ -201,6 +204,14 @@ snap to the corona's color more abruptly, closer to a hard seam. **Only wired up
 `NoteLayer::glow`** (`crates/render/src/notes/shader.wgsl`'s `fs_core`) — `BarrierLayer::glow`
 parses and round-trips the field (it's the same shared `Glow` struct) but `barrier.wgsl` doesn't
 read it yet, so it's currently a no-op there.
+
+`match_note_color` (default `false`) makes the corona/rim ignore `color` and instead tint itself
+with the note's own fill color, sampled at whichever point on the note's silhouette the corona
+fragment is closest to — so a note using `Fill::VerticalGradient`/`CanvasGradient` (and/or `Sheen`)
+gets a halo that itself varies to match the fill directly beneath it, rather than one fixed halo
+color for the whole note. **Only meaningful for `NoteLayer::glow`** — `BarrierLayer::glow` has no
+per-note fill to sample, so this field is a documented no-op there (`barrier.wgsl` never reads it),
+same precedent as `edge_blend_px` being notes-only. `false` is an exact no-op.
 
 ## Barrier layer (`BarrierLayer`)
 
@@ -390,7 +401,7 @@ this is what the RON serializer emits automatically; write it the same way by ha
 | `speed_px` | `f32` | Initial speed; each particle jitters between `0.5x`–`1.0x` of this. |
 | `spread_degrees` | `f32` | Spawn cone width around straight up. |
 | `gravity_px` | `f32` | Downward acceleration applied every step after spawn. |
-| `color` | `ColorBinding` | Particle color. |
+| `color` | `ParticleColor` | How each particle's color is chosen — see below. |
 | `additive` | `bool` | Additive blending (bright, overlapping particles glow) vs. premultiplied-alpha (opaque-ish). Decided once per `update()` call from the layer's currently-resolved value — a particle spawned under one style doesn't retroactively update if a *different* style is imported while it's still alive. |
 | `emission` | `EmissionMode` | `Burst` (default) or `Continuous { rate_per_second }`. |
 | `brightness` | `f32` | Default `1.0`. Baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `1.0` is a no-op. |
@@ -400,12 +411,36 @@ this is what the RON serializer emits automatically; write it the same way by ha
 spread across the *width* of its key (not its center point) — reads as the key being "ground
 down" rather than sparking once. `count` has no effect in this mode.
 
+### `ParticleColor`
+
+```rust
+enum ParticleColor {
+    Fixed(ColorBinding),
+    MatchNoteBottom,
+    YGradient { top: ColorBinding, bottom: ColorBinding },
+}
+```
+
+A single mutually-exclusive mode selector (not independent toggles) — a particle's color comes
+from exactly one source:
+
+- `Fixed(binding)` (default: white): every particle from this spec gets the same resolved color —
+  the only behavior that existed before this enum did.
+- `MatchNoteBottom`: every particle from a given note gets *that note's own* resolved bottom
+  color — see [Note-bottom color sampling](#note-bottom-color-sampling) below for exactly what
+  this does and doesn't reflect. One color per note (not per particle), resolved once per note per
+  frame and reused for every particle it spawns that frame.
+- `YGradient { top, bottom }`: particles are tinted by their own *current* canvas Y position (top
+  of frame -> `top`, barrier line -> `bottom` — the same span `Fill::CanvasGradient` blends notes
+  across). Unlike `Fixed`/`MatchNoteBottom` (baked once at spawn), this is recomputed every frame
+  as a particle falls/rises under `gravity_px`, so a particle visibly shifts color as it moves.
+
 ### `FlashSpec`
 
 | Field | Type | Meaning |
 |---|---|---|
 | `radius_x_px` / `radius_y_px` | `f32` | Independent horizontal/vertical radii — set equal for a circular flash, unequal for an ellipse. |
-| `color` | `ColorBinding` | Flash color. |
+| `color` | `FlashColor` | How the flash's color varies across its own width — see below. |
 | `decay_seconds` | `f32` | How long the fade-out takes (see `mode` for when the fade *starts*). |
 | `mode` | `FlashMode` | `Instant` (default) or `Sustained`. |
 | `brightness` | `f32` | Default `1.0`. Baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `1.0` is a no-op. |
@@ -413,6 +448,58 @@ down" rather than sparking once. `count` has no effect in this mode.
 
 A flash always renders additively. It is fully "on" at spawn/at the start of its hold (see
 `mode`), fading to 0 over `decay_seconds`.
+
+### `FlashColor`
+
+```rust
+enum FlashColor {
+    Solid(ColorBinding),
+    HorizontalGradient(Vec<ColorBinding>),
+    MatchNoteBottom,
+}
+```
+
+- `Solid(binding)` (default: white): one flat color, resolved once — the only behavior that
+  existed before this enum did.
+- `HorizontalGradient(stops)`: a hand-authored horizontal gradient — any number of evenly-spaced
+  left-to-right `ColorBinding` stops across the flash's own width (`2 * radius_x_px`), including
+  just one (equivalent to `Solid`). The renderer resamples this list onto its fixed internal
+  5-stop representation at spawn time, so any stop count works.
+- `MatchNoteBottom`: auto-derived from the note that triggered this flash — one flat color, the
+  same note-bottom value `ParticleColor::MatchNoteBottom` uses (see
+  [Note-bottom color sampling](#note-bottom-color-sampling)). Internally this fills the flash's
+  gradient stops with that one color (the same "uniform stops" trick a plain particle color
+  already uses), so it renders identically to `Solid` with that color — the distinction is purely
+  *which* color, not that this variant makes the flash itself multicolored. For a genuinely
+  multicolor flash, use `HorizontalGradient` instead (optionally hand-picking colors that
+  complement the note, e.g. reading them off the style's own `NoteLayer::fill`).
+
+### Note-bottom color sampling
+
+`ParticleColor::MatchNoteBottom` and `FlashColor::MatchNoteBottom` both resolve to **the
+triggering note's own already-computed `color_bottom`** (`render::notes::NoteInterval::
+color_bottom` — the exact same value baked into that note's `NoteInstance::color_bottom`) — one
+flat color per note, evaluated fresh for each note rather than a style-wide constant, but not a
+finer per-pixel sample of that note's actual rendered bottom edge.
+
+An earlier version of this feature instead sampled several points *across* a note's bottom edge,
+specifically to reproduce a diagonal `Sheen` stripe's horizontal brightening band (the only thing
+that varies a note's color left-to-right — plain `Fill::Solid`/`VerticalGradient`/`CanvasGradient`
+are all uniform across a note's width, only ever varying color top-to-bottom or by canvas height).
+That was retracted: it meant hand-porting `shader.wgsl`'s fill/sheen math into Rust
+(`render::notes::mod.rs`, since removed), which only stayed correct for sheen specifically — any
+*other* future note-color effect (a different stripe/pattern, a texture, anything not already
+mirrored in that Rust port) would silently be invisible to `MatchNoteBottom` while still rendering
+correctly on the note itself, a maintenance trap that would only get worse as note styles grow.
+`color_bottom` alone doesn't have this problem: every `Fill` variant, current or future, resolves
+to a `(top, bottom)` pair by construction (`resolve_fill_base`'s contract), so `MatchNoteBottom`
+stays correct with zero additional code for anything built on top of that contract — the tradeoff
+is giving up the sheen-driven cross-section fidelity in exchange for that guarantee.
+
+Note that `Glow::match_note_color` (the *note's own* halo/rim matching its own fill — a different
+mechanism from `ParticleColor`/`FlashColor::MatchNoteBottom`) doesn't have this tradeoff at all: it
+calls back into the note shader's own `fill_color_at` function rather than a separate Rust port, so
+it automatically reflects sheen (and any future fill-affecting change) with no porting required.
 
 `FlashMode`:
 - `Instant`: decays over `decay_seconds` starting immediately at note-on — a quick pulse.
@@ -493,3 +580,7 @@ If a previously-working `.fmstyle.ron` file fails to load after an upgrade, chec
 - `BarrierLayer.kind` + `glow_radius_px` -> `glow: Option<Glow>`
 - `intensity` removed from `Glow`, `Pulse`, and `FlashSpec`
 - `Glow.radius_px` -> `layers: [GlowLayer; 3]`
+- `ParticleSpec.color: ColorBinding` -> `color: ParticleColor` (wrap an existing `Constant(...)`
+  etc. value as `Fixed(...)`)
+- `FlashSpec.color: ColorBinding` -> `color: FlashColor` (wrap an existing `Constant(...)` etc.
+  value as `Solid(...)`)

@@ -367,6 +367,17 @@ pub struct Glow {
     /// (`barrier.wgsl`), even though `Glow` is shared between `NoteLayer`/`BarrierLayer`.
     #[serde(default)]
     pub edge_blend_px: f32,
+    /// When `true`, ignore `color` and instead tint the corona (and the note-edge rim) with the
+    /// note's own fill color sampled at whichever point on the note's silhouette the corona
+    /// fragment is closest to — so a note using `Fill::VerticalGradient`/`CanvasGradient` gets a
+    /// halo that itself blends top-to-bottom (or across canvas height) matching the fill directly
+    /// beneath it, rather than one fixed halo color for the whole note. **Only meaningful for
+    /// `NoteLayer::glow`** — `BarrierLayer::glow` has no per-note fill to sample, so this field is
+    /// a documented no-op there (`barrier.wgsl` never reads it), same precedent as
+    /// `edge_blend_px` being notes-only. `false` (default) is an exact no-op, preserving every
+    /// style's look from before this field existed.
+    #[serde(default)]
+    pub match_note_color: bool,
 }
 
 impl Default for Glow {
@@ -376,6 +387,7 @@ impl Default for Glow {
             brightness: 1.0,
             layers: default_glow_layers(),
             edge_blend_px: 0.0,
+            match_note_color: false,
         }
     }
 }
@@ -658,6 +670,36 @@ pub enum EmissionMode {
     Continuous { rate_per_second: f32 },
 }
 
+/// How a particle's color is chosen. `Fixed` is the original (pre-this-feature) behavior — every
+/// particle from a spec gets the same resolved color. `MatchNoteBottom` and `YGradient` are a
+/// single mutually-exclusive mode selector (not independent toggles), since a particle's color has
+/// to come from exactly one source:
+/// - `MatchNoteBottom`: every particle from a given note gets that note's own already-resolved
+///   bottom gradient endpoint (`render::notes::NoteInterval::color_bottom` — the exact value baked
+///   into that note's own `color_bottom`), not a finer per-pixel sample of its actual rendered
+///   fill/sheen. One color per note (not per particle), so it stays correct for any current or
+///   future `Fill` without needing anything ported to Rust — see `docs/fmstyle-format.md`'s
+///   "Note-bottom color sampling" section for the tradeoff this makes.
+/// - `YGradient`: particles are tinted by their own *current* canvas Y position (top of frame ->
+///   `top`, barrier line -> `bottom`), the same span `Fill::CanvasGradient` blends notes across —
+///   unlike `Fixed`/`MatchNoteBottom` (baked once at spawn), this is recomputed every frame as a
+///   particle falls/rises, so a particle visibly shifts color as it moves through the scene.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ParticleColor {
+    Fixed(ColorBinding),
+    MatchNoteBottom,
+    YGradient {
+        top: ColorBinding,
+        bottom: ColorBinding,
+    },
+}
+
+impl Default for ParticleColor {
+    fn default() -> Self {
+        ParticleColor::Fixed(ColorBinding::default())
+    }
+}
+
 /// Fixed-pool particle burst spawned on note arrival (MIDIVisualizer-style: spawn, fade, expire —
 /// no external texture asset, rendered as a procedural radial sprite).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -668,7 +710,8 @@ pub struct ParticleSpec {
     pub speed_px: f32,
     pub spread_degrees: f32,
     pub gravity_px: f32,
-    pub color: ColorBinding,
+    #[serde(default)]
+    pub color: ParticleColor,
     pub additive: bool,
     #[serde(default)]
     pub emission: EmissionMode,
@@ -695,6 +738,32 @@ pub enum FlashMode {
     Sustained,
 }
 
+/// How a flash's color varies across its own footprint. A flash always renders as an ellipse
+/// (`radius_x_px`/`radius_y_px`); this enum controls whether that ellipse is one flat color or a
+/// horizontal multi-stop gradient, either hand-authored or auto-derived from a note.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum FlashColor {
+    /// One flat color, resolved once — today's behavior before this feature existed.
+    Solid(ColorBinding),
+    /// A hand-authored horizontal gradient: evenly spaced left-to-right color stops across the
+    /// flash's own width (`2 * radius_x_px`). Any number of stops (including 1, equivalent to
+    /// `Solid`) is accepted; the renderer resamples this list to its fixed internal stop count at
+    /// spawn time.
+    HorizontalGradient(Vec<ColorBinding>),
+    /// Auto-derived from the note that triggered this flash: one flat color, the note's own
+    /// already-resolved bottom gradient endpoint (`render::notes::NoteInterval::color_bottom`) —
+    /// the same value `ParticleColor::MatchNoteBottom` uses, not a finer per-pixel sample of the
+    /// note's actual rendered fill/sheen. See `docs/fmstyle-format.md`'s "Note-bottom color
+    /// sampling" section. For a genuinely multicolor flash, use `HorizontalGradient` instead.
+    MatchNoteBottom,
+}
+
+impl Default for FlashColor {
+    fn default() -> Self {
+        FlashColor::Solid(ColorBinding::default())
+    }
+}
+
 /// Decaying radial flash spawned on note arrival. Since a flash always renders additively, its
 /// peak opacity and its color-brightness had the exact same visual effect (both just scale the
 /// additive contribution) — the old separate `intensity` (peak alpha) knob was redundant with
@@ -705,7 +774,8 @@ pub enum FlashMode {
 pub struct FlashSpec {
     pub radius_x_px: f32,
     pub radius_y_px: f32,
-    pub color: ColorBinding,
+    #[serde(default)]
+    pub color: FlashColor,
     pub decay_seconds: f32,
     #[serde(default)]
     pub mode: FlashMode,
@@ -863,6 +933,7 @@ mod tests {
             brightness: 3.0,
             layers: default_glow_layers(),
             edge_blend_px: 0.0,
+            match_note_color: false,
         });
         barrier.pulse = Some(Pulse {
             decay_seconds: 0.35,
@@ -900,7 +971,7 @@ mod tests {
                     speed_px: 180.0,
                     spread_degrees: 60.0,
                     gravity_px: 300.0,
-                    color: ColorBinding::Constant([255, 240, 200]),
+                    color: ParticleColor::Fixed(ColorBinding::Constant([255, 240, 200])),
                     additive: true,
                     emission: EmissionMode::Burst,
                     brightness: 5.0,
@@ -909,7 +980,7 @@ mod tests {
                 flash: Some(FlashSpec {
                     radius_x_px: 40.0,
                     radius_y_px: 40.0,
-                    color: ColorBinding::Constant([255, 255, 255]),
+                    color: FlashColor::Solid(ColorBinding::Constant([255, 255, 255])),
                     decay_seconds: 0.15,
                     mode: FlashMode::Instant,
                     brightness: 6.0,
@@ -967,6 +1038,7 @@ mod tests {
                 },
             ],
             edge_blend_px: 3.0,
+            match_note_color: false,
         };
         let text = ron::ser::to_string_pretty(&glow, ron::ser::PrettyConfig::new()).unwrap();
         assert!(
@@ -985,6 +1057,82 @@ mod tests {
         let text = "(color: Constant((1, 2, 3)), thickness: 4.0)";
         let barrier: BarrierLayer = ron::from_str(text).unwrap();
         assert!(!barrier.show_bar);
+    }
+
+    /// `Glow::match_note_color` round-trips and defaults to `false` when an older `.fmstyle.ron`
+    /// fragment omits it entirely.
+    #[test]
+    fn glow_match_note_color_round_trips_and_defaults_to_false() {
+        let glow = Glow {
+            match_note_color: true,
+            ..Glow::default()
+        };
+        let text = ron::ser::to_string_pretty(&glow, ron::ser::PrettyConfig::new()).unwrap();
+        let parsed: Glow = ron::from_str(&text).unwrap();
+        assert_eq!(glow, parsed);
+
+        let old_text = "(color: Constant((1, 2, 3)))";
+        let old: Glow = ron::from_str(old_text).unwrap();
+        assert!(!old.match_note_color);
+    }
+
+    /// `ParticleColor`'s three variants (the single mutually-exclusive mode selector — see its own
+    /// doc comment for why `MatchNoteBottom`/`YGradient` aren't independent toggles) round-trip.
+    #[test]
+    fn particle_color_variants_round_trip() {
+        for color in [
+            ParticleColor::Fixed(ColorBinding::Constant([1, 2, 3])),
+            ParticleColor::MatchNoteBottom,
+            ParticleColor::YGradient {
+                top: ColorBinding::Constant([10, 20, 30]),
+                bottom: ColorBinding::Constant([200, 210, 220]),
+            },
+        ] {
+            let spec = ParticleSpec {
+                count: 1,
+                lifetime_seconds: 0.5,
+                size_px: 2.0,
+                speed_px: 100.0,
+                spread_degrees: 30.0,
+                gravity_px: 200.0,
+                color: color.clone(),
+                additive: true,
+                emission: EmissionMode::Burst,
+                brightness: 1.0,
+                layers: default_glow_layers(),
+            };
+            let text = ron::ser::to_string_pretty(&spec, ron::ser::PrettyConfig::new()).unwrap();
+            let parsed: ParticleSpec = ron::from_str(&text).unwrap();
+            assert_eq!(spec, parsed);
+        }
+    }
+
+    /// `FlashColor`'s three variants (solid, an author-painted multi-stop gradient, and the
+    /// auto-derived note-bottom cross-section) round-trip.
+    #[test]
+    fn flash_color_variants_round_trip() {
+        for color in [
+            FlashColor::Solid(ColorBinding::Constant([1, 2, 3])),
+            FlashColor::HorizontalGradient(vec![
+                ColorBinding::Constant([255, 0, 0]),
+                ColorBinding::Constant([0, 255, 0]),
+                ColorBinding::Constant([0, 0, 255]),
+            ]),
+            FlashColor::MatchNoteBottom,
+        ] {
+            let spec = FlashSpec {
+                radius_x_px: 20.0,
+                radius_y_px: 20.0,
+                color: color.clone(),
+                decay_seconds: 0.2,
+                mode: FlashMode::Instant,
+                brightness: 1.0,
+                layers: default_glow_layers(),
+            };
+            let text = ron::ser::to_string_pretty(&spec, ron::ser::PrettyConfig::new()).unwrap();
+            let parsed: FlashSpec = ron::from_str(&text).unwrap();
+            assert_eq!(spec, parsed);
+        }
     }
 
     /// Guards the shipped `examples/styles/*.fmstyle.ron` samples against drifting out of sync

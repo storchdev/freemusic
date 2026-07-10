@@ -5,9 +5,9 @@
 //! corresponding files if the schema ever changes.
 
 use project::{
-    BarrierLayer, BlackKeyFill, ColorBinding, Fill, FlashMode, FlashSpec, Glow, GlowLayer,
-    NoteLayer, ParticleSpec, Pulse, Sheen, StrandSpec, Style, Timed, TransitionKind,
-    TransitionLayer, WavyMode, WavySpec,
+    BarrierLayer, BlackKeyFill, ColorBinding, Fill, FlashColor, FlashMode, FlashSpec, Glow,
+    GlowLayer, NoteLayer, ParticleColor, ParticleSpec, Pulse, Sheen, StrandSpec, Style, Timed,
+    TransitionKind, TransitionLayer, WavyMode, WavySpec,
 };
 
 fn glow_layers(tight: f32, mid: f32, wide: f32) -> [GlowLayer; 3] {
@@ -77,6 +77,7 @@ fn main() {
                 brightness: 0.8,
                 layers: glow_layers(2.0, 4.0, 10.0),
                 edge_blend_px: 6.0,
+                match_note_color: false,
             }),
             roundedness: 1.0,
             fall_speed: 400.0,
@@ -99,6 +100,7 @@ fn main() {
                 brightness: 1.5,
                 layers: hot_layers(2.0, 4.0, 8.0),
                 edge_blend_px: 0.0,
+                match_note_color: false,
             }),
             pulse: Some(Pulse {
                 decay_seconds: 0.35,
@@ -122,6 +124,7 @@ fn main() {
                 brightness: 1.5,
                 layers: hot_layers(2.0, 4.0, 8.0),
                 edge_blend_px: 0.0,
+                match_note_color: false,
             }),
             pulse: None,
             wavy: Some(WavySpec {
@@ -149,6 +152,7 @@ fn main() {
                 brightness: 1.4,
                 layers: hot_layers(2.0, 4.0, 8.0),
                 edge_blend_px: 0.0,
+                match_note_color: false,
             }),
             pulse: None,
             wavy: Some(WavySpec {
@@ -220,6 +224,7 @@ fn main() {
                     },
                 ],
                 edge_blend_px: 0.0,
+                match_note_color: false,
             }),
             pulse: None,
             wavy: Some(WavySpec {
@@ -258,7 +263,7 @@ fn main() {
                 speed_px: 180.0,
                 spread_degrees: 60.0,
                 gravity_px: 300.0,
-                color: ColorBinding::Constant([255, 240, 200]),
+                color: ParticleColor::Fixed(ColorBinding::Constant([255, 240, 200])),
                 additive: true,
                 emission: project::EmissionMode::Burst,
                 brightness: 1.0,
@@ -267,7 +272,7 @@ fn main() {
             flash: Some(FlashSpec {
                 radius_x_px: 40.0,
                 radius_y_px: 40.0,
-                color: ColorBinding::Constant([255, 255, 255]),
+                color: FlashColor::Solid(ColorBinding::Constant([255, 255, 255])),
                 decay_seconds: 0.15,
                 mode: FlashMode::Instant,
                 brightness: 1.0,
@@ -287,7 +292,7 @@ fn main() {
             flash: Some(FlashSpec {
                 radius_x_px: 70.0,
                 radius_y_px: 40.0,
-                color: ColorBinding::Constant([255, 255, 255]),
+                color: FlashColor::Solid(ColorBinding::Constant([255, 255, 255])),
                 decay_seconds: 0.2,
                 mode: FlashMode::Instant,
                 brightness: 1.0,
@@ -310,7 +315,7 @@ fn main() {
                 speed_px: 140.0,
                 spread_degrees: 100.0,
                 gravity_px: 250.0,
-                color: ColorBinding::Constant([255, 210, 90]),
+                color: ParticleColor::Fixed(ColorBinding::Constant([255, 210, 90])),
                 additive: true,
                 emission: project::EmissionMode::Continuous {
                     rate_per_second: 30.0,
@@ -333,7 +338,7 @@ fn main() {
             flash: Some(FlashSpec {
                 radius_x_px: 20.0,
                 radius_y_px: 5.0,
-                color: ColorBinding::Constant([255, 220, 140]),
+                color: FlashColor::Solid(ColorBinding::Constant([255, 220, 140])),
                 decay_seconds: 0.1,
                 mode: FlashMode::Sustained,
                 brightness: 0.5,
@@ -360,6 +365,7 @@ fn main() {
                 brightness: 1.4,
                 layers: glow_layers(2.0, 4.0, 8.0),
                 edge_blend_px: 0.0,
+                match_note_color: false,
             }),
             show_bar: false,
             ..BarrierLayer::default()
@@ -398,6 +404,7 @@ fn main() {
                     },
                 ],
                 edge_blend_px: 6.0,
+                match_note_color: false,
             }),
             roundedness: 1.65,
             fall_speed: 400.0,
@@ -415,6 +422,7 @@ fn main() {
                 brightness: 1.5,
                 layers: hot_layers(2.0, 4.0, 8.0),
                 edge_blend_px: 0.0,
+                match_note_color: false,
             }),
             pulse: Some(Pulse {
                 decay_seconds: 0.34,
@@ -439,7 +447,7 @@ fn main() {
                 speed_px: 250.0,
                 spread_degrees: 60.0,
                 gravity_px: 220.0,
-                color: ColorBinding::Constant([150, 210, 255]),
+                color: ParticleColor::Fixed(ColorBinding::Constant([150, 210, 255])),
                 additive: true,
                 emission: project::EmissionMode::Continuous {
                     rate_per_second: 40.0,
@@ -463,7 +471,7 @@ fn main() {
             flash: Some(FlashSpec {
                 radius_x_px: 16.0,
                 radius_y_px: 4.0,
-                color: ColorBinding::Constant([205, 190, 255]),
+                color: FlashColor::Solid(ColorBinding::Constant([205, 190, 255])),
                 decay_seconds: 0.22,
                 mode: FlashMode::Sustained,
                 brightness: 1.0,
@@ -517,8 +525,68 @@ fn main() {
         background: ColorBinding::Constant([0, 0, 0]),
     };
 
+    // Demonstrates the "match note color" family in one place: the note glow's corona/rim samples
+    // the note's own gradient+sheen at whichever point it's closest to (rather than one fixed
+    // `Glow::color`); the particle burst and the flash both derive their color from a
+    // cross-section of the note's own bottom edge at the instant it hits the barrier (see
+    // `project::ParticleColor::MatchNoteBottom`/`project::FlashColor::MatchNoteBottom`) instead of
+    // a separately-authored fixed color.
+    let match_note_color = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer {
+            fill: Fill::VerticalGradient {
+                top: ColorBinding::Constant([255, 140, 60]),
+                bottom: ColorBinding::Constant([60, 90, 255]),
+            },
+            sheen: Some(Sheen {
+                intensity: 0.5,
+                width: 0.5,
+                angle_degrees: 40.0,
+            }),
+            glow: Some(Glow {
+                color: ColorBinding::default(),
+                brightness: 1.1,
+                layers: glow_layers(2.0, 4.0, 10.0),
+                edge_blend_px: 6.0,
+                match_note_color: true,
+            }),
+            roundedness: 1.0,
+            fall_speed: 400.0,
+            border: None,
+            black_key_fill: BlackKeyFill::Auto,
+        }),
+        barrier: Timed::Static(visible_barrier()),
+        transition: Timed::Static(TransitionLayer {
+            kind: TransitionKind::ParticlesAndFlash,
+            particles: Some(ParticleSpec {
+                count: 30,
+                lifetime_seconds: 0.45,
+                size_px: 3.0,
+                speed_px: 160.0,
+                spread_degrees: 70.0,
+                gravity_px: 260.0,
+                color: ParticleColor::MatchNoteBottom,
+                additive: true,
+                emission: project::EmissionMode::Burst,
+                brightness: 1.0,
+                layers: hot_layers(0.5, 1.0, 2.0),
+            }),
+            flash: Some(FlashSpec {
+                radius_x_px: 45.0,
+                radius_y_px: 30.0,
+                color: FlashColor::MatchNoteBottom,
+                decay_seconds: 0.18,
+                mode: FlashMode::Instant,
+                brightness: 1.0,
+                layers: glow_layers(2.0, 5.0, 10.0),
+            }),
+        }),
+        background: ColorBinding::Constant([0, 0, 0]),
+    };
+
     print_style("gradient-glow", &gradient_glow);
     print_style("canvas-gradient", &canvas_gradient);
+    print_style("match-note-color", &match_note_color);
     print_style("barrier-pulse", &barrier_pulse);
     print_style("barrier-wavy", &barrier_wavy);
     print_style("barrier-wavy-volume", &barrier_wavy_volume);

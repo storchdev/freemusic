@@ -26,6 +26,7 @@
                 sigma_px: 8.0,
             )),
             edge_blend_px: 0.0,
+            match_note_color: false,
         )),
         pulse: None,
         wavy: Some((

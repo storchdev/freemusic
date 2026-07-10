@@ -62,7 +62,6 @@ See `docs/` for architecture, verification, implementation notes, and format his
 Ideas being considered for future work, roughly grouped:
 
 **`.fmstyle.ron` (visual style format)**
-- Flashes/particles that match note color
 - Alpha (transparency) on notes
 - Custom note textures and background textures, both compatible with note alpha — alpha would
   let a note "see through" into a static background
