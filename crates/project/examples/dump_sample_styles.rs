@@ -526,11 +526,16 @@ fn main() {
     };
 
     // `ParticleColor::YGradient` — unlike `Fixed`/`MatchNote` (baked once at spawn), each
-    // particle's color is recomputed every frame from its own *current* canvas Y position (top of
-    // frame -> `top`, barrier line -> `bottom`), the same span `Fill::CanvasGradient` blends notes
-    // across. A wide `spread_degrees` plus real `gravity_px` sends particles up past the barrier
-    // and back down, so they visibly sweep from `bottom`'s red back toward `top`'s blue and down
-    // again as they rise and fall, rather than holding one fixed color for their whole lifetime.
+    // particle's color is recomputed every frame from its own *current* canvas Y position, blended
+    // across `[top_fraction, bottom_fraction]` (a span of canvas height, not tied to the barrier).
+    // A wide `spread_degrees` plus real `gravity_px` sends particles up past the barrier and back
+    // down, so they visibly sweep from `bottom`'s red back toward `top`'s blue and down again as
+    // they rise and fall, rather than holding one fixed color for their whole lifetime. `0.55`/
+    // `0.85` brackets roughly where these particles actually travel (a bit above the default
+    // barrier position at spawn, down to a bit below it) — the field's default `0.0`/`0.8` span
+    // (top of frame to the barrier) would work here too, but most of these particles' motion would
+    // land in a narrow sliver near the `bottom` end of that much wider span, so the color would
+    // barely change.
     let ygradient_particles = Style {
         version: 1,
         notes: Timed::Static(NoteLayer::default()),
@@ -547,6 +552,8 @@ fn main() {
                 color: ParticleColor::YGradient {
                     top: ColorBinding::Constant([60, 90, 255]),
                     bottom: ColorBinding::Constant([255, 60, 60]),
+                    top_fraction: 0.55,
+                    bottom_fraction: 0.85,
                 },
                 additive: true,
                 emission: project::EmissionMode::Burst,

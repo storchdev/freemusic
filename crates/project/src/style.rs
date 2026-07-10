@@ -297,6 +297,17 @@ fn default_brightness() -> f32 {
     1.0
 }
 
+/// See `ParticleColor::YGradient`'s doc comment for why `0.0`/`0.8` (rather than e.g. `0.0`/`1.0`)
+/// is the closest available approximation of this field's pre-existing hardcoded "top of frame ->
+/// barrier line" span, absent a real per-project barrier position to default to.
+fn default_y_gradient_top_fraction() -> f32 {
+    0.0
+}
+
+fn default_y_gradient_bottom_fraction() -> f32 {
+    0.8
+}
+
 /// One exponential falloff term in an additive corona sum (Phase M): `amplitude *
 /// exp(-d / sigma_px)`, where `d` is distance outside the glowing surface's opaque edge. A
 /// `Glow`/`FlashSpec`/`ParticleSpec` sums three of these (tight/mid/wide, see
@@ -683,10 +694,18 @@ pub enum EmissionMode {
 ///   it stays correct for any current or future `Fill` without needing anything ported to Rust —
 ///   see `docs/fmstyle-format.md`'s "Note color sampling at the barrier" section for the tradeoff
 ///   this makes.
-/// - `YGradient`: particles are tinted by their own *current* canvas Y position (top of frame ->
-///   `top`, barrier line -> `bottom`), the same span `Fill::CanvasGradient` blends notes across —
-///   unlike `Fixed`/`MatchNote` (baked once at spawn), this is recomputed every frame as a
-///   particle falls/rises, so a particle visibly shifts color as it moves through the scene.
+/// - `YGradient`: particles are tinted by their own *current* canvas Y position, blended between
+///   `top` and `bottom` across the span `[top_fraction, bottom_fraction]` (each a fraction of
+///   canvas height, `0.0` = top of frame, `1.0` = bottom) — unlike `Fixed`/`MatchNote` (baked once
+///   at spawn), this is recomputed every frame as a particle falls/rises, so a particle visibly
+///   shifts color as it moves through the scene. `top_fraction`/`bottom_fraction` default to
+///   `0.0`/`0.8` (top of frame to a typical default barrier position — this was the *only* span
+///   available before these fields existed, when it was hardcoded to "top of frame -> barrier
+///   line"), but since particles spawn at the barrier and rarely travel far from it, that default
+///   span is usually far wider than where particles actually live — most of their travel maps to
+///   a narrow sliver near `t == 1.0`, so the color barely changes. Narrowing the span to bracket
+///   where particles actually travel (e.g. just above and below the barrier) makes the gradient
+///   actually visible across a particle's motion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ParticleColor {
     Fixed(ColorBinding),
@@ -694,6 +713,10 @@ pub enum ParticleColor {
     YGradient {
         top: ColorBinding,
         bottom: ColorBinding,
+        #[serde(default = "default_y_gradient_top_fraction")]
+        top_fraction: f32,
+        #[serde(default = "default_y_gradient_bottom_fraction")]
+        bottom_fraction: f32,
     },
 }
 
@@ -1093,6 +1116,8 @@ mod tests {
             ParticleColor::YGradient {
                 top: ColorBinding::Constant([10, 20, 30]),
                 bottom: ColorBinding::Constant([200, 210, 220]),
+                top_fraction: 0.55,
+                bottom_fraction: 0.85,
             },
         ] {
             let spec = ParticleSpec {
@@ -1111,6 +1136,23 @@ mod tests {
             let text = ron::ser::to_string_pretty(&spec, ron::ser::PrettyConfig::new()).unwrap();
             let parsed: ParticleSpec = ron::from_str(&text).unwrap();
             assert_eq!(spec, parsed);
+        }
+    }
+
+    #[test]
+    fn y_gradient_without_fraction_fields_loads_with_defaults() {
+        let text = "YGradient(top: Constant((1, 2, 3)), bottom: Constant((4, 5, 6)))";
+        let color: ParticleColor = ron::from_str(text).unwrap();
+        match color {
+            ParticleColor::YGradient {
+                top_fraction,
+                bottom_fraction,
+                ..
+            } => {
+                assert_eq!(top_fraction, 0.0);
+                assert_eq!(bottom_fraction, 0.8);
+            }
+            _ => panic!("expected YGradient"),
         }
     }
 

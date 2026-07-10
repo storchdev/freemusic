@@ -417,7 +417,12 @@ down" rather than sparking once. `count` has no effect in this mode.
 enum ParticleColor {
     Fixed(ColorBinding),
     MatchNote,
-    YGradient { top: ColorBinding, bottom: ColorBinding },
+    YGradient {
+        top: ColorBinding,
+        bottom: ColorBinding,
+        top_fraction: f32,    // default 0.0
+        bottom_fraction: f32, // default 0.8
+    },
 }
 ```
 
@@ -433,10 +438,18 @@ from exactly one source:
   frame and reused for every particle it spawns that frame — under `EmissionMode::Continuous` this
   is what makes a held note's particle stream slide across the note's own gradient over time
   instead of staying pinned to its arrival color.
-- `YGradient { top, bottom }`: particles are tinted by their own *current* canvas Y position (top
-  of frame -> `top`, barrier line -> `bottom` — the same span `Fill::CanvasGradient` blends notes
-  across). Unlike `Fixed`/`MatchNote` (baked once at spawn), this is recomputed every frame
-  as a particle falls/rises under `gravity_px`, so a particle visibly shifts color as it moves.
+- `YGradient { top, bottom, top_fraction, bottom_fraction }`: particles are tinted by their own
+  *current* canvas Y position, blended between `top` (at `top_fraction`) and `bottom` (at
+  `bottom_fraction`) — each a fraction of canvas height (`0.0` = top of frame, `1.0` = bottom),
+  clamped rather than extrapolated outside that span. Unlike `Fixed`/`MatchNote` (baked once at
+  spawn), this is recomputed every frame as a particle falls/rises under `gravity_px`, so a
+  particle visibly shifts color as it moves. `top_fraction`/`bottom_fraction` default to `0.0`/
+  `0.8` (this field's original hardcoded span: top of frame to a typical default barrier
+  position), but since particles spawn at the barrier and rarely travel far from it, most of a
+  particle's actual on-screen motion tends to land in a narrow sliver near the `bottom_fraction`
+  end of that default span — the color barely changes across it. Narrow the span to bracket where
+  particles in your own spec actually travel (e.g. a bit above and below the barrier) to make the
+  gradient visible.
 
 ### `FlashSpec`
 

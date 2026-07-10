@@ -29,6 +29,8 @@
             color: YGradient(
                 top: Constant((60, 90, 255)),
                 bottom: Constant((255, 60, 60)),
+                top_fraction: 0.55,
+                bottom_fraction: 0.85,
             ),
             additive: true,
             emission: Burst,

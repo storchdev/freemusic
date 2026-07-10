@@ -1423,13 +1423,31 @@ explicit locations in both `EffectInstance::attributes()` and `effects.wgsl`, gu
 (not `quad_radius`, so the gradient doesn't distort into the glow margin).
 
 **`ParticleColor::YGradient`** is the one mode where a particle's color isn't fixed at spawn:
-`Particle` gained `y_gradient: Option<(top, bottom)>` plus `brightness`/`additive`, so `update`'s
+`Particle` gained `y_gradient: Option<YGradientRange>` plus `brightness`/`additive`, so `update`'s
 per-step loop can recompute `color` from the particle's *current* canvas Y every frame — and reapply
 the same post-processing `spawn_one_particle` applied once at spawn (additive particles' `color` is
 never whitened, only `layer_amp` carries brightness, so the recompute is a plain `mix3`;
 non-additive "puff" particles have `color` whitened via `hot_color` at spawn, so the recompute
 reapplies `hot_color` too — the one correctness bug caught before shipping: an earlier draft
 dropped this and silently lost `brightness`'s whitening on the very next frame after spawn).
+
+`YGradient` originally hardcoded the span it blended `top`/`bottom` across to "top of frame ->
+barrier line" (mirroring `Fill::CanvasGradient`'s own span). In practice this made the gradient
+barely visible: particles spawn *at* the barrier and, driven by `speed_px`/`gravity_px`, rarely
+travel far from it — so nearly all of a particle's actual on-screen motion landed in a narrow
+sliver right at the `bottom` end of that span, nowhere near `top`. `YGradient` gained
+`top_fraction`/`bottom_fraction: f32` (`#[serde(default)]` `0.0`/`0.8`, matching the old hardcoded
+span as closely as a static default can — the real barrier position is a per-project calibration
+value, not something this style-level default can read) so a style can narrow the span to bracket
+where its own particles actually travel instead. `resolve_particle_color` and the per-step
+recompute both scale these fractions by the current canvas height into a `YGradientRange { top,
+bottom, top_px, bottom_px }` (`effects.rs`, replacing the old bare `(top, bottom)` tuple this
+struct now carries `Particle::y_gradient` as, plus a `color_at(y_px)` helper both call sites
+share) — `resolve_particle_color` also had its last parameter renamed from `barrier_y` to
+`canvas_height` accordingly, since the range is no longer implicitly barrier-relative.
+`examples/styles/ygradient-particles.fmstyle.ron` was updated to `top_fraction: 0.55,
+bottom_fraction: 0.85`, bracketing where its own wide-`spread_degrees`/real-`gravity_px` particles
+actually rise and fall, instead of relying on the field's default (barely-visible) span.
 
 **Verified**: `cargo build`, `scripts/check.sh` (fmt+clippy), and `cargo test --workspace` all
 clean; `shipped_sample_styles_parse` finds `match-note-color.fmstyle.ron` (using the current

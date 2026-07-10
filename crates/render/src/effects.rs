@@ -162,10 +162,30 @@ fn hot_color([r, g, b]: [f32; 3], brightness: f32) -> [f32; 3] {
     ]
 }
 
-/// A particle/continuous-emission spawn's resolved color, plus (only for
-/// `project::ParticleColor::YGradient`) the `(top, bottom)` endpoints needed to keep
-/// re-evaluating it after spawn as the particle moves — see `Particle::y_gradient`.
-type YGradientEndpoints = ([f32; 3], [f32; 3]);
+/// The resolved (already-linear) endpoints of a `project::ParticleColor::YGradient`, plus the
+/// canvas-pixel span (`top_px`/`bottom_px`, from `top_fraction`/`bottom_fraction` * canvas height)
+/// they blend across — everything needed to keep re-evaluating a particle's color after spawn as
+/// it moves, see `Particle::y_gradient`.
+#[derive(Clone, Copy)]
+struct YGradientRange {
+    top: [f32; 3],
+    bottom: [f32; 3],
+    top_px: f32,
+    bottom_px: f32,
+}
+
+impl YGradientRange {
+    /// The blended color at `y_px`, clamping outside `[top_px, bottom_px]` rather than
+    /// extrapolating — a degenerate (zero-height) range just returns `top`.
+    fn color_at(&self, y_px: f32) -> [f32; 3] {
+        let span = self.bottom_px - self.top_px;
+        if span.abs() < 0.001 {
+            return self.top;
+        }
+        let t = ((y_px - self.top_px) / span).clamp(0.0, 1.0);
+        mix3(self.top, self.bottom, t)
+    }
+}
 
 struct Particle {
     pos: [f32; 2],
@@ -179,13 +199,13 @@ struct Particle {
     /// canvas Y, since `ParticleColor::YGradient` is the one mode where color isn't fixed at
     /// spawn — a particle visibly shifts color as gravity/its initial velocity move it.
     color: [f32; 3],
-    /// `Some((top, bottom))` (both already linear) when this particle's spec was
-    /// `ParticleColor::YGradient` — `None` for every other mode, since only `YGradient` needs
-    /// re-evaluating after spawn. `brightness`/`additive` are only meaningful alongside a `Some`
-    /// `y_gradient`, so the per-frame recompute can reapply the exact same post-processing
-    /// `spawn_one_particle` applied once at spawn time (`hot_color` for non-additive puffs, a
-    /// no-op multiply already folded into `layer_amp` for additive ones — see that function).
-    y_gradient: Option<YGradientEndpoints>,
+    /// `Some(range)` when this particle's spec was `ParticleColor::YGradient` — `None` for every
+    /// other mode, since only `YGradient` needs re-evaluating after spawn. `brightness`/`additive`
+    /// are only meaningful alongside a `Some` `y_gradient`, so the per-frame recompute can reapply
+    /// the exact same post-processing `spawn_one_particle` applied once at spawn time (`hot_color`
+    /// for non-additive puffs, a no-op multiply already folded into `layer_amp` for additive ones
+    /// — see that function).
+    y_gradient: Option<YGradientRange>,
     brightness: f32,
     additive: bool,
     /// `0.0` for non-additive "puff" particles (no corona, `quad_radius == core_radius`).
@@ -578,7 +598,7 @@ impl EffectsRenderer {
                                     interval,
                                     time_seconds,
                                     barrier_y,
-                                    barrier_y,
+                                    self.canvas_size.1,
                                 );
                                 let mut n = expected.floor() as u32;
                                 if self.rng.range(0.0, 1.0) < expected.fract() {
@@ -599,9 +619,8 @@ impl EffectsRenderer {
                 particle.pos[1] += particle.vel[1] * dt;
                 particle.vel[1] += particle.gravity_px * dt;
                 particle.life_seconds -= dt;
-                if let Some((top, bottom)) = particle.y_gradient {
-                    let t = (particle.pos[1] / barrier_y.max(0.001)).clamp(0.0, 1.0);
-                    let raw = mix3(top, bottom, t);
+                if let Some(range) = particle.y_gradient {
+                    let raw = range.color_at(particle.pos[1]);
                     particle.color = if particle.additive {
                         raw
                     } else {
@@ -647,23 +666,32 @@ impl EffectsRenderer {
     /// this is exactly what makes a held note's particle stream slide across the note's own
     /// gradient over time instead of staying pinned to the color it had on arrival. `Fixed`/
     /// `MatchNote` return `None` (nothing left to recompute after spawn); `YGradient` returns the
-    /// color at the *current* `y_px` plus `Some((top, bottom))` so the caller's `Particle::
-    /// y_gradient` can keep re-evaluating it as the particle moves.
+    /// color at the *current* `y_px` plus `Some(range)` so the caller's `Particle::y_gradient` can
+    /// keep re-evaluating it as the particle moves — `canvas_height` scales `top_fraction`/
+    /// `bottom_fraction` into the pixel span that range blends across.
     fn resolve_particle_color(
         color: &ParticleColor,
         interval: &NoteInterval,
         time_seconds: f32,
         y_px: f32,
-        barrier_y: f32,
-    ) -> ([f32; 3], Option<YGradientEndpoints>) {
+        canvas_height: f32,
+    ) -> ([f32; 3], Option<YGradientRange>) {
         match color {
             ParticleColor::Fixed(binding) => (srgb_to_linear(binding.resolve_constant()), None),
             ParticleColor::MatchNote => (interval.color_at_barrier(time_seconds), None),
-            ParticleColor::YGradient { top, bottom } => {
-                let top_c = srgb_to_linear(top.resolve_constant());
-                let bottom_c = srgb_to_linear(bottom.resolve_constant());
-                let t = (y_px / barrier_y.max(0.001)).clamp(0.0, 1.0);
-                (mix3(top_c, bottom_c, t), Some((top_c, bottom_c)))
+            ParticleColor::YGradient {
+                top,
+                bottom,
+                top_fraction,
+                bottom_fraction,
+            } => {
+                let range = YGradientRange {
+                    top: srgb_to_linear(top.resolve_constant()),
+                    bottom: srgb_to_linear(bottom.resolve_constant()),
+                    top_px: canvas_height * top_fraction,
+                    bottom_px: canvas_height * bottom_fraction,
+                };
+                (range.color_at(y_px), Some(range))
             }
         }
     }
@@ -675,8 +703,13 @@ impl EffectsRenderer {
         barrier_y: f32,
         spec: &ParticleSpec,
     ) {
-        let (color, y_gradient) =
-            Self::resolve_particle_color(&spec.color, interval, time_seconds, barrier_y, barrier_y);
+        let (color, y_gradient) = Self::resolve_particle_color(
+            &spec.color,
+            interval,
+            time_seconds,
+            barrier_y,
+            self.canvas_size.1,
+        );
         for _ in 0..spec.count {
             self.spawn_one_particle(interval.x_center(), barrier_y, spec, color, y_gradient);
         }
@@ -697,7 +730,7 @@ impl EffectsRenderer {
         y_px: f32,
         spec: &ParticleSpec,
         color: [f32; 3],
-        y_gradient: Option<YGradientEndpoints>,
+        y_gradient: Option<YGradientRange>,
     ) {
         let (color, margin_px, layer_amp, layer_sigma) = if spec.additive {
             let layer_amp = [
