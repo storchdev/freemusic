@@ -148,13 +148,17 @@ impl<T: Default> Default for Timed<T> {
     }
 }
 
-/// A per-note color: fixed, or driven by the note's own velocity, pitch class, or track index —
-/// see `resolve_for_note`.
+/// A per-note color: fixed, or driven by the note's own velocity, pitch class, absolute pitch, or
+/// track index — see `resolve_for_note`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ColorBinding {
     Constant([u8; 3]),
     ByVelocity(Ramp),
     ByPitchClass([[u8; 3]; 12]),
+    /// Scales continuously across the *whole* keyboard (unlike `ByPitchClass`, which repeats
+    /// every octave via `pitch % 12`) — see `pitch_fraction`'s doc comment for the range this is
+    /// keyed against.
+    ByPitch(Ramp),
     ByTrack(Vec<[u8; 3]>),
 }
 
@@ -167,6 +171,24 @@ fn lerp_color(low: [u8; 3], high: [u8; 3], t: f32) -> [u8; 3] {
     ]
 }
 
+/// Lowest/highest MIDI pitch of a standard 88-key piano (A0/C8) — `piano_layout::KeyboardRange::
+/// standard_88_keys()`'s own bounds, duplicated here (rather than taking a dependency on
+/// `piano-layout` from this crate) since this is the only place `project` needs them. Hardcoded
+/// because the app's keyboard range isn't adjustable yet; if/when it becomes a per-project
+/// setting, `ByPitch`/`pitch_fraction` will need to key off that instead of this constant.
+const STANDARD_88_KEY_LOW: u8 = 21;
+const STANDARD_88_KEY_HIGH: u8 = 108;
+
+/// Where `pitch` sits within the standard 88-key range, `0.0` at the lowest key (A0) to `1.0` at
+/// the highest (C8), clamped for any pitch outside that range. Shared by `ColorBinding::ByPitch`
+/// and `ScalarBinding::ByPitch` — unlike `ByPitchClass` (which wraps every octave identically via
+/// `pitch % 12`, so every C reads the same regardless of register), this scales across the *whole*
+/// keyboard, so the lowest and highest notes are unambiguously different colors/values.
+fn pitch_fraction(pitch: u8) -> f32 {
+    let span = (STANDARD_88_KEY_HIGH - STANDARD_88_KEY_LOW) as f32;
+    (pitch.saturating_sub(STANDARD_88_KEY_LOW) as f32 / span).clamp(0.0, 1.0)
+}
+
 impl ColorBinding {
     /// Resolves against a specific note's velocity (0-127), MIDI pitch number (0-127), and track
     /// index — the real per-note resolution the property-driven variants are meant for:
@@ -175,6 +197,8 @@ impl ColorBinding {
     ///   (velocity 127).
     /// - `ByPitchClass(colors)` indexes by `pitch % 12` (0 = C, 1 = C#, ... 11 = B, independent of
     ///   octave).
+    /// - `ByPitch(ramp)` linearly interpolates `ramp.low` (lowest key, A0) to `ramp.high` (highest
+    ///   key, C8) — see `pitch_fraction`.
     /// - `ByTrack(colors)` indexes by `track_id % colors.len()` (wrapping so a style authored for
     ///   fewer colors than a MIDI file has tracks still resolves deterministically instead of
     ///   panicking), or white if `colors` is empty.
@@ -190,6 +214,7 @@ impl ColorBinding {
                 lerp_color(ramp.low, ramp.high, velocity as f32 / 127.0)
             }
             ColorBinding::ByPitchClass(colors) => colors[(pitch % 12) as usize],
+            ColorBinding::ByPitch(ramp) => lerp_color(ramp.low, ramp.high, pitch_fraction(pitch)),
             ColorBinding::ByTrack(colors) => {
                 if colors.is_empty() {
                     [255, 255, 255]
@@ -202,16 +227,17 @@ impl ColorBinding {
 
     /// Resolves to a single representative color, for contexts with no specific note to key
     /// off of: exact for `Constant`; for the property-driven variants, a documented
-    /// representative value (`ByVelocity`'s high end, `ByPitchClass`'s first entry, `ByTrack`'s
-    /// first entry or white if empty) — **not** a "not yet wired up" placeholder, these contexts
-    /// (canvas background, the barrier bar/glow, the note-glow GPU uniform shared by every note)
-    /// structurally have no single note to resolve against. Prefer `resolve_for_note` wherever an
-    /// actual note is in scope.
+    /// representative value (`ByVelocity`/`ByPitch`'s high end, `ByPitchClass`'s first entry,
+    /// `ByTrack`'s first entry or white if empty) — **not** a "not yet wired up" placeholder,
+    /// these contexts (canvas background, the barrier bar/glow, the note-glow GPU uniform shared
+    /// by every note) structurally have no single note to resolve against. Prefer
+    /// `resolve_for_note` wherever an actual note is in scope.
     pub fn resolve_constant(&self) -> [u8; 3] {
         match self {
             ColorBinding::Constant(color) => *color,
             ColorBinding::ByVelocity(ramp) => ramp.high,
             ColorBinding::ByPitchClass(colors) => colors[0],
+            ColorBinding::ByPitch(ramp) => ramp.high,
             ColorBinding::ByTrack(colors) => colors.first().copied().unwrap_or([255, 255, 255]),
         }
     }
@@ -238,16 +264,26 @@ pub struct Ramp {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ScalarBinding {
     Constant(f32),
-    ByVelocity { low: f32, high: f32 },
+    ByVelocity {
+        low: f32,
+        high: f32,
+    },
     ByPitchClass([f32; 12]),
+    /// Scales continuously across the *whole* keyboard — see `ColorBinding::ByPitch`'s doc
+    /// comment (same `pitch_fraction` mechanism, numeric endpoints instead of colors).
+    ByPitch {
+        low: f32,
+        high: f32,
+    },
     ByTrack(Vec<f32>),
 }
 
 impl ScalarBinding {
     /// Resolves against a specific note's velocity/pitch/track index — see `ColorBinding::
-    /// resolve_for_note`, whose four-case mapping this mirrors exactly (`ByVelocity` interpolates
-    /// `low`->`high` by `velocity / 127`; `ByPitchClass` indexes `pitch % 12`; `ByTrack` indexes
-    /// `track_id % len`, wrapping, or falls back to `1.0` if empty).
+    /// resolve_for_note`, whose five-case mapping this mirrors exactly (`ByVelocity` interpolates
+    /// `low`->`high` by `velocity / 127`; `ByPitchClass` indexes `pitch % 12`; `ByPitch`
+    /// interpolates `low`->`high` across the whole 88-key range (`pitch_fraction`); `ByTrack`
+    /// indexes `track_id % len`, wrapping, or falls back to `1.0` if empty).
     pub fn resolve_for_note(&self, velocity: u8, pitch: u8, track_id: usize) -> f32 {
         match self {
             ScalarBinding::Constant(value) => *value,
@@ -256,6 +292,7 @@ impl ScalarBinding {
                 low + (high - low) * t
             }
             ScalarBinding::ByPitchClass(values) => values[(pitch % 12) as usize],
+            ScalarBinding::ByPitch { low, high } => low + (high - low) * pitch_fraction(pitch),
             ScalarBinding::ByTrack(values) => {
                 if values.is_empty() {
                     1.0
@@ -275,6 +312,7 @@ impl ScalarBinding {
             ScalarBinding::Constant(value) => *value,
             ScalarBinding::ByVelocity { high, .. } => *high,
             ScalarBinding::ByPitchClass(values) => values[0],
+            ScalarBinding::ByPitch { high, .. } => *high,
             ScalarBinding::ByTrack(values) => values.first().copied().unwrap_or(1.0),
         }
     }
@@ -954,6 +992,25 @@ mod tests {
         assert_eq!(binding.resolve_for_note(100, 76, 0), [0, 1, 0]);
     }
 
+    /// Unlike `ByPitchClass`, `ByPitch` scales continuously across the whole 88-key range (A0/21
+    /// to C8/108) rather than repeating every octave — the lowest and highest keys resolve to the
+    /// exact endpoints, and a note in between (here, the same middle C used by the `ByPitchClass`
+    /// test above) lands partway between them.
+    #[test]
+    fn color_binding_by_pitch_resolves_for_note_across_the_whole_88_key_range() {
+        let binding = ColorBinding::ByPitch(Ramp {
+            low: [0, 0, 0],
+            high: [255, 0, 0],
+        });
+        assert_eq!(binding.resolve_for_note(100, 21, 0), [0, 0, 0]);
+        assert_eq!(binding.resolve_for_note(100, 108, 0), [255, 0, 0]);
+        // Middle C (60) sits at (60 - 21) / (108 - 21) ≈ 0.448 of the way up.
+        assert_eq!(binding.resolve_for_note(100, 60, 0), [114, 0, 0]);
+        // Out-of-range pitches clamp to the nearest endpoint rather than extrapolating.
+        assert_eq!(binding.resolve_for_note(100, 0, 0), [0, 0, 0]);
+        assert_eq!(binding.resolve_for_note(100, 127, 0), [255, 0, 0]);
+    }
+
     #[test]
     fn color_binding_by_track_resolves_for_note_by_track_index_with_wraparound() {
         let binding = ColorBinding::ByTrack(vec![[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
@@ -987,6 +1044,21 @@ mod tests {
         assert_eq!(binding.resolve_for_note(100, 60, 0), 1.0);
         assert_eq!(binding.resolve_for_note(100, 64, 0), 2.0);
         assert_eq!(binding.resolve_for_note(100, 76, 0), 2.0);
+    }
+
+    /// Same 88-key-wide scaling as `color_binding_by_pitch_resolves_for_note_across_the_whole_88_
+    /// key_range`, numeric endpoints instead of colors.
+    #[test]
+    fn scalar_binding_by_pitch_resolves_for_note_across_the_whole_88_key_range() {
+        let binding = ScalarBinding::ByPitch {
+            low: 0.0,
+            high: 87.0,
+        };
+        assert_eq!(binding.resolve_for_note(100, 21, 0), 0.0);
+        assert_eq!(binding.resolve_for_note(100, 108, 0), 87.0);
+        assert_eq!(binding.resolve_for_note(100, 60, 0), 39.0);
+        assert_eq!(binding.resolve_for_note(100, 0, 0), 0.0);
+        assert_eq!(binding.resolve_for_note(100, 127, 0), 87.0);
     }
 
     #[test]

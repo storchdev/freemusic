@@ -587,21 +587,27 @@ automatically reflects sheen (and any future fill-affecting change) with no port
 ### `ColorBinding` / `ScalarBinding`
 
 ```rust
-enum ColorBinding { Constant([u8; 3]), ByVelocity(Ramp), ByPitchClass([[u8; 3]; 12]), ByTrack(Vec<[u8; 3]>) }
-enum ScalarBinding { Constant(f32), ByVelocity { low: f32, high: f32 }, ByPitchClass([f32; 12]), ByTrack(Vec<f32>) }
+enum ColorBinding { Constant([u8; 3]), ByVelocity(Ramp), ByPitchClass([[u8; 3]; 12]), ByPitch(Ramp), ByTrack(Vec<[u8; 3]>) }
+enum ScalarBinding { Constant(f32), ByVelocity { low: f32, high: f32 }, ByPitchClass([f32; 12]), ByPitch { low: f32, high: f32 }, ByTrack(Vec<f32>) }
 struct Ramp { low: [u8; 3], high: [u8; 3] }
 ```
 
 Every color-typed field in this schema is a `ColorBinding`, meant to vary per note by velocity,
-pitch class, or track. **Wherever an actual note is in scope — note fill, particle/flash colors
-triggered by a note — all four variants resolve per note** via `ColorBinding::resolve_for_note
-(velocity, pitch, track_id)`:
+pitch class, absolute pitch, or track. **Wherever an actual note is in scope — note fill,
+particle/flash colors triggered by a note — every variant resolves per note** via
+`ColorBinding::resolve_for_note(velocity, pitch, track_id)`:
 
 - `Constant(color)` → `color`, ignoring the note entirely (as before).
 - `ByVelocity(ramp)` → linearly interpolates `ramp.low` (velocity 0) to `ramp.high` (velocity
   127) by this note's own MIDI velocity.
 - `ByPitchClass(colors)` → `colors[pitch % 12]` (0 = C, 1 = C#, ... 11 = B, independent of
   octave), by this note's own MIDI pitch number.
+- `ByPitch(ramp)` → linearly interpolates `ramp.low` (lowest key) to `ramp.high` (highest key)
+  across the *whole* keyboard, unlike `ByPitchClass` which repeats every octave identically.
+  Hardcoded today to the standard 88-key range (A0/MIDI 21 to C8/MIDI 108, clamped beyond either
+  end) since the app's keyboard range isn't itself adjustable yet (see `pitch_fraction` in
+  `crates/project/src/style.rs`); if/when the keyboard range becomes a per-project setting, this
+  should key off that instead of the hardcoded constant.
 - `ByTrack(colors)` → `colors[track_id % colors.len()]` (wrapping, so a style authored for fewer
   colors than a MIDI file has tracks still resolves deterministically instead of panicking), or
   white if `colors` is empty, by this note's own track index.
@@ -613,16 +619,18 @@ invocation unless `Glow::match_note_color` is set, which samples the note's own 
 fill color instead). These call `ColorBinding::resolve_constant()` instead, a **permanent, not a
 "not yet wired up"**, fallback to a single representative value:
 
-- `ByVelocity(ramp)` → `ramp.high` (the loudest-note color).
+- `ByVelocity(ramp)` / `ByPitch(ramp)` → `ramp.high` (the loudest-note / highest-key color).
 - `ByPitchClass(colors)` → `colors[0]`.
 - `ByTrack(colors)` → `colors.first()`, or white if the list is empty.
 
-`ScalarBinding` is the identically-shaped numeric counterpart, used by `ParticleSpec::brightness`/
-`FlashSpec::brightness` (both resolved per triggering note via `ScalarBinding::resolve_for_note`,
-same four-case mapping as `ColorBinding`'s above, substituting a plain `f32` lerp/index for a
-color one). `Glow::brightness`/`Pulse::brightness` stay a plain `f32`, not `ScalarBinding` — same
-"no single note to resolve against" reasoning as `background`/`BarrierLayer::color` above (one GPU
-uniform / one canvas-wide bar). `ScalarBinding::resolve_constant()` exists for symmetry with
+`ScalarBinding` is the identically-shaped numeric counterpart, used by `ParticleSpec`'s
+`brightness`/`lifetime_seconds`/`size_px`/`speed_px`/`spread_degrees`/`gravity_px` and `FlashSpec`'s
+`brightness`/`radius_x_px`/`radius_y_px`/`decay_seconds`/`NoteLayer::alpha` (all resolved per
+triggering/held note via `ScalarBinding::resolve_for_note`, same five-case mapping as
+`ColorBinding`'s above, substituting a plain `f32` lerp/index for a color one).
+`Glow::brightness`/`Pulse::brightness` stay a plain `f32`, not `ScalarBinding` — same "no single
+note to resolve against" reasoning as `background`/`BarrierLayer::color` above (one GPU uniform /
+one canvas-wide bar). `ScalarBinding::resolve_constant()` exists for symmetry with
 `ColorBinding::resolve_constant()` but nothing currently calls it — every field that reads
 `ScalarBinding` today always has a note in scope.
 

@@ -1731,3 +1731,52 @@ confirming, next time someone has hands on the app: import `velocity-sparks.fmst
 confirm a hard keypress's spark burst and flash visibly grow (not just brighten/recolor) compared
 to a soft keypress's.
 
+### Phase T: `ColorBinding`/`ScalarBinding::ByPitch`, scaling across the whole 88-key range
+
+`ByPitchClass` (Phase R) wraps every octave identically (`pitch % 12`), so a style using it can
+distinguish "which of the 12 notes in an octave" but not "how high or low on the keyboard" — every
+C reads the same whether it's the lowest or highest key. Added a fifth variant to both
+`ColorBinding` and `ScalarBinding`, `ByPitch`, that instead scales continuously from the lowest key
+to the highest: same `Ramp { low, high }` shape `ByVelocity` already uses (reused directly for
+`ColorBinding::ByPitch` rather than inventing a new struct), interpolated by a new private
+`pitch_fraction(pitch)` helper (`crates/project/src/style.rs`) — `0.0` at the lowest key, `1.0` at
+the highest, clamped beyond either end (so an out-of-range MIDI pitch, e.g. one below A0 or above
+C8, doesn't extrapolate past the ramp's own endpoints).
+
+**Hardcoded to the standard 88-key range for now** (`STANDARD_88_KEY_LOW = 21` / `STANDARD_88_KEY_
+HIGH = 108`, i.e. A0..=C8 — the same bounds `piano_layout::KeyboardRange::standard_88_keys()`
+already uses elsewhere in the renderer, duplicated here rather than taking a `piano-layout`
+dependency in `project` just for two constants) per direct instruction: the keyboard's range isn't
+itself an adjustable project setting yet, so there's no "actual configured range" to key off of.
+`pitch_fraction`'s doc comment flags this explicitly as the spot to revisit once the keyboard range
+does become adjustable.
+
+**Resolution**: `ColorBinding::ByPitch(ramp)` → `lerp_color(ramp.low, ramp.high,
+pitch_fraction(pitch))` in `resolve_for_note`, `ramp.high` in `resolve_constant` (same convention
+`ByVelocity` already uses — the "high" end as the representative value for note-less contexts).
+`ScalarBinding::ByPitch { low, high }` mirrors this exactly with a plain `f32` lerp. No renderer
+changes needed beyond the schema/resolution — every consumer of `ColorBinding`/`ScalarBinding`
+already goes through `resolve_for_note`/`resolve_constant`, so a new variant just adds another
+match arm each, with no exhaustive matches on either enum living outside `style.rs` itself.
+
+**Tests**: `crates/project/src/style.rs` gained
+`color_binding_by_pitch_resolves_for_note_across_the_whole_88_key_range` and
+`scalar_binding_by_pitch_resolves_for_note_across_the_whole_88_key_range`, each checking the two
+endpoints, a mid-keyboard note (middle C, MIDI 60), and clamping for pitches outside the 88-key
+range (MIDI 0 and 127).
+
+**Sample added**: `examples/styles/pitch-gradient.fmstyle.ron` (`pitch_gradient` in
+`crates/project/examples/dump_sample_styles.rs`, right after `pitch_rainbow`) — a solid fill using
+`ColorBinding::ByPitch(Ramp { low: (40, 60, 220), high: (255, 160, 40) })`, deep blue at the bottom
+of the 88-key range fading to warm orange at the top, deliberately placed next to `pitch_rainbow`
+(`ByPitchClass`) so the two samples read as a contrasting pair: `pitch_rainbow` distinguishes which
+of the 12 pitch classes a note is (repeating every octave), `pitch_gradient` distinguishes where
+on the whole keyboard it sits (never repeating).
+
+**Verified**: `cargo build --workspace --all-targets`, `cargo test --workspace`, and `cargo
+fmt`/`cargo clippy --all-targets --workspace` all clean; `shipped_sample_styles_parse` finds the
+new sample file. **Not yet manually run** (per the "never run the app yourself" rule) — worth
+confirming, next time someone has hands on the app: import `pitch-gradient.fmstyle.ron` and
+confirm bass notes render blue and treble notes render orange, with a visible in-between gradient
+across the middle of the keyboard rather than a hard split.
+

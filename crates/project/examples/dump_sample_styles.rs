@@ -707,6 +707,26 @@ fn main() {
         background: ColorBinding::Constant([0, 0, 0]),
     };
 
+    // Demonstrates `ColorBinding::ByPitch` — unlike `ByPitchClass` just above (which repeats the
+    // same 12 colors every octave), this scales continuously from the lowest key on the keyboard
+    // to the highest: a deep blue at the very bottom of the 88-key range up through a warm orange
+    // at the very top, so a bass note and the same pitch class an octave up read as visibly
+    // different, and where a note sits on the whole keyboard (not just which of the 12 pitch
+    // classes it is) is what the color communicates.
+    let pitch_gradient = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer {
+            fill: Fill::Solid(ColorBinding::ByPitch(Ramp {
+                low: [40, 60, 220],
+                high: [255, 160, 40],
+            })),
+            ..NoteLayer::default()
+        }),
+        barrier: Timed::Static(visible_barrier()),
+        transition: Timed::Static(TransitionLayer::default()),
+        background: ColorBinding::Constant([0, 0, 0]),
+    };
+
     // Demonstrates `ColorBinding::ByTrack` actually resolving per note: each MIDI track index gets
     // its own fixed color (wrapping via `track_id % colors.len()` if a file has more tracks than
     // colors here) — useful for e.g. a two-track file where the right- and left-hand parts should
@@ -806,6 +826,7 @@ fn main() {
     print_style("velocity-colored-notes", &velocity_colored_notes);
     print_style("note-alpha", &note_alpha);
     print_style("pitch-rainbow", &pitch_rainbow);
+    print_style("pitch-gradient", &pitch_gradient);
     print_style("track-colored-notes", &track_colored_notes);
     print_style("velocity-sparks", &velocity_sparks);
 }
