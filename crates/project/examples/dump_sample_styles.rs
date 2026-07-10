@@ -6,8 +6,8 @@
 
 use project::{
     BarrierLayer, BlackKeyFill, ColorBinding, Fill, FlashColor, FlashMode, FlashSpec, Glow,
-    GlowLayer, NoteLayer, ParticleColor, ParticleSpec, Pulse, Sheen, StrandSpec, Style, Timed,
-    TransitionKind, TransitionLayer, WavyMode, WavySpec,
+    GlowLayer, NoteLayer, ParticleColor, ParticleSpec, Pulse, Ramp, Sheen, StrandSpec, Style,
+    Timed, TransitionKind, TransitionLayer, WavyMode, WavySpec,
 };
 
 fn glow_layers(tight: f32, mid: f32, wide: f32) -> [GlowLayer; 3] {
@@ -632,6 +632,113 @@ fn main() {
         background: ColorBinding::Constant([0, 0, 0]),
     };
 
+    // Demonstrates `ColorBinding::ByVelocity` actually resolving per note (rather than falling
+    // back to `ramp.high` for every note): quiet notes render a cool, muted blue, loud notes a
+    // hot orange-red, interpolated by each note's own MIDI velocity (0-127) via
+    // `ColorBinding::resolve_for_note`.
+    let velocity_colored_notes = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer {
+            fill: Fill::Solid(ColorBinding::ByVelocity(Ramp {
+                low: [40, 60, 120],
+                high: [255, 90, 60],
+            })),
+            ..NoteLayer::default()
+        }),
+        barrier: Timed::Static(visible_barrier()),
+        transition: Timed::Static(TransitionLayer::default()),
+        background: ColorBinding::Constant([0, 0, 0]),
+    };
+
+    // Demonstrates `ColorBinding::ByPitchClass` actually resolving per note: each of the 12 pitch
+    // classes (C, C#, D, ... B — `pitch % 12`, independent of octave) gets its own fixed color, a
+    // classic chromatic-circle rainbow rather than one color (`colors[0]`) for every note.
+    let pitch_rainbow = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer {
+            fill: Fill::Solid(ColorBinding::ByPitchClass([
+                [255, 0, 0],   // C
+                [255, 90, 0],  // C#
+                [255, 180, 0], // D
+                [220, 255, 0], // D#
+                [130, 255, 0], // E
+                [0, 255, 60],  // F
+                [0, 255, 180], // F#
+                [0, 200, 255], // G
+                [0, 90, 255],  // G#
+                [80, 0, 255],  // A
+                [180, 0, 255], // A#
+                [255, 0, 180], // B
+            ])),
+            ..NoteLayer::default()
+        }),
+        barrier: Timed::Static(visible_barrier()),
+        transition: Timed::Static(TransitionLayer::default()),
+        background: ColorBinding::Constant([0, 0, 0]),
+    };
+
+    // Demonstrates `ColorBinding::ByTrack` actually resolving per note: each MIDI track index gets
+    // its own fixed color (wrapping via `track_id % colors.len()` if a file has more tracks than
+    // colors here) — useful for e.g. a two-track file where the right- and left-hand parts should
+    // read as visually distinct rather than sharing one color.
+    let track_colored_notes = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer {
+            fill: Fill::Solid(ColorBinding::ByTrack(vec![
+                [255, 200, 90],
+                [90, 200, 255],
+                [200, 90, 255],
+            ])),
+            ..NoteLayer::default()
+        }),
+        barrier: Timed::Static(visible_barrier()),
+        transition: Timed::Static(TransitionLayer::default()),
+        background: ColorBinding::Constant([0, 0, 0]),
+    };
+
+    // Demonstrates `ColorBinding::ByVelocity` resolving per note outside of note fill too —
+    // `ParticleColor::Fixed`/`FlashColor::Solid` resolve against the *triggering* note's own
+    // velocity (`render::effects`'s `resolve_particle_color`/`spawn_flash`), so a soft keypress
+    // sparks a dim ember-red burst and a hard keypress sparks a bright white-hot one, instead of
+    // every arrival spawning an identical fixed-color burst.
+    let velocity_sparks = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer::default()),
+        barrier: Timed::Static(visible_barrier()),
+        transition: Timed::Static(TransitionLayer {
+            kind: TransitionKind::ParticlesAndFlash,
+            particles: Some(ParticleSpec {
+                count: 24,
+                lifetime_seconds: 0.4,
+                size_px: 4.0,
+                speed_px: 180.0,
+                spread_degrees: 60.0,
+                gravity_px: 300.0,
+                color: ParticleColor::Fixed(ColorBinding::ByVelocity(Ramp {
+                    low: [120, 20, 20],
+                    high: [255, 250, 220],
+                })),
+                additive: true,
+                emission: project::EmissionMode::Burst,
+                brightness: 1.0,
+                layers: hot_layers(0.5, 1.0, 2.0),
+            }),
+            flash: Some(FlashSpec {
+                radius_x_px: 40.0,
+                radius_y_px: 40.0,
+                color: FlashColor::Solid(ColorBinding::ByVelocity(Ramp {
+                    low: [120, 20, 20],
+                    high: [255, 250, 220],
+                })),
+                decay_seconds: 0.15,
+                mode: FlashMode::Instant,
+                brightness: 1.0,
+                layers: glow_layers(2.0, 5.0, 10.0),
+            }),
+        }),
+        background: ColorBinding::Constant([0, 0, 0]),
+    };
+
     print_style("gradient-glow", &gradient_glow);
     print_style("canvas-gradient", &canvas_gradient);
     print_style("match-note-color", &match_note_color);
@@ -646,4 +753,8 @@ fn main() {
     print_style("key-glow", &key_glow);
     print_style("dark-background", &dark_background);
     print_style("showcase_blue_purple", &showcase_blue_purple);
+    print_style("velocity-colored-notes", &velocity_colored_notes);
+    print_style("pitch-rainbow", &pitch_rainbow);
+    print_style("track-colored-notes", &track_colored_notes);
+    print_style("velocity-sparks", &velocity_sparks);
 }

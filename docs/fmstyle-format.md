@@ -560,18 +560,35 @@ enum ScalarBinding { Constant(f32), ByVelocity { low: f32, high: f32 }, ByPitchC
 struct Ramp { low: [u8; 3], high: [u8; 3] }
 ```
 
-Every color-typed field in this schema is a `ColorBinding`, meant to eventually vary per note by
-velocity, pitch class, or track. **Only `Constant` actually varies rendering today.** The other
-three variants parse and round-trip correctly, but resolve (via `resolve_constant()`) to a fixed
-representative value and print a one-time stderr warning the first time this happens per process:
+Every color-typed field in this schema is a `ColorBinding`, meant to vary per note by velocity,
+pitch class, or track. **Wherever an actual note is in scope — note fill, particle/flash colors
+triggered by a note — all four variants resolve per note** via `ColorBinding::resolve_for_note
+(velocity, pitch, track_id)`:
+
+- `Constant(color)` → `color`, ignoring the note entirely (as before).
+- `ByVelocity(ramp)` → linearly interpolates `ramp.low` (velocity 0) to `ramp.high` (velocity
+  127) by this note's own MIDI velocity.
+- `ByPitchClass(colors)` → `colors[pitch % 12]` (0 = C, 1 = C#, ... 11 = B, independent of
+  octave), by this note's own MIDI pitch number.
+- `ByTrack(colors)` → `colors[track_id % colors.len()]` (wrapping, so a style authored for fewer
+  colors than a MIDI file has tracks still resolves deterministically instead of panicking), or
+  white if `colors` is empty, by this note's own track index.
+
+A handful of fields have no single note to resolve against — the canvas `background`, the barrier
+bar/glow (`BarrierLayer::color`/`BarrierLayer::glow.color`, one bar for the whole canvas), and the
+note-glow GPU uniform (`NoteLayer::glow.color`, one value shared by every note's shader
+invocation unless `Glow::match_note_color` is set, which samples the note's own per-note-resolved
+fill color instead). These call `ColorBinding::resolve_constant()` instead, a **permanent, not a
+"not yet wired up"**, fallback to a single representative value:
 
 - `ByVelocity(ramp)` → `ramp.high` (the loudest-note color).
 - `ByPitchClass(colors)` → `colors[0]`.
 - `ByTrack(colors)` → `colors.first()`, or white if the list is empty.
 
 `ScalarBinding` (currently unused by any field in this schema, reserved for a future numeric
-per-note property) follows the identical shape and fallback rule (`ByVelocity.high`,
-`ByPitchClass[0]`, `ByTrack.first()` or `1.0`).
+per-note property) only has `resolve_constant()` so far, with the identical fallback rule
+(`ByVelocity.high`, `ByPitchClass[0]`, `ByTrack.first()` or `1.0`) — it would need its own
+`resolve_for_note` once some field actually reads it.
 
 ## Brightness/overexposure
 
@@ -608,9 +625,13 @@ One place to check when a parsed field does not affect rendering:
 
 - **`NoteLayer::border` (`Border`)**: `struct Border { color: ColorBinding, width_px: f32 }` parses
   and round-trips but no renderer draws it.
-- **Any non-`Constant` `ColorBinding`/`ScalarBinding`** (`ByVelocity`/`ByPitchClass`/`ByTrack`):
-  parse and round-trip, resolve to a fixed fallback constant as described above, and are not yet
-  driven by real per-note velocity/pitch/track data.
+- **Any non-`Constant` `ColorBinding` used on `background`/`BarrierLayer::color`/
+  `BarrierLayer::glow.color`/`NoteLayer::glow.color`**: parses and round-trips, but resolves to a
+  fixed representative constant (`resolve_constant()`) rather than varying per note — see the
+  `ColorBinding`/`ScalarBinding` section above for why these specific fields structurally have no
+  single note to resolve against. Every other `ColorBinding` field (note fill, particle/flash
+  colors) *does* vary per note (`resolve_for_note()`).
+- **`ScalarBinding`**: schema/parsing only — no field in this schema uses it yet.
 
 ## Migration history
 

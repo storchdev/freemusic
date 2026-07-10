@@ -1,0 +1,29 @@
+(
+    version: 1,
+    notes: Static((
+        fill: Solid(ByVelocity((
+            low: (40, 60, 120),
+            high: (255, 90, 60),
+        ))),
+        sheen: None,
+        glow: None,
+        roundedness: 1.0,
+        fall_speed: 400.0,
+        border: None,
+        black_key_fill: Auto,
+    )),
+    barrier: Static((
+        color: Constant((255, 255, 255)),
+        thickness: 4.0,
+        glow: None,
+        pulse: None,
+        wavy: None,
+        show_bar: true,
+    )),
+    transition: Static((
+        kind: r#None,
+        particles: None,
+        flash: None,
+    )),
+    background: Constant((0, 0, 0)),
+)

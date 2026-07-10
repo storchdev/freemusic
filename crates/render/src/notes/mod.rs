@@ -59,7 +59,7 @@ pub struct NoteInterval {
     /// than read directly, so `project::ParticleColor::MatchNote`/`project::FlashColor::MatchNote`
     /// track *whichever part of the note is currently at the barrier* instead of a fixed sample:
     /// every `Fill` variant — current or future — resolves to a `(top, bottom)` pair by
-    /// construction (see `resolve_fill_base`), so this stays correct for any future fill/sheen/glow
+    /// construction (see `resolve_fill_for_note`), so this stays correct for any future fill/sheen/glow
     /// effect with no render-side code to keep in sync, at the cost of not reflecting horizontal
     /// detail (e.g. a diagonal `Sheen` stripe) a fine-grained per-pixel sample would have. See
     /// `docs/fmstyle-format.md`'s "Note color sampling at the barrier" section for the full
@@ -70,6 +70,14 @@ pub struct NoteInterval {
     /// than a note-local gradient (`Fill::Solid`/`VerticalGradient`) — changes how
     /// `color_at_barrier` interpolates, see that method.
     pub canvas_gradient: bool,
+    /// This note's own velocity/pitch/track index — carried alongside the geometry/timing fields
+    /// above so `render::effects::EffectsRenderer` can resolve `project::ParticleColor::Fixed`/
+    /// `YGradient`'s endpoints and `project::FlashColor::Solid`/`HorizontalGradient`'s stops
+    /// against *this* note via `ColorBinding::resolve_for_note`, the same way `NoteSource` already
+    /// lets note fill do so (see `resolve_fill_for_note`).
+    pub velocity: u8,
+    pub pitch: u8,
+    pub track_id: usize,
 }
 
 impl NoteInterval {
@@ -358,25 +366,6 @@ impl NotesRenderer {
         let keys = keyboard_layout(viewport, calibration);
         let left_x = viewport.0 * calibration.left_fraction;
 
-        // Resolve the fill to a top/bottom color pair once per rebuild — for `Fill::Solid` both
-        // ends are the same color, so the shader's gradient mix is a no-op and every note just
-        // renders flat, matching the pre-Phase-C look exactly.
-        let (top_base, bottom_base) = resolve_fill_base(&note_layer.fill);
-        let top_light = color_to_linear(top_base);
-        let bottom_light = color_to_linear(bottom_base);
-        // `Auto`'s output is byte-identical to the pre-Phase-F behavior (same `darken(_, 0.6)`
-        // call on the same base colors) — the required no-regression guarantee.
-        let (top_dark, bottom_dark) = match &note_layer.black_key_fill {
-            BlackKeyFill::Auto => (
-                color_to_linear(darken(top_base, 0.6)),
-                color_to_linear(darken(bottom_base, 0.6)),
-            ),
-            BlackKeyFill::Same => (top_light, bottom_light),
-            BlackKeyFill::Custom(fill) => {
-                let (dark_top, dark_bottom) = resolve_fill_base(fill);
-                (color_to_linear(dark_top), color_to_linear(dark_bottom))
-            }
-        };
         // Phase P: whether each key group's fill should blend by canvas Y position
         // (`Fill::CanvasGradient`) instead of the note's own local top/bottom — `Auto`/`Same`
         // inherit the natural-key fill's basis (they only ever darken or copy its colors, never
@@ -464,10 +453,37 @@ impl NotesRenderer {
                 });
 
             let key = &keys[note.note as usize - range_start];
+            // Resolved per note (not hoisted outside the loop) so `ColorBinding::ByVelocity`/
+            // `ByPitchClass`/`ByTrack` can actually vary by this note's own velocity/pitch/track —
+            // see `resolve_fill_for_note`. For `Fill::Solid` both ends are the same color, so the
+            // shader's gradient mix is a no-op and every note just renders flat, matching the
+            // pre-Phase-C look exactly for `Constant` bindings.
+            let (light_top_base, light_bottom_base) =
+                resolve_fill_for_note(&note_layer.fill, note.velocity, note.note, note.track_id);
             let (color_top, color_bottom, canvas_gradient) = if key.is_sharp {
-                (top_dark, bottom_dark, is_canvas_dark)
+                // `Auto`'s output is byte-identical to the pre-Phase-F behavior (same
+                // `darken(_, 0.6)` call on the same base colors) — the required no-regression
+                // guarantee.
+                let (dark_top_base, dark_bottom_base) = match &note_layer.black_key_fill {
+                    BlackKeyFill::Auto => {
+                        (darken(light_top_base, 0.6), darken(light_bottom_base, 0.6))
+                    }
+                    BlackKeyFill::Same => (light_top_base, light_bottom_base),
+                    BlackKeyFill::Custom(fill) => {
+                        resolve_fill_for_note(fill, note.velocity, note.note, note.track_id)
+                    }
+                };
+                (
+                    color_to_linear(dark_top_base),
+                    color_to_linear(dark_bottom_base),
+                    is_canvas_dark,
+                )
             } else {
-                (top_light, bottom_light, is_canvas_light)
+                (
+                    color_to_linear(light_top_base),
+                    color_to_linear(light_bottom_base),
+                    is_canvas_light,
+                )
             };
             let duration = note.duration_seconds.max(0.1);
             let original_duration = note.original_duration_seconds.max(0.1);
@@ -499,6 +515,9 @@ impl NotesRenderer {
                     color_top,
                     color_bottom,
                     canvas_gradient,
+                    velocity: note.velocity,
+                    pitch: note.note,
+                    track_id: note.track_id,
                 });
             }
             active_notes.push(ActiveNote {
@@ -647,17 +666,26 @@ fn keyboard_layout(
     keys
 }
 
-/// Resolves a `Fill` to its (top, bottom) base colors — shared by the white-key fill and, since
-/// Phase F, `BlackKeyFill::Custom`'s independently resolved fill.
-fn resolve_fill_base(fill: &Fill) -> ([u8; 3], [u8; 3]) {
+/// Resolves a `Fill` to its (top, bottom) base colors for one specific note — shared by the
+/// white-key fill and, since Phase F, `BlackKeyFill::Custom`'s independently resolved fill. Real
+/// per-note resolution (`ColorBinding::resolve_for_note`) is what makes `ByVelocity`/
+/// `ByPitchClass`/`ByTrack` actually vary rendering instead of falling back to one representative
+/// color for every note.
+fn resolve_fill_for_note(
+    fill: &Fill,
+    velocity: u8,
+    pitch: u8,
+    track_id: usize,
+) -> ([u8; 3], [u8; 3]) {
     match fill {
         Fill::Solid(binding) => {
-            let color = binding.resolve_constant();
+            let color = binding.resolve_for_note(velocity, pitch, track_id);
             (color, color)
         }
-        Fill::VerticalGradient { top, bottom } | Fill::CanvasGradient { top, bottom } => {
-            (top.resolve_constant(), bottom.resolve_constant())
-        }
+        Fill::VerticalGradient { top, bottom } | Fill::CanvasGradient { top, bottom } => (
+            top.resolve_for_note(velocity, pitch, track_id),
+            bottom.resolve_for_note(velocity, pitch, track_id),
+        ),
     }
 }
 

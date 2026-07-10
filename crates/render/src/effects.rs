@@ -257,14 +257,22 @@ fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 /// Resamples an author-painted, arbitrary-length gradient (`FlashColor::HorizontalGradient`) onto
 /// the fixed `FLASH_GRADIENT_STOPS`-stop internal representation every flash instance carries. An empty
 /// list falls back to white (matching `ColorBinding::ByTrack`'s own empty-list fallback elsewhere
-/// in this schema).
-fn resample_gradient_stops(list: &[ColorBinding]) -> [[f32; 3]; FLASH_GRADIENT_STOPS] {
+/// in this schema). Each stop is resolved against the triggering note's own velocity/pitch/track
+/// (`resolve_for_note`), so a `ByVelocity`/`ByPitchClass`/`ByTrack` stop varies by which note
+/// spawned this flash — the position of the stop within the gradient still comes from the
+/// author's list order, only the color at each position is note-aware.
+fn resample_gradient_stops(
+    list: &[ColorBinding],
+    velocity: u8,
+    pitch: u8,
+    track_id: usize,
+) -> [[f32; 3]; FLASH_GRADIENT_STOPS] {
     if list.is_empty() {
         return [[1.0; 3]; FLASH_GRADIENT_STOPS];
     }
     let colors: Vec<[f32; 3]> = list
         .iter()
-        .map(|c| srgb_to_linear(c.resolve_constant()))
+        .map(|c| srgb_to_linear(c.resolve_for_note(velocity, pitch, track_id)))
         .collect();
     let mut out = [[0.0f32; 3]; FLASH_GRADIENT_STOPS];
     for (i, stop) in out.iter_mut().enumerate() {
@@ -677,7 +685,14 @@ impl EffectsRenderer {
         canvas_height: f32,
     ) -> ([f32; 3], Option<YGradientRange>) {
         match color {
-            ParticleColor::Fixed(binding) => (srgb_to_linear(binding.resolve_constant()), None),
+            ParticleColor::Fixed(binding) => (
+                srgb_to_linear(binding.resolve_for_note(
+                    interval.velocity,
+                    interval.pitch,
+                    interval.track_id,
+                )),
+                None,
+            ),
             ParticleColor::MatchNote => (interval.color_at_barrier(time_seconds), None),
             ParticleColor::YGradient {
                 top,
@@ -686,8 +701,16 @@ impl EffectsRenderer {
                 bottom_fraction,
             } => {
                 let range = YGradientRange {
-                    top: srgb_to_linear(top.resolve_constant()),
-                    bottom: srgb_to_linear(bottom.resolve_constant()),
+                    top: srgb_to_linear(top.resolve_for_note(
+                        interval.velocity,
+                        interval.pitch,
+                        interval.track_id,
+                    )),
+                    bottom: srgb_to_linear(bottom.resolve_for_note(
+                        interval.velocity,
+                        interval.pitch,
+                        interval.track_id,
+                    )),
                     top_px: canvas_height * top_fraction,
                     bottom_px: canvas_height * bottom_fraction,
                 };
@@ -791,12 +814,17 @@ impl EffectsRenderer {
         // saturation whitens for free. A flash is always fully "on" at spawn, fading to 0 over
         // `decay_seconds` as before.
         let color = match &spec.color {
-            FlashColor::Solid(binding) => FlashColorSource::Fixed(
-                [srgb_to_linear(binding.resolve_constant()); FLASH_GRADIENT_STOPS],
-            ),
-            FlashColor::HorizontalGradient(list) => {
-                FlashColorSource::Fixed(resample_gradient_stops(list))
+            FlashColor::Solid(binding) => {
+                let resolved = srgb_to_linear(binding.resolve_for_note(
+                    interval.velocity,
+                    interval.pitch,
+                    interval.track_id,
+                ));
+                FlashColorSource::Fixed([resolved; FLASH_GRADIENT_STOPS])
             }
+            FlashColor::HorizontalGradient(list) => FlashColorSource::Fixed(
+                resample_gradient_stops(list, interval.velocity, interval.pitch, interval.track_id),
+            ),
             // Kept as the source `NoteInterval` rather than baked to a color now — see
             // `FlashColorSource::MatchNote`'s doc comment for why this needs re-evaluating every
             // frame instead of once at spawn.

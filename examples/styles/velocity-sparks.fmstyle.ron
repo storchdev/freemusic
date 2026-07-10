@@ -1,0 +1,70 @@
+(
+    version: 1,
+    notes: Static((
+        fill: Solid(Constant((255, 255, 255))),
+        sheen: None,
+        glow: None,
+        roundedness: 1.0,
+        fall_speed: 400.0,
+        border: None,
+        black_key_fill: Auto,
+    )),
+    barrier: Static((
+        color: Constant((255, 255, 255)),
+        thickness: 4.0,
+        glow: None,
+        pulse: None,
+        wavy: None,
+        show_bar: true,
+    )),
+    transition: Static((
+        kind: ParticlesAndFlash,
+        particles: Some((
+            count: 24,
+            lifetime_seconds: 0.4,
+            size_px: 4.0,
+            speed_px: 180.0,
+            spread_degrees: 60.0,
+            gravity_px: 300.0,
+            color: Fixed(ByVelocity((
+                low: (120, 20, 20),
+                high: (255, 250, 220),
+            ))),
+            additive: true,
+            emission: Burst,
+            brightness: 1.0,
+            layers: ((
+                amplitude: 3.0,
+                sigma_px: 0.5,
+            ), (
+                amplitude: 2.0,
+                sigma_px: 1.0,
+            ), (
+                amplitude: 0.85,
+                sigma_px: 2.0,
+            )),
+        )),
+        flash: Some((
+            radius_x_px: 40.0,
+            radius_y_px: 40.0,
+            color: Solid(ByVelocity((
+                low: (120, 20, 20),
+                high: (255, 250, 220),
+            ))),
+            decay_seconds: 0.15,
+            mode: Instant,
+            brightness: 1.0,
+            layers: ((
+                amplitude: 2.6,
+                sigma_px: 2.0,
+            ), (
+                amplitude: 1.1,
+                sigma_px: 5.0,
+            ), (
+                amplitude: 0.38,
+                sigma_px: 10.0,
+            )),
+        )),
+    )),
+    background: Constant((0, 0, 0)),
+)

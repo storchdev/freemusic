@@ -227,6 +227,8 @@ impl BarrierRenderer {
     ) {
         let (width, height) = (canvas_size.0.max(1.0), canvas_size.1.max(1.0));
         let barrier_y = height * barrier_fraction;
+        // `resolve_constant`, not `resolve_for_note`: the barrier is one canvas-wide bar, not tied
+        // to any single note, so there's no per-note velocity/pitch/track to resolve against here.
         let [r, g, b] = srgb_to_linear(barrier_layer.color.resolve_constant());
         self.canvas_size = (width, height);
         self.pulse = barrier_layer.pulse;
@@ -237,6 +239,7 @@ impl BarrierRenderer {
         self.data.bar_color[2] = b;
         match &barrier_layer.glow {
             Some(glow) => {
+                // Same reasoning as `barrier_layer.color` above — one glow for the whole bar.
                 let [gr, gg, gb] = srgb_to_linear(glow.color.resolve_constant());
                 let layers = glow.layers;
                 let margin = layers

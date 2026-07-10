@@ -285,14 +285,15 @@ touching that area of the code:
   (Phase O, `project::StrandSpec`/`WavySpec::strands`, gated to `WavyMode::Edge` — see
   `docs/fmstyle-format.md` and `docs/fmstyle-milestone.md`); the sliding-filament/wisp controls in
   the lab remain unported experiments.
-- **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–Q) of the
+- **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–R) of the
   `.fmstyle.ron` extensible visual style format: schema/plumbing, the vendored note pipeline
   (dropping the `neothesia-core` dependency), note fill effects (gradient/sheen/glow), barrier
   glow/pulse, transition particles/flash, per-key-color/wavy-barrier/elliptical-flash/continuous-
   particle follow-ups, the brightness/overexposure + white-hot-corona redesign, canvas background
   color, the barrier strand bundle ported from `explorations/barrier-fx-lab`, the canvas-Y-position
-  note gradient (`Fill::CanvasGradient`, Phase P), and flashes/particles/glow that match note color
-  plus multicolor (author-painted or note-derived) flash gradients (Phase Q).
+  note gradient (`Fill::CanvasGradient`, Phase P), flashes/particles/glow that match note color
+  plus multicolor (author-painted or note-derived) flash gradients (Phase Q), and real per-note
+  resolution for `ColorBinding::ByVelocity`/`ByPitchClass`/`ByTrack` (Phase R — see below).
 - **`docs/fmstyle-format.md`** — the living field-by-field `.fmstyle.ron` format spec (defaults,
   meaning, RON snippets, breaking-change log) — keep this in sync whenever the schema changes,
   it's the spec, not narrative.
@@ -306,3 +307,20 @@ touching that area of the code:
   helper scripts, every static-build gotcha found on each OS (two `ffmpeg-sys-next` MSVC bugs, the
   shared-libx264 search-order trap, the Windows libx264 architecture-mismatch saga, Developer Shell
   shortcut and PowerShell encoding pitfalls), and how the GitHub Releases binaries get built.
+
+### `ColorBinding::ByVelocity`/`ByPitchClass`/`ByTrack` now really vary rendering (Phase R)
+
+These three `ColorBinding` variants used to parse/round-trip but always resolve to one fixed
+representative color (`resolve_constant()`), regardless of which note was being drawn. They now
+resolve for real, per note, via a new `ColorBinding::resolve_for_note(velocity, pitch, track_id)`
+— see `docs/fmstyle-format.md`'s `ColorBinding`/`ScalarBinding` section for the exact per-variant
+mapping and `docs/fmstyle-milestone.md`'s Phase R for the full narrative (call sites touched,
+what deliberately still uses `resolve_constant()` and why, new example styles). Short version:
+note fill (`crates/render/src/notes/mod.rs`) and particle/flash colors triggered by a specific
+note (`crates/render/src/effects.rs`) resolve per note now; the canvas background, the barrier
+bar/glow (`crates/render/src/barrier.rs`), and the note-glow GPU uniform
+(`crates/render/src/notes/pipeline.rs`) still use `resolve_constant()` on purpose — those contexts
+have no single note to key off of. Four new sample styles demonstrate this:
+`examples/styles/velocity-colored-notes.fmstyle.ron`, `pitch-rainbow.fmstyle.ron`,
+`track-colored-notes.fmstyle.ron`, and `velocity-sparks.fmstyle.ron` (the last one exercises the
+`effects.rs` particle/flash wiring specifically, not note fill).

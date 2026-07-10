@@ -1468,3 +1468,76 @@ across the ellipse, not a flat color; and every pre-existing sample style (`spar
 `grinding-particles`, `key-glow`, `ellipse-flash`, `showcase_blue_purple`) still looks
 pixel-identical to before this phase now that their `color` fields are `Fixed(...)`/`Solid(...)`.
 
+### Phase R: real per-note resolution for `ColorBinding::ByVelocity`/`ByPitchClass`/`ByTrack`
+
+Since the schema was first introduced, `ColorBinding::ByVelocity`/`ByPitchClass`/`ByTrack` parsed
+and round-tripped correctly but every call site resolved them via `resolve_constant()` — a fixed
+representative value (`ramp.high`, `colors[0]`, `colors.first()`) — regardless of which note was
+actually being rendered. This phase wires them up for real, wherever an actual note is available to
+resolve against.
+
+**Schema** (`crates/project/src/style.rs`): added `ColorBinding::resolve_for_note(velocity: u8,
+pitch: u8, track_id: usize) -> [u8; 3]`, alongside the pre-existing `resolve_constant()` (kept, not
+removed — see below). `ByVelocity(ramp)` linearly interpolates `ramp.low` -> `ramp.high` by
+`velocity / 127`; `ByPitchClass(colors)` indexes `colors[pitch % 12]`; `ByTrack(colors)` indexes
+`colors[track_id % colors.len()]` (wrapping, so a style authored with fewer colors than a MIDI file
+has tracks resolves deterministically rather than panicking), or white if empty. The one-time
+`warn_binding_not_yet_rendered_once()` stderr warning was repurposed to describe `ScalarBinding`
+only (still genuinely unused by any field) — `ColorBinding::resolve_constant()` no longer warns,
+since calling it is no longer "not yet wired up," it's the documented, permanent choice for
+contexts with no note to resolve against (see below).
+
+**Render call sites touched:**
+- `crates/render/src/notes/mod.rs`: `resolve_fill_base` (called once per rebuild, outside the
+  per-note loop) became `resolve_fill_for_note` and moved *inside* `rebuild_instances`'s per-note
+  loop, called once per note with that note's own `velocity`/`note` (pitch)/`track_id` — the exact
+  fields `NoteSource` already carried for `NoteInstance::velocity`/`track_index`, just one loop
+  iteration too early before this phase. `BlackKeyFill::Auto`/`Same`/`Custom` all still darken/copy/
+  independently-resolve relative to the same per-note-resolved light pair, preserving the exact
+  `Auto` no-regression guarantee (`darken(_, 0.6)` on the same base colors).
+- `crates/render/src/effects.rs`: `NoteInterval` gained `velocity: u8`/`pitch: u8`/`track_id:
+  usize` fields (populated in `rebuild_instances` alongside its other fields, from the same
+  `NoteSource` used above) since it previously carried only geometry/timing/baked-color, nothing
+  identifying. `resolve_particle_color`'s `Fixed`/`YGradient` arms, `resample_gradient_stops`
+  (`FlashColor::HorizontalGradient`'s per-stop resolve), and `spawn_flash`'s `Solid` arm all switched
+  from `resolve_constant()` to `resolve_for_note(interval.velocity, interval.pitch,
+  interval.track_id)` — every one of these already had a `&NoteInterval` in scope (the triggering
+  note for a burst/flash, or the currently-held note for continuous emission), so this was
+  plumbing, not a design change. `ParticleColor::MatchNote`/`FlashColor::MatchNote` needed no
+  changes — they already read `NoteInterval::color_top`/`color_bottom`, which now carry real
+  per-note-resolved fill colors for free once the `notes/mod.rs` change landed.
+- **Deliberately left on `resolve_constant()`** (documented as a permanent, not a "not yet wired
+  up," choice — see `docs/fmstyle-format.md`'s `ColorBinding`/`ScalarBinding` section and the
+  comments left at each call site): `app::effective_background_color` (canvas clear color — no note
+  concept at all), `barrier::BarrierRenderer::set_style`'s bar color and glow color (`BarrierLayer`
+  is one canvas-wide bar, not tied to any single note), and `notes/pipeline.rs`'s
+  `StyleUniform::from_note_layer` note-glow color (one GPU uniform uploaded once per style-load and
+  shared by every note's shader invocation — a glow that should genuinely vary per note already has
+  a mechanism, `Glow::match_note_color`, which bypasses this field and samples the note's own
+  per-note-resolved fill color/brightness instead).
+
+**New examples** (`crates/project/examples/dump_sample_styles.rs` + `examples/styles/*.fmstyle.ron`,
+via `scripts/refresh-sample-styles.sh`): `velocity-colored-notes` (`Fill::Solid(ByVelocity(...))`,
+cool blue quiet notes to hot orange-red loud notes), `pitch-rainbow` (`Fill::Solid(ByPitchClass(
+...))`, a 12-color chromatic-circle rainbow by pitch class), `track-colored-notes`
+(`Fill::Solid(ByTrack(...))`, three fixed colors for up to three MIDI tracks, wrapping beyond
+that), and `velocity-sparks` (`ParticleColor::Fixed(ByVelocity(...))` +
+`FlashColor::Solid(ByVelocity(...))`, demonstrating the `effects.rs` wiring specifically — soft
+keypresses spark a dim ember-red burst/flash, hard keypresses a bright white-hot one).
+
+**Tests**: `crates/project/src/style.rs` gained three `resolve_for_note` unit tests (velocity
+interpolation at 0/64/127, pitch-class wraparound across octaves via `% 12`, track-index
+wraparound past `colors.len()` and the empty-list white fallback) alongside the pre-existing
+`resolve_constant` tests (kept, unchanged — `resolve_constant`'s behavior is untouched by this
+phase).
+
+**Verified**: `cargo build`, `cargo test -p project`, and `scripts/check.sh` (fmt+clippy) all clean;
+`shipped_sample_styles_parse` finds all four new sample files. **Not yet manually run** (per the
+"never run the app yourself" rule) — worth confirming, next time someone has hands on the app:
+`velocity-colored-notes` shows quiet notes rendering distinctly cooler/dimmer than loud ones rather
+than every note sharing one color; `pitch-rainbow` shows the same 12 colors repeating every octave
+by key, not varying by loudness or track; `track-colored-notes` on a multi-track MIDI file shows
+each track's notes in a consistent distinct color; `velocity-sparks` shows barrier hit
+particles/flashes visibly changing color/brightness by how hard each note was struck instead of
+spawning an identical burst every time.
+

@@ -155,6 +155,12 @@ impl StyleUniform {
                 edge_blend_px,
                 match_note_color,
             }) => {
+                // `resolve_constant`, not `resolve_for_note`: this uniform is uploaded once per
+                // style-load/rebuild and shared by every note instance's shader invocation, so
+                // there's no single note to resolve `color` against here. A glow that should
+                // actually vary per note uses `match_note_color` instead, which ignores `color`
+                // entirely and samples the note's own (per-note-resolved) fill color/brightness
+                // in the shader — see `Glow::match_note_color`'s doc comment.
                 let [r, g, b] = srgb_to_linear(color.resolve_constant());
                 let margin = layers
                     .iter()

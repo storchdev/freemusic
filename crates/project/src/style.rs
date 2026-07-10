@@ -148,21 +148,22 @@ impl<T: Default> Default for Timed<T> {
     }
 }
 
-/// Warns exactly once per process that a note-property-driven binding was parsed but isn't wired
-/// to real per-note data yet (`ByVelocity`/`ByPitchClass`/`ByTrack` — this milestone's documented
-/// first extension point), then falls back to a representative constant colour/value.
+/// Warns exactly once per process that a note-property-driven `ScalarBinding` was parsed but
+/// isn't wired to real per-note data (no field uses `ScalarBinding` yet — see its doc comment),
+/// then falls back to a representative constant value.
 fn warn_binding_not_yet_rendered_once() {
     use std::sync::Once;
     static WARNED: Once = Once::new();
     WARNED.call_once(|| {
         eprintln!(
-            "style: a non-Constant binding was used, but property-driven bindings are \
-             schema-only in this version — falling back to a representative constant"
+            "style: a non-Constant ScalarBinding was used, but no field reads ScalarBinding yet — \
+             falling back to a representative constant"
         );
     });
 }
 
-/// A per-note color, either fixed or (schema-only this milestone) driven by a note property.
+/// A per-note color: fixed, or driven by the note's own velocity, pitch class, or track index —
+/// see `resolve_for_note`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ColorBinding {
     Constant([u8; 3]),
@@ -171,25 +172,61 @@ pub enum ColorBinding {
     ByTrack(Vec<[u8; 3]>),
 }
 
+fn lerp_color(low: [u8; 3], high: [u8; 3], t: f32) -> [u8; 3] {
+    let t = t.clamp(0.0, 1.0);
+    [
+        (low[0] as f32 + (high[0] as f32 - low[0] as f32) * t).round() as u8,
+        (low[1] as f32 + (high[1] as f32 - low[1] as f32) * t).round() as u8,
+        (low[2] as f32 + (high[2] as f32 - low[2] as f32) * t).round() as u8,
+    ]
+}
+
 impl ColorBinding {
-    /// Resolves to a single representative color: exact for `Constant`, a documented fallback
-    /// for the property-driven variants (`ByVelocity`'s high end, `ByPitchClass`'s first entry,
-    /// `ByTrack`'s first entry or white if empty) until those are wired to real per-note data.
-    pub fn resolve_constant(&self) -> [u8; 3] {
+    /// Resolves against a specific note's velocity (0-127), MIDI pitch number (0-127), and track
+    /// index — the real per-note resolution the property-driven variants are meant for:
+    /// - `Constant` ignores all three and returns its fixed color.
+    /// - `ByVelocity(ramp)` linearly interpolates `ramp.low` (velocity 0) to `ramp.high`
+    ///   (velocity 127).
+    /// - `ByPitchClass(colors)` indexes by `pitch % 12` (0 = C, 1 = C#, ... 11 = B, independent of
+    ///   octave).
+    /// - `ByTrack(colors)` indexes by `track_id % colors.len()` (wrapping so a style authored for
+    ///   fewer colors than a MIDI file has tracks still resolves deterministically instead of
+    ///   panicking), or white if `colors` is empty.
+    ///
+    /// Use this wherever an actual note is in scope (note fill, particle/flash colors keyed to a
+    /// note); use `resolve_constant` for genuinely note-less contexts (canvas background, the
+    /// barrier bar/glow, the note-glow GPU uniform — see its own doc comment for why those can't
+    /// vary per note).
+    pub fn resolve_for_note(&self, velocity: u8, pitch: u8, track_id: usize) -> [u8; 3] {
         match self {
             ColorBinding::Constant(color) => *color,
             ColorBinding::ByVelocity(ramp) => {
-                warn_binding_not_yet_rendered_once();
-                ramp.high
+                lerp_color(ramp.low, ramp.high, velocity as f32 / 127.0)
             }
-            ColorBinding::ByPitchClass(colors) => {
-                warn_binding_not_yet_rendered_once();
-                colors[0]
-            }
+            ColorBinding::ByPitchClass(colors) => colors[(pitch % 12) as usize],
             ColorBinding::ByTrack(colors) => {
-                warn_binding_not_yet_rendered_once();
-                colors.first().copied().unwrap_or([255, 255, 255])
+                if colors.is_empty() {
+                    [255, 255, 255]
+                } else {
+                    colors[track_id % colors.len()]
+                }
             }
+        }
+    }
+
+    /// Resolves to a single representative color, for contexts with no specific note to key
+    /// off of: exact for `Constant`; for the property-driven variants, a documented
+    /// representative value (`ByVelocity`'s high end, `ByPitchClass`'s first entry, `ByTrack`'s
+    /// first entry or white if empty) — **not** a "not yet wired up" placeholder, these contexts
+    /// (canvas background, the barrier bar/glow, the note-glow GPU uniform shared by every note)
+    /// structurally have no single note to resolve against. Prefer `resolve_for_note` wherever an
+    /// actual note is in scope.
+    pub fn resolve_constant(&self) -> [u8; 3] {
+        match self {
+            ColorBinding::Constant(color) => *color,
+            ColorBinding::ByVelocity(ramp) => ramp.high,
+            ColorBinding::ByPitchClass(colors) => colors[0],
+            ColorBinding::ByTrack(colors) => colors.first().copied().unwrap_or([255, 255, 255]),
         }
     }
 }
@@ -871,6 +908,42 @@ mod tests {
         );
         assert_eq!(
             ColorBinding::ByTrack(vec![]).resolve_constant(),
+            [255, 255, 255]
+        );
+    }
+
+    #[test]
+    fn color_binding_by_velocity_resolves_for_note_by_interpolating_the_ramp() {
+        let binding = ColorBinding::ByVelocity(Ramp {
+            low: [0, 0, 0],
+            high: [200, 100, 50],
+        });
+        assert_eq!(binding.resolve_for_note(0, 60, 0), [0, 0, 0]);
+        assert_eq!(binding.resolve_for_note(127, 60, 0), [200, 100, 50]);
+        assert_eq!(binding.resolve_for_note(64, 60, 0), [101, 50, 25]);
+    }
+
+    #[test]
+    fn color_binding_by_pitch_class_resolves_for_note_by_pitch_modulo_12() {
+        let mut colors = [[0, 0, 0]; 12];
+        colors[0] = [1, 0, 0]; // C
+        colors[4] = [0, 1, 0]; // E
+        let binding = ColorBinding::ByPitchClass(colors);
+        // MIDI note 60 is middle C; 64 is E in the same octave, 76 is E an octave up.
+        assert_eq!(binding.resolve_for_note(100, 60, 0), [1, 0, 0]);
+        assert_eq!(binding.resolve_for_note(100, 64, 0), [0, 1, 0]);
+        assert_eq!(binding.resolve_for_note(100, 76, 0), [0, 1, 0]);
+    }
+
+    #[test]
+    fn color_binding_by_track_resolves_for_note_by_track_index_with_wraparound() {
+        let binding = ColorBinding::ByTrack(vec![[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
+        assert_eq!(binding.resolve_for_note(100, 60, 0), [1, 0, 0]);
+        assert_eq!(binding.resolve_for_note(100, 60, 1), [0, 1, 0]);
+        assert_eq!(binding.resolve_for_note(100, 60, 2), [0, 0, 1]);
+        assert_eq!(binding.resolve_for_note(100, 60, 3), [1, 0, 0]);
+        assert_eq!(
+            ColorBinding::ByTrack(vec![]).resolve_for_note(100, 60, 0),
             [255, 255, 255]
         );
     }
