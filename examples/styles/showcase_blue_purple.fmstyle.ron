@@ -81,7 +81,7 @@
             emission: Continuous(
                 rate_per_second: 40.0,
             ),
-            brightness: 1.0,
+            brightness: Constant(1.0),
             layers: ((
                 amplitude: 3.0,
                 sigma_px: 0.5,
@@ -99,7 +99,7 @@
             color: Solid(Constant((205, 190, 255))),
             decay_seconds: 0.22,
             mode: Sustained,
-            brightness: 1.0,
+            brightness: Constant(1.0),
             layers: ((
                 amplitude: 1.4,
                 sigma_px: 2.0,

@@ -369,7 +369,7 @@ transition: Static((
     particles: Some((
         count: 24, lifetime_seconds: 0.4, size_px: 4.0, speed_px: 180.0,
         spread_degrees: 60.0, gravity_px: 300.0, color: Constant((255, 240, 200)),
-        additive: true, emission: Burst, brightness: 1.0,
+        additive: true, emission: Burst, brightness: Constant(1.0),
         layers: (
             (amplitude: 3.0, sigma_px: 0.5),
             (amplitude: 2.0, sigma_px: 1.0),
@@ -378,7 +378,8 @@ transition: Static((
     )),
     flash: Some((
         radius_x_px: 40.0, radius_y_px: 40.0,
-        color: Constant((255, 255, 255)), decay_seconds: 0.15, mode: Instant, brightness: 1.0,
+        color: Constant((255, 255, 255)), decay_seconds: 0.15, mode: Instant,
+        brightness: Constant(1.0),
         layers: (
             (amplitude: 2.6, sigma_px: 2.0),
             (amplitude: 1.1, sigma_px: 5.0),
@@ -404,7 +405,7 @@ this is what the RON serializer emits automatically; write it the same way by ha
 | `color` | `ParticleColor` | How each particle's color is chosen — see below. |
 | `additive` | `bool` | Additive blending (bright, overlapping particles glow) vs. premultiplied-alpha (opaque-ish). Decided once per `update()` call from the layer's currently-resolved value — a particle spawned under one style doesn't retroactively update if a *different* style is imported while it's still alive. |
 | `emission` | `EmissionMode` | `Burst` (default) or `Continuous { rate_per_second }`. |
-| `brightness` | `f32` | Default `1.0`. Baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `1.0` is a no-op. |
+| `brightness` | `ScalarBinding` | Default `Constant(1.0)`. Resolved once per spawned burst/continuous-emission tick against the *triggering* note's velocity/pitch/track (`ScalarBinding::resolve_for_note` — same mapping as `ColorBinding`'s, see [`ColorBinding`/`ScalarBinding`](#colorbinding--scalarbinding)), then baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `Constant(1.0)` is a no-op. **Breaking change** (Phase R): older files with a bare float here (e.g. `brightness: 1.0`) need `brightness: Constant(1.0)` instead — see [Migration history](#migration-history). |
 | `layers` | `[GlowLayer; 3]` | Default tight/mid/wide, same as `Glow`. **Only read when `additive: true`** — non-additive "puff" particles ignore this field entirely and render as a plain hard-edged dot, unaffected by any value here. |
 
 `EmissionMode::Continuous { rate_per_second }`: particles spawn every frame a note is held,
@@ -459,7 +460,7 @@ from exactly one source:
 | `color` | `FlashColor` | How the flash's color varies across its own width — see below. |
 | `decay_seconds` | `f32` | How long the fade-out takes (see `mode` for when the fade *starts*). |
 | `mode` | `FlashMode` | `Instant` (default) or `Sustained`. |
-| `brightness` | `f32` | Default `1.0`. Baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `1.0` is a no-op. |
+| `brightness` | `ScalarBinding` | Default `Constant(1.0)`. Resolved once per spawned flash against the *triggering* note's velocity/pitch/track (`ScalarBinding::resolve_for_note`), then baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `Constant(1.0)` is a no-op. **Breaking change** (Phase R): older files with a bare float here need `brightness: Constant(1.0)` instead — see [Migration history](#migration-history). |
 | `layers` | `[GlowLayer; 3]` | Default tight/mid/wide, same as `Glow`. A flash is always additive, so this is always read (unlike `ParticleSpec::layers`, which non-additive particles ignore). |
 
 A flash always renders additively. It is fully "on" at spawn/at the start of its hold (see
@@ -585,10 +586,14 @@ fill color instead). These call `ColorBinding::resolve_constant()` instead, a **
 - `ByPitchClass(colors)` → `colors[0]`.
 - `ByTrack(colors)` → `colors.first()`, or white if the list is empty.
 
-`ScalarBinding` (currently unused by any field in this schema, reserved for a future numeric
-per-note property) only has `resolve_constant()` so far, with the identical fallback rule
-(`ByVelocity.high`, `ByPitchClass[0]`, `ByTrack.first()` or `1.0`) — it would need its own
-`resolve_for_note` once some field actually reads it.
+`ScalarBinding` is the identically-shaped numeric counterpart, used by `ParticleSpec::brightness`/
+`FlashSpec::brightness` (both resolved per triggering note via `ScalarBinding::resolve_for_note`,
+same four-case mapping as `ColorBinding`'s above, substituting a plain `f32` lerp/index for a
+color one). `Glow::brightness`/`Pulse::brightness` stay a plain `f32`, not `ScalarBinding` — same
+"no single note to resolve against" reasoning as `background`/`BarrierLayer::color` above (one GPU
+uniform / one canvas-wide bar). `ScalarBinding::resolve_constant()` exists for symmetry with
+`ColorBinding::resolve_constant()` but nothing currently calls it — every field that reads
+`ScalarBinding` today always has a note in scope.
 
 ## Brightness/overexposure
 
@@ -631,7 +636,10 @@ One place to check when a parsed field does not affect rendering:
   `ColorBinding`/`ScalarBinding` section above for why these specific fields structurally have no
   single note to resolve against. Every other `ColorBinding` field (note fill, particle/flash
   colors) *does* vary per note (`resolve_for_note()`).
-- **`ScalarBinding`**: schema/parsing only — no field in this schema uses it yet.
+- **`ScalarBinding::resolve_constant()`**: schema/parsing only in practice — the method exists for
+  symmetry with `ColorBinding::resolve_constant()`, but no current `ScalarBinding` field
+  (`ParticleSpec::brightness`/`FlashSpec::brightness`) is ever missing a note to resolve against,
+  so nothing calls it.
 
 ## Migration history
 
@@ -650,3 +658,7 @@ If a previously-working `.fmstyle.ron` file fails to load after an upgrade, chec
   (rename only, no other field shape change — see
   [Note color sampling at the barrier](#note-color-sampling-at-the-barrier) for why "bottom" no
   longer describes what these sample)
+- `ParticleSpec.brightness: f32` -> `ScalarBinding`, `FlashSpec.brightness: f32` -> `ScalarBinding`
+  (Phase R — wrap an existing bare float as `Constant(...)`, e.g. `brightness: 1.0` ->
+  `brightness: Constant(1.0)`; `Glow.brightness`/`Pulse.brightness` are unaffected, still a plain
+  `f32`)

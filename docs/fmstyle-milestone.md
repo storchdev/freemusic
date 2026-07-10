@@ -1541,3 +1541,70 @@ each track's notes in a consistent distinct color; `velocity-sparks` shows barri
 particles/flashes visibly changing color/brightness by how hard each note was struck instead of
 spawning an identical burst every time.
 
+### Phase R follow-up: `ScalarBinding` wired to `ParticleSpec`/`FlashSpec` brightness
+
+Off the back of Phase R's color work: `ScalarBinding` (the numeric counterpart of `ColorBinding`,
+same four variants) existed in the schema but had no field reading it at all — `Glow::brightness`,
+`Pulse::brightness`, `ParticleSpec::brightness`, and `FlashSpec::brightness` were all plain `f32`.
+This follow-up converts the two of those four that are resolved per triggering note anyway
+(`ParticleSpec::brightness`, `FlashSpec::brightness`) to `ScalarBinding`, so a style can make a
+particle burst/flash brighter for a hard keypress and dimmer for a soft one — the same
+"note-property-driven visual feedback" idea as Phase R's color work, applied to intensity instead
+of hue.
+
+**Deliberately left as plain `f32`, not converted**: `Glow::brightness` (baked into `StyleUniform`,
+one GPU uniform shared by every note's shader invocation — same structural reasoning as
+`Glow::color` staying on `resolve_constant()` in Phase R) and `Pulse::brightness` (one canvas-wide
+barrier pulse, no note in scope at all). Converting either would require a real per-instance
+plumbing change (baking a resolved value into `NoteInstance`/a barrier uniform-per-note, which
+doesn't exist), not just swapping the field's declared type — out of scope here.
+
+**Schema** (`crates/project/src/style.rs`): added `ScalarBinding::resolve_for_note(velocity, pitch,
+track_id) -> f32`, mirroring `ColorBinding::resolve_for_note`'s four-case mapping exactly
+(`ByVelocity` lerps `low`->`high` by `velocity/127`; `ByPitchClass` indexes `pitch % 12`; `ByTrack`
+indexes `track_id % len`, or `1.0` if empty). `ParticleSpec::brightness`/`FlashSpec::brightness`
+changed from `f32` to `ScalarBinding` (`#[serde(default)]`, `ScalarBinding::default()` ==
+`Constant(1.0)`, matching the old float default byte-for-byte). The now-stale
+`warn_binding_not_yet_rendered_once()` helper (previously called from `ColorBinding`/
+`ScalarBinding`'s `resolve_constant()` to flag an unimplemented feature) was deleted outright —
+Phase R already stopped calling it from `ColorBinding::resolve_constant()` since that's a
+documented permanent choice there, not a placeholder, and this follow-up removes its last caller
+(`ScalarBinding::resolve_constant()`) for the same reason.
+
+**Render call sites** (`crates/render/src/effects.rs`): `spawn_one_particle` gained an explicit
+`brightness: f32` parameter instead of reading `spec.brightness` internally, since it no longer has
+a bare float to read — both callers (`spawn_particles`, the burst path; the continuous-emission
+loop in `update`) already have a `&NoteInterval` in scope (the same one used for
+`resolve_particle_color`) and resolve `spec.brightness.resolve_for_note(interval.velocity,
+interval.pitch, interval.track_id)` once per note per call, exactly mirroring how `color` is
+already resolved once per note and passed in rather than re-resolved per particle. `spawn_flash`
+resolves `brightness` the same way, once, and uses it in place of the old `spec.brightness` in the
+`layer_amp` computation.
+
+**Breaking schema change**: any `.fmstyle.ron` with a bare float `brightness` inside a
+`ParticleSpec`/`FlashSpec` (e.g. `brightness: 1.0`) now fails to parse — RON expects the enum shape
+`brightness: Constant(1.0)`. Every shipped `examples/styles/*.fmstyle.ron` with a particle/flash
+`brightness` field was migrated via `scripts/refresh-sample-styles.sh` (8 files: `sparks`,
+`ellipse-flash`, `grinding-particles`, `key-glow`, `showcase_blue_purple`,
+`ygradient-particles`, `match-note-color`, `velocity-sparks`) — diffed before committing, and every
+diff was exactly the expected `brightness: N` -> `brightness: Constant(N)` (plus `velocity-sparks`'s
+intentional upgrade below). `Glow`/`Pulse`'s `brightness` fields are untouched by this change
+(still a plain float) since neither was converted.
+
+**Sample enhanced**: `velocity-sparks.fmstyle.ron` (added in Phase R for the color wiring) now also
+uses `ScalarBinding::ByVelocity { low: 0.3, high: 1.6 }` for both its particle and flash
+`brightness`, so the sample demonstrates both axes at once — a soft keypress sparks a dim,
+low-brightness ember-red burst/flash, a hard keypress a bright, high-brightness white-hot one.
+
+**Tests**: `crates/project/src/style.rs` gained three `ScalarBinding::resolve_for_note` unit tests
+(velocity interpolation, pitch-class wraparound, track-index wraparound + empty-list `1.0`
+fallback), mirroring the `ColorBinding` tests Phase R added. Every existing test/sample
+construction of a `ParticleSpec`/`FlashSpec` literal with a bare-float `brightness` was updated to
+`ScalarBinding::Constant(...)`.
+
+**Verified**: `cargo build --all-targets`, `cargo test --workspace`, and `scripts/check.sh`
+(fmt+clippy) all clean; `shipped_sample_styles_parse` finds every migrated sample file. **Not yet
+manually run** — worth confirming, next time someone has hands on the app: `velocity-sparks` shows
+both color *and* brightness scaling with how hard each note was struck (a soft hit's burst/flash
+should read as visibly dimmer, not just differently colored, than a hard hit's).
+

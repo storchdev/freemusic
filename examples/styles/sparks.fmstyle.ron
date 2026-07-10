@@ -29,7 +29,7 @@
             color: Fixed(Constant((255, 240, 200))),
             additive: true,
             emission: Burst,
-            brightness: 1.0,
+            brightness: Constant(1.0),
             layers: ((
                 amplitude: 3.0,
                 sigma_px: 0.5,
@@ -47,7 +47,7 @@
             color: Solid(Constant((255, 255, 255))),
             decay_seconds: 0.15,
             mode: Instant,
-            brightness: 1.0,
+            brightness: Constant(1.0),
             layers: ((
                 amplitude: 2.6,
                 sigma_px: 2.0,

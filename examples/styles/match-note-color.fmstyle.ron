@@ -53,7 +53,7 @@
             emission: Continuous(
                 rate_per_second: 25.0,
             ),
-            brightness: 4.0,
+            brightness: Constant(4.0),
             layers: ((
                 amplitude: 3.0,
                 sigma_px: 0.5,
@@ -71,7 +71,7 @@
             color: MatchNote,
             decay_seconds: 0.18,
             mode: Sustained,
-            brightness: 2.0,
+            brightness: Constant(2.0),
             layers: ((
                 amplitude: 2.6,
                 sigma_px: 2.0,

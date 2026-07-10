@@ -36,7 +36,7 @@
             emission: Continuous(
                 rate_per_second: 50.0,
             ),
-            brightness: 1.0,
+            brightness: Constant(1.0),
             layers: ((
                 amplitude: 3.0,
                 sigma_px: 0.5,

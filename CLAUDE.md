@@ -324,3 +324,14 @@ have no single note to key off of. Four new sample styles demonstrate this:
 `examples/styles/velocity-colored-notes.fmstyle.ron`, `pitch-rainbow.fmstyle.ron`,
 `track-colored-notes.fmstyle.ron`, and `velocity-sparks.fmstyle.ron` (the last one exercises the
 `effects.rs` particle/flash wiring specifically, not note fill).
+
+**Follow-up in the same phase**: `ParticleSpec::brightness`/`FlashSpec::brightness` changed from a
+plain `f32` to `ScalarBinding` (the numeric counterpart of `ColorBinding`, same four variants),
+resolved per triggering note the same way particle/flash *color* already is. **This is a breaking
+`.fmstyle.ron` schema change** — a bare float (`brightness: 1.0`) no longer parses; it needs
+`brightness: Constant(1.0)`. `Glow::brightness`/`Pulse::brightness` are untouched (stay a plain
+`f32`) — they're baked into a shared GPU uniform / a canvas-wide barrier pulse, same "no single
+note to resolve against" reasoning as `Glow::color` above. `velocity-sparks.fmstyle.ron` now uses
+`ScalarBinding::ByVelocity` for brightness too, alongside its `ColorBinding::ByVelocity` color, so
+a soft keypress sparks a dim burst/flash and a hard one a bright one. See
+`docs/fmstyle-milestone.md`'s "Phase R follow-up" for the full narrative.

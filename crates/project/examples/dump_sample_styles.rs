@@ -6,8 +6,8 @@
 
 use project::{
     BarrierLayer, BlackKeyFill, ColorBinding, Fill, FlashColor, FlashMode, FlashSpec, Glow,
-    GlowLayer, NoteLayer, ParticleColor, ParticleSpec, Pulse, Ramp, Sheen, StrandSpec, Style,
-    Timed, TransitionKind, TransitionLayer, WavyMode, WavySpec,
+    GlowLayer, NoteLayer, ParticleColor, ParticleSpec, Pulse, Ramp, ScalarBinding, Sheen,
+    StrandSpec, Style, Timed, TransitionKind, TransitionLayer, WavyMode, WavySpec,
 };
 
 fn glow_layers(tight: f32, mid: f32, wide: f32) -> [GlowLayer; 3] {
@@ -266,7 +266,7 @@ fn main() {
                 color: ParticleColor::Fixed(ColorBinding::Constant([255, 240, 200])),
                 additive: true,
                 emission: project::EmissionMode::Burst,
-                brightness: 1.0,
+                brightness: ScalarBinding::Constant(1.0),
                 layers: hot_layers(0.5, 1.0, 2.0),
             }),
             flash: Some(FlashSpec {
@@ -275,7 +275,7 @@ fn main() {
                 color: FlashColor::Solid(ColorBinding::Constant([255, 255, 255])),
                 decay_seconds: 0.15,
                 mode: FlashMode::Instant,
-                brightness: 1.0,
+                brightness: ScalarBinding::Constant(1.0),
                 layers: glow_layers(2.0, 5.0, 10.0),
             }),
         }),
@@ -295,7 +295,7 @@ fn main() {
                 color: FlashColor::Solid(ColorBinding::Constant([255, 255, 255])),
                 decay_seconds: 0.2,
                 mode: FlashMode::Instant,
-                brightness: 1.0,
+                brightness: ScalarBinding::Constant(1.0),
                 layers: glow_layers(2.0, 5.0, 10.0),
             }),
         }),
@@ -320,7 +320,7 @@ fn main() {
                 emission: project::EmissionMode::Continuous {
                     rate_per_second: 30.0,
                 },
-                brightness: 1.0,
+                brightness: ScalarBinding::Constant(1.0),
                 layers: glow_layers(0.5, 1.0, 2.0),
             }),
             flash: None,
@@ -341,7 +341,7 @@ fn main() {
                 color: FlashColor::Solid(ColorBinding::Constant([255, 220, 140])),
                 decay_seconds: 0.1,
                 mode: FlashMode::Sustained,
-                brightness: 0.5,
+                brightness: ScalarBinding::Constant(0.5),
                 layers: glow_layers(2.0, 5.0, 10.0),
             }),
         }),
@@ -452,7 +452,7 @@ fn main() {
                 emission: project::EmissionMode::Continuous {
                     rate_per_second: 40.0,
                 },
-                brightness: 1.0,
+                brightness: ScalarBinding::Constant(1.0),
                 layers: [
                     GlowLayer {
                         amplitude: 3.0,
@@ -474,7 +474,7 @@ fn main() {
                 color: FlashColor::Solid(ColorBinding::Constant([205, 190, 255])),
                 decay_seconds: 0.22,
                 mode: FlashMode::Sustained,
-                brightness: 1.0,
+                brightness: ScalarBinding::Constant(1.0),
                 layers: [
                     GlowLayer {
                         amplitude: 1.4,
@@ -559,7 +559,7 @@ fn main() {
                 emission: project::EmissionMode::Continuous {
                     rate_per_second: 50.0,
                 },
-                brightness: 1.0,
+                brightness: ScalarBinding::Constant(1.0),
                 layers: hot_layers(0.5, 1.0, 2.0),
             }),
             flash: None,
@@ -616,7 +616,7 @@ fn main() {
                 emission: project::EmissionMode::Continuous {
                     rate_per_second: 25.0,
                 },
-                brightness: 4.0,
+                brightness: ScalarBinding::Constant(4.0),
                 layers: hot_layers(0.5, 1.0, 2.0),
             }),
             flash: Some(FlashSpec {
@@ -625,7 +625,7 @@ fn main() {
                 color: FlashColor::MatchNote,
                 decay_seconds: 0.18,
                 mode: FlashMode::Sustained,
-                brightness: 2.0,
+                brightness: ScalarBinding::Constant(2.0),
                 layers: glow_layers(2.0, 5.0, 10.0),
             }),
         }),
@@ -696,11 +696,13 @@ fn main() {
         background: ColorBinding::Constant([0, 0, 0]),
     };
 
-    // Demonstrates `ColorBinding::ByVelocity` resolving per note outside of note fill too —
-    // `ParticleColor::Fixed`/`FlashColor::Solid` resolve against the *triggering* note's own
-    // velocity (`render::effects`'s `resolve_particle_color`/`spawn_flash`), so a soft keypress
-    // sparks a dim ember-red burst and a hard keypress sparks a bright white-hot one, instead of
-    // every arrival spawning an identical fixed-color burst.
+    // Demonstrates `ColorBinding`/`ScalarBinding::ByVelocity` resolving per note outside of note
+    // fill too — `ParticleColor::Fixed`/`FlashColor::Solid` (color) and `ParticleSpec::brightness`/
+    // `FlashSpec::brightness` (brightness) both resolve against the *triggering* note's own
+    // velocity (`render::effects`'s `resolve_particle_color`/`spawn_particles`/`spawn_flash`), so a
+    // soft keypress sparks a dim, low-brightness ember-red burst and a hard keypress sparks a
+    // bright, high-brightness white-hot one, instead of every arrival spawning an identical
+    // fixed-color, fixed-brightness burst.
     let velocity_sparks = Style {
         version: 1,
         notes: Timed::Static(NoteLayer::default()),
@@ -720,7 +722,10 @@ fn main() {
                 })),
                 additive: true,
                 emission: project::EmissionMode::Burst,
-                brightness: 1.0,
+                brightness: ScalarBinding::ByVelocity {
+                    low: 0.3,
+                    high: 1.6,
+                },
                 layers: hot_layers(0.5, 1.0, 2.0),
             }),
             flash: Some(FlashSpec {
@@ -732,7 +737,10 @@ fn main() {
                 })),
                 decay_seconds: 0.15,
                 mode: FlashMode::Instant,
-                brightness: 1.0,
+                brightness: ScalarBinding::ByVelocity {
+                    low: 0.3,
+                    high: 1.6,
+                },
                 layers: glow_layers(2.0, 5.0, 10.0),
             }),
         }),

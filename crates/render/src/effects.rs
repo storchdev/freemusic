@@ -608,13 +608,20 @@ impl EffectsRenderer {
                                     barrier_y,
                                     self.canvas_size.1,
                                 );
+                                let brightness = spec.brightness.resolve_for_note(
+                                    interval.velocity,
+                                    interval.pitch,
+                                    interval.track_id,
+                                );
                                 let mut n = expected.floor() as u32;
                                 if self.rng.range(0.0, 1.0) < expected.fract() {
                                     n += 1;
                                 }
                                 for _ in 0..n {
                                     let x = self.rng.range(interval.x_left, interval.x_right);
-                                    self.spawn_one_particle(x, barrier_y, spec, color, y_gradient);
+                                    self.spawn_one_particle(
+                                        x, barrier_y, spec, color, brightness, y_gradient,
+                                    );
                                 }
                             }
                         }
@@ -733,33 +740,49 @@ impl EffectsRenderer {
             barrier_y,
             self.canvas_size.1,
         );
+        let brightness =
+            spec.brightness
+                .resolve_for_note(interval.velocity, interval.pitch, interval.track_id);
         for _ in 0..spec.count {
-            self.spawn_one_particle(interval.x_center(), barrier_y, spec, color, y_gradient);
+            self.spawn_one_particle(
+                interval.x_center(),
+                barrier_y,
+                spec,
+                color,
+                brightness,
+                y_gradient,
+            );
         }
     }
 
     /// Spawns a single particle — shared by burst spawns (`spawn_particles`, called `count`
     /// times per note arrival) and continuous emission (called a variable number of times per
     /// frame, spread across a held note's key width). `color` is the already-resolved (linear)
-    /// spawn color, before `ParticleSpec::brightness`/`layers` are baked in (Phase M): non-additive
-    /// "puff" particles keep the pre-Phase-M behavior exactly (`hot_color` whitens the fill itself,
-    /// no corona); additive particles instead leave `color` unwhitened and pre-multiply
-    /// `brightness` into `layer_amp`, since their corona is additive and whitens via saturation
-    /// instead. `y_gradient`, if `Some`, is stored on the particle so `update`'s per-step loop can
-    /// keep recomputing `color` as the particle moves (see `ParticleColor::YGradient`).
+    /// spawn color; `brightness` is `spec.brightness` already resolved (`ScalarBinding::
+    /// resolve_for_note`) against the same triggering/held note `color` was resolved against —
+    /// both callers resolve once per note (not once per particle) and pass the result in, rather
+    /// than re-resolving per spawned particle, since neither varies within one note's burst.
+    /// Before `ParticleSpec::layers` are baked in (Phase M): non-additive "puff" particles keep
+    /// the pre-Phase-M behavior exactly (`hot_color` whitens the fill itself, no corona); additive
+    /// particles instead leave `color` unwhitened and pre-multiply `brightness` into `layer_amp`,
+    /// since their corona is additive and whitens via saturation instead. `y_gradient`, if `Some`,
+    /// is stored on the particle so `update`'s per-step loop can keep recomputing `color` as the
+    /// particle moves (see `ParticleColor::YGradient`).
+    #[allow(clippy::too_many_arguments)]
     fn spawn_one_particle(
         &mut self,
         x_px: f32,
         y_px: f32,
         spec: &ParticleSpec,
         color: [f32; 3],
+        brightness: f32,
         y_gradient: Option<YGradientRange>,
     ) {
         let (color, margin_px, layer_amp, layer_sigma) = if spec.additive {
             let layer_amp = [
-                spec.layers[0].amplitude * spec.brightness,
-                spec.layers[1].amplitude * spec.brightness,
-                spec.layers[2].amplitude * spec.brightness,
+                spec.layers[0].amplitude * brightness,
+                spec.layers[1].amplitude * brightness,
+                spec.layers[2].amplitude * brightness,
             ];
             let layer_sigma = [
                 spec.layers[0].sigma_px,
@@ -773,7 +796,7 @@ impl EffectsRenderer {
                 * GLOW_CUTOFF_SIGMAS;
             (color, margin_px, layer_amp, layer_sigma)
         } else {
-            (hot_color(color, spec.brightness), 0.0, [0.0; 3], [1.0; 3])
+            (hot_color(color, brightness), 0.0, [0.0; 3], [1.0; 3])
         };
         // Spread around straight up (canvas convention is y-down, so "up" is negative y) —
         // `angle_degrees` measured from that upward axis.
@@ -793,7 +816,7 @@ impl EffectsRenderer {
             size_px: spec.size_px.max(0.5),
             color,
             y_gradient,
-            brightness: spec.brightness,
+            brightness,
             additive: spec.additive,
             margin_px,
             layer_amp,
@@ -830,10 +853,13 @@ impl EffectsRenderer {
             // frame instead of once at spawn.
             FlashColor::MatchNote => FlashColorSource::MatchNote(*interval),
         };
+        let brightness =
+            spec.brightness
+                .resolve_for_note(interval.velocity, interval.pitch, interval.track_id);
         let layer_amp = [
-            spec.layers[0].amplitude * spec.brightness,
-            spec.layers[1].amplitude * spec.brightness,
-            spec.layers[2].amplitude * spec.brightness,
+            spec.layers[0].amplitude * brightness,
+            spec.layers[1].amplitude * brightness,
+            spec.layers[2].amplitude * brightness,
         ];
         let layer_sigma = [
             spec.layers[0].sigma_px,

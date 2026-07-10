@@ -148,20 +148,6 @@ impl<T: Default> Default for Timed<T> {
     }
 }
 
-/// Warns exactly once per process that a note-property-driven `ScalarBinding` was parsed but
-/// isn't wired to real per-note data (no field uses `ScalarBinding` yet — see its doc comment),
-/// then falls back to a representative constant value.
-fn warn_binding_not_yet_rendered_once() {
-    use std::sync::Once;
-    static WARNED: Once = Once::new();
-    WARNED.call_once(|| {
-        eprintln!(
-            "style: a non-Constant ScalarBinding was used, but no field reads ScalarBinding yet — \
-             falling back to a representative constant"
-        );
-    });
-}
-
 /// A per-note color: fixed, or driven by the note's own velocity, pitch class, or track index —
 /// see `resolve_for_note`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -244,8 +230,11 @@ pub struct Ramp {
     pub high: [u8; 3],
 }
 
-/// A per-note scalar, either fixed or (schema-only this milestone) driven by a note property —
-/// same shape and fallback rules as `ColorBinding`.
+/// A per-note scalar: fixed, or driven by the note's own velocity, pitch class, or track index —
+/// same shape and resolution rules as `ColorBinding`. Used by `ParticleSpec::brightness`/
+/// `FlashSpec::brightness` (both resolved per triggering note — see `resolve_for_note`); not used
+/// by `Glow::brightness`/`Pulse::brightness` (those stay a plain `f32` — see their own doc
+/// comments for why: one GPU uniform / one canvas-wide bar, no single note to resolve against).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ScalarBinding {
     Constant(f32),
@@ -255,21 +244,38 @@ pub enum ScalarBinding {
 }
 
 impl ScalarBinding {
+    /// Resolves against a specific note's velocity/pitch/track index — see `ColorBinding::
+    /// resolve_for_note`, whose four-case mapping this mirrors exactly (`ByVelocity` interpolates
+    /// `low`->`high` by `velocity / 127`; `ByPitchClass` indexes `pitch % 12`; `ByTrack` indexes
+    /// `track_id % len`, wrapping, or falls back to `1.0` if empty).
+    pub fn resolve_for_note(&self, velocity: u8, pitch: u8, track_id: usize) -> f32 {
+        match self {
+            ScalarBinding::Constant(value) => *value,
+            ScalarBinding::ByVelocity { low, high } => {
+                let t = (velocity as f32 / 127.0).clamp(0.0, 1.0);
+                low + (high - low) * t
+            }
+            ScalarBinding::ByPitchClass(values) => values[(pitch % 12) as usize],
+            ScalarBinding::ByTrack(values) => {
+                if values.is_empty() {
+                    1.0
+                } else {
+                    values[track_id % values.len()]
+                }
+            }
+        }
+    }
+
+    /// Resolves to a single representative value, for contexts with no specific note to key off
+    /// of — see `ColorBinding::resolve_constant`'s doc comment for the same reasoning. Currently
+    /// unused (every field that reads `ScalarBinding` always has a note to resolve against), kept
+    /// for symmetry with `ColorBinding` and for whichever future note-less scalar field needs it.
     pub fn resolve_constant(&self) -> f32 {
         match self {
             ScalarBinding::Constant(value) => *value,
-            ScalarBinding::ByVelocity { high, .. } => {
-                warn_binding_not_yet_rendered_once();
-                *high
-            }
-            ScalarBinding::ByPitchClass(values) => {
-                warn_binding_not_yet_rendered_once();
-                values[0]
-            }
-            ScalarBinding::ByTrack(values) => {
-                warn_binding_not_yet_rendered_once();
-                values.first().copied().unwrap_or(1.0)
-            }
+            ScalarBinding::ByVelocity { high, .. } => *high,
+            ScalarBinding::ByPitchClass(values) => values[0],
+            ScalarBinding::ByTrack(values) => values.first().copied().unwrap_or(1.0),
         }
     }
 }
@@ -779,10 +785,15 @@ pub struct ParticleSpec {
     #[serde(default)]
     pub emission: EmissionMode,
     /// Color multiplier applied at spawn time (Phase K) — see `Glow`'s doc comment for the
-    /// overdrive mechanism; `1.0` is a no-op, reproducing every particle look that existed before
-    /// this field did.
-    #[serde(default = "default_brightness")]
-    pub brightness: f32,
+    /// overdrive mechanism; `Constant(1.0)` is a no-op, reproducing every particle look that
+    /// existed before this field did. Since Phase R this is a `ScalarBinding`, not a plain `f32` —
+    /// resolved once per spawned burst/continuous-emission tick against the *triggering* note's
+    /// velocity/pitch/track (`render::effects`'s `spawn_particles`/continuous-emission loop),
+    /// same mechanism as `ParticleColor::Fixed`'s `ColorBinding`. **Breaking change**: an older
+    /// `.fmstyle.ron` with a bare float here (e.g. `brightness: 1.0`) needs updating to
+    /// `brightness: Constant(1.0)` — see `docs/fmstyle-format.md`'s migration history.
+    #[serde(default)]
+    pub brightness: ScalarBinding,
     /// Additive corona layers (Phase M), same mechanism and default as `Glow::layers` — only
     /// meaningful when `additive` is true (a non-additive "puff" particle never reads this field).
     #[serde(default = "default_glow_layers")]
@@ -847,10 +858,15 @@ pub struct FlashSpec {
     #[serde(default)]
     pub mode: FlashMode,
     /// Color multiplier applied at spawn time (Phase K) — see `Glow`'s doc comment for the
-    /// overdrive mechanism; `1.0` is a no-op, reproducing every flash look that existed before
-    /// this field did (including `FlashMode::Sustained`'s "key glow" look).
-    #[serde(default = "default_brightness")]
-    pub brightness: f32,
+    /// overdrive mechanism; `Constant(1.0)` is a no-op, reproducing every flash look that existed
+    /// before this field did (including `FlashMode::Sustained`'s "key glow" look). Since Phase R
+    /// this is a `ScalarBinding`, not a plain `f32` — resolved once per spawned flash against the
+    /// *triggering* note's velocity/pitch/track (`render::effects::spawn_flash`), same mechanism
+    /// as `FlashColor::Solid`'s `ColorBinding`. **Breaking change**: an older `.fmstyle.ron` with a
+    /// bare float here (e.g. `brightness: 1.0`) needs updating to `brightness: Constant(1.0)` —
+    /// see `docs/fmstyle-format.md`'s migration history.
+    #[serde(default)]
+    pub brightness: ScalarBinding,
     /// Additive corona layers (Phase M), same mechanism and default as `Glow::layers` — a flash
     /// always renders additively, so this always applies.
     #[serde(default = "default_glow_layers")]
@@ -945,6 +961,41 @@ mod tests {
         assert_eq!(
             ColorBinding::ByTrack(vec![]).resolve_for_note(100, 60, 0),
             [255, 255, 255]
+        );
+    }
+
+    #[test]
+    fn scalar_binding_by_velocity_resolves_for_note_by_interpolating_low_high() {
+        let binding = ScalarBinding::ByVelocity {
+            low: 0.0,
+            high: 2.0,
+        };
+        assert_eq!(binding.resolve_for_note(0, 60, 0), 0.0);
+        assert_eq!(binding.resolve_for_note(127, 60, 0), 2.0);
+        assert_eq!(binding.resolve_for_note(64, 60, 0), 2.0 * 64.0 / 127.0);
+    }
+
+    #[test]
+    fn scalar_binding_by_pitch_class_resolves_for_note_by_pitch_modulo_12() {
+        let mut values = [0.0; 12];
+        values[0] = 1.0; // C
+        values[4] = 2.0; // E
+        let binding = ScalarBinding::ByPitchClass(values);
+        assert_eq!(binding.resolve_for_note(100, 60, 0), 1.0);
+        assert_eq!(binding.resolve_for_note(100, 64, 0), 2.0);
+        assert_eq!(binding.resolve_for_note(100, 76, 0), 2.0);
+    }
+
+    #[test]
+    fn scalar_binding_by_track_resolves_for_note_by_track_index_with_wraparound() {
+        let binding = ScalarBinding::ByTrack(vec![1.0, 2.0, 3.0]);
+        assert_eq!(binding.resolve_for_note(100, 60, 0), 1.0);
+        assert_eq!(binding.resolve_for_note(100, 60, 1), 2.0);
+        assert_eq!(binding.resolve_for_note(100, 60, 2), 3.0);
+        assert_eq!(binding.resolve_for_note(100, 60, 3), 1.0);
+        assert_eq!(
+            ScalarBinding::ByTrack(vec![]).resolve_for_note(100, 60, 0),
+            1.0
         );
     }
 
@@ -1077,7 +1128,7 @@ mod tests {
                     color: ParticleColor::Fixed(ColorBinding::Constant([255, 240, 200])),
                     additive: true,
                     emission: EmissionMode::Burst,
-                    brightness: 5.0,
+                    brightness: ScalarBinding::Constant(5.0),
                     layers: default_glow_layers(),
                 }),
                 flash: Some(FlashSpec {
@@ -1086,7 +1137,7 @@ mod tests {
                     color: FlashColor::Solid(ColorBinding::Constant([255, 255, 255])),
                     decay_seconds: 0.15,
                     mode: FlashMode::Instant,
-                    brightness: 6.0,
+                    brightness: ScalarBinding::Constant(6.0),
                     layers: default_glow_layers(),
                 }),
             }),
@@ -1203,7 +1254,7 @@ mod tests {
                 color: color.clone(),
                 additive: true,
                 emission: EmissionMode::Burst,
-                brightness: 1.0,
+                brightness: ScalarBinding::Constant(1.0),
                 layers: default_glow_layers(),
             };
             let text = ron::ser::to_string_pretty(&spec, ron::ser::PrettyConfig::new()).unwrap();
@@ -1248,7 +1299,7 @@ mod tests {
                 color: color.clone(),
                 decay_seconds: 0.2,
                 mode: FlashMode::Instant,
-                brightness: 1.0,
+                brightness: ScalarBinding::Constant(1.0),
                 layers: default_glow_layers(),
             };
             let text = ron::ser::to_string_pretty(&spec, ron::ser::PrettyConfig::new()).unwrap();

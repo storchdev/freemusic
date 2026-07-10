@@ -32,7 +32,10 @@
             ))),
             additive: true,
             emission: Burst,
-            brightness: 1.0,
+            brightness: ByVelocity(
+                low: 0.3,
+                high: 1.6,
+            ),
             layers: ((
                 amplitude: 3.0,
                 sigma_px: 0.5,
@@ -53,7 +56,10 @@
             ))),
             decay_seconds: 0.15,
             mode: Instant,
-            brightness: 1.0,
+            brightness: ByVelocity(
+                low: 0.3,
+                high: 1.6,
+            ),
             layers: ((
                 amplitude: 2.6,
                 sigma_px: 2.0,

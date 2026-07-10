@@ -26,7 +26,7 @@
             color: Solid(Constant((255, 255, 255))),
             decay_seconds: 0.2,
             mode: Instant,
-            brightness: 1.0,
+            brightness: Constant(1.0),
             layers: ((
                 amplitude: 2.6,
                 sigma_px: 2.0,
