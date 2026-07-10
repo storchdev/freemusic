@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 # Not necessarily on PATH in a fresh/non-interactive shell (see CLAUDE.md).
 source "$HOME/.cargo/env" 2>/dev/null || true
 
-cargo run -p project --example dump_sample_styles 2>/dev/null | awk '
+cargo run -p project --example dump_sample_styles | awk '
 /^=== .* ===$/ {
     name = $0
     sub(/^=== /, "", name)

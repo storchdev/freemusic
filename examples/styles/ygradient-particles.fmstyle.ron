@@ -30,10 +30,12 @@
                 top: Constant((60, 90, 255)),
                 bottom: Constant((255, 60, 60)),
                 top_fraction: 0.55,
-                bottom_fraction: 0.85,
+                bottom_fraction: 0.66,
             ),
             additive: true,
-            emission: Burst,
+            emission: Continuous(
+                rate_per_second: 50.0,
+            ),
             brightness: 1.0,
             layers: ((
                 amplitude: 3.0,
