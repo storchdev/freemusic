@@ -22,10 +22,10 @@
         kind: Flash,
         particles: None,
         flash: Some((
-            radius_x_px: 70.0,
-            radius_y_px: 40.0,
+            radius_x_px: Constant(70.0),
+            radius_y_px: Constant(40.0),
             color: Solid(Constant((255, 255, 255))),
-            decay_seconds: 0.2,
+            decay_seconds: Constant(0.2),
             mode: Instant,
             brightness: Constant(1.0),
             layers: ((

@@ -22,11 +22,11 @@
         kind: Particles,
         particles: Some((
             count: 0,
-            lifetime_seconds: 0.45,
-            size_px: 6.0,
-            speed_px: 140.0,
-            spread_degrees: 100.0,
-            gravity_px: 250.0,
+            lifetime_seconds: Constant(0.45),
+            size_px: Constant(6.0),
+            speed_px: Constant(140.0),
+            spread_degrees: Constant(100.0),
+            gravity_px: Constant(250.0),
             color: Fixed(Constant((255, 210, 90))),
             additive: true,
             emission: Continuous(

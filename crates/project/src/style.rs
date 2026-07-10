@@ -770,11 +770,17 @@ impl Default for ParticleColor {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParticleSpec {
     pub count: u32,
-    pub lifetime_seconds: f32,
-    pub size_px: f32,
-    pub speed_px: f32,
-    pub spread_degrees: f32,
-    pub gravity_px: f32,
+    /// Resolved per triggering note (`ScalarBinding::resolve_for_note`, same mechanism as
+    /// `brightness` below) — e.g. a harder hit can spawn longer-lived, bigger, faster, more
+    /// widely-spread, and/or more-gravity-affected particles instead of every note's burst having
+    /// identical shape. **Breaking change**: an older `.fmstyle.ron` with a bare float on any of
+    /// these five fields (e.g. `lifetime_seconds: 0.4`) needs updating to
+    /// `lifetime_seconds: Constant(0.4)` — see `docs/fmstyle-format.md`'s migration history.
+    pub lifetime_seconds: ScalarBinding,
+    pub size_px: ScalarBinding,
+    pub speed_px: ScalarBinding,
+    pub spread_degrees: ScalarBinding,
+    pub gravity_px: ScalarBinding,
     #[serde(default)]
     pub color: ParticleColor,
     pub additive: bool,
@@ -842,11 +848,17 @@ impl Default for FlashColor {
 /// as `Glow`'s doc comment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlashSpec {
-    pub radius_x_px: f32,
-    pub radius_y_px: f32,
+    /// Resolved per triggering note (`ScalarBinding::resolve_for_note`, same mechanism as
+    /// `brightness` below) — e.g. a harder hit can spawn a bigger flash. **Breaking change**: an
+    /// older `.fmstyle.ron` with a bare float on either (e.g. `radius_x_px: 40.0`) needs updating
+    /// to `radius_x_px: Constant(40.0)` — see `docs/fmstyle-format.md`'s migration history.
+    pub radius_x_px: ScalarBinding,
+    pub radius_y_px: ScalarBinding,
     #[serde(default)]
     pub color: FlashColor,
-    pub decay_seconds: f32,
+    /// Resolved per triggering note, same mechanism as `radius_x_px`/`radius_y_px` above — e.g. a
+    /// harder hit's flash can also linger longer. Same breaking-change note applies.
+    pub decay_seconds: ScalarBinding,
     #[serde(default)]
     pub mode: FlashMode,
     /// Color multiplier applied at spawn time — see `Glow`'s doc comment for the overdrive
@@ -1140,11 +1152,11 @@ mod tests {
                 kind: TransitionKind::ParticlesAndFlash,
                 particles: Some(ParticleSpec {
                     count: 10,
-                    lifetime_seconds: 0.4,
-                    size_px: 4.0,
-                    speed_px: 180.0,
-                    spread_degrees: 60.0,
-                    gravity_px: 300.0,
+                    lifetime_seconds: ScalarBinding::Constant(0.4),
+                    size_px: ScalarBinding::Constant(4.0),
+                    speed_px: ScalarBinding::Constant(180.0),
+                    spread_degrees: ScalarBinding::Constant(60.0),
+                    gravity_px: ScalarBinding::Constant(300.0),
                     color: ParticleColor::Fixed(ColorBinding::Constant([255, 240, 200])),
                     additive: true,
                     emission: EmissionMode::Burst,
@@ -1152,12 +1164,55 @@ mod tests {
                     layers: default_glow_layers(),
                 }),
                 flash: Some(FlashSpec {
-                    radius_x_px: 40.0,
-                    radius_y_px: 40.0,
+                    radius_x_px: ScalarBinding::Constant(40.0),
+                    radius_y_px: ScalarBinding::Constant(40.0),
                     color: FlashColor::Solid(ColorBinding::Constant([255, 255, 255])),
-                    decay_seconds: 0.15,
+                    decay_seconds: ScalarBinding::Constant(0.15),
                     mode: FlashMode::Instant,
                     brightness: ScalarBinding::Constant(6.0),
+                    layers: default_glow_layers(),
+                }),
+            }),
+            background: default_background_color(),
+        };
+        let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
+        let parsed: Style = ron::from_str(&text).unwrap();
+        assert_eq!(style, parsed);
+    }
+
+    /// `ParticleSpec`'s five shape scalars (`lifetime_seconds`/`size_px`/`speed_px`/
+    /// `spread_degrees`/`gravity_px`) and `FlashSpec`'s three (`radius_x_px`/`radius_y_px`/
+    /// `decay_seconds`) round-trip in their `ByVelocity` form, not just the `Constant` shape the
+    /// previous test above covers for `brightness`.
+    #[test]
+    fn particle_and_flash_shape_scalars_round_trip() {
+        let ramp = |low: f32, high: f32| ScalarBinding::ByVelocity { low, high };
+        let style = Style {
+            version: 1,
+            notes: Timed::default(),
+            barrier: Timed::default(),
+            transition: Timed::Static(TransitionLayer {
+                kind: TransitionKind::ParticlesAndFlash,
+                particles: Some(ParticleSpec {
+                    count: 10,
+                    lifetime_seconds: ramp(0.2, 0.6),
+                    size_px: ramp(2.0, 5.0),
+                    speed_px: ramp(100.0, 240.0),
+                    spread_degrees: ramp(30.0, 90.0),
+                    gravity_px: ramp(150.0, 350.0),
+                    color: ParticleColor::Fixed(ColorBinding::Constant([255, 240, 200])),
+                    additive: true,
+                    emission: EmissionMode::Burst,
+                    brightness: ScalarBinding::Constant(1.0),
+                    layers: default_glow_layers(),
+                }),
+                flash: Some(FlashSpec {
+                    radius_x_px: ramp(20.0, 50.0),
+                    radius_y_px: ramp(20.0, 50.0),
+                    color: FlashColor::Solid(ColorBinding::Constant([255, 255, 255])),
+                    decay_seconds: ramp(0.1, 0.3),
+                    mode: FlashMode::Instant,
+                    brightness: ScalarBinding::Constant(1.0),
                     layers: default_glow_layers(),
                 }),
             }),
@@ -1265,11 +1320,11 @@ mod tests {
         ] {
             let spec = ParticleSpec {
                 count: 1,
-                lifetime_seconds: 0.5,
-                size_px: 2.0,
-                speed_px: 100.0,
-                spread_degrees: 30.0,
-                gravity_px: 200.0,
+                lifetime_seconds: ScalarBinding::Constant(0.5),
+                size_px: ScalarBinding::Constant(2.0),
+                speed_px: ScalarBinding::Constant(100.0),
+                spread_degrees: ScalarBinding::Constant(30.0),
+                gravity_px: ScalarBinding::Constant(200.0),
                 color: color.clone(),
                 additive: true,
                 emission: EmissionMode::Burst,
@@ -1313,10 +1368,10 @@ mod tests {
             FlashColor::MatchNote,
         ] {
             let spec = FlashSpec {
-                radius_x_px: 20.0,
-                radius_y_px: 20.0,
+                radius_x_px: ScalarBinding::Constant(20.0),
+                radius_y_px: ScalarBinding::Constant(20.0),
                 color: color.clone(),
-                decay_seconds: 0.2,
+                decay_seconds: ScalarBinding::Constant(0.2),
                 mode: FlashMode::Instant,
                 brightness: ScalarBinding::Constant(1.0),
                 layers: default_glow_layers(),

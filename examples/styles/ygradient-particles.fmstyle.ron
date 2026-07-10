@@ -22,11 +22,11 @@
         kind: Particles,
         particles: Some((
             count: 20,
-            lifetime_seconds: 1.1,
-            size_px: 1.0,
-            speed_px: 260.0,
-            spread_degrees: 90.0,
-            gravity_px: 150.0,
+            lifetime_seconds: Constant(1.1),
+            size_px: Constant(1.0),
+            speed_px: Constant(260.0),
+            spread_degrees: Constant(90.0),
+            gravity_px: Constant(150.0),
             color: YGradient(
                 top: Constant((60, 90, 255)),
                 bottom: Constant((255, 60, 60)),

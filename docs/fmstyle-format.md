@@ -414,12 +414,12 @@ this is what the RON serializer emits automatically; write it the same way by ha
 
 | Field | Type | Meaning |
 |---|---|---|
-| `count` | `u32` | Particles per burst. **`Burst`-only** — ignored under `Continuous` emission. |
-| `lifetime_seconds` | `f32` | How long each particle lives before expiring. |
-| `size_px` | `f32` | Particle quad size (circular, `[size_px, size_px]`). |
-| `speed_px` | `f32` | Initial speed; each particle jitters between `0.5x`–`1.0x` of this. |
-| `spread_degrees` | `f32` | Spawn cone width around straight up. |
-| `gravity_px` | `f32` | Downward acceleration applied every step after spawn. |
+| `count` | `u32` | Particles per burst. **`Burst`-only** — ignored under `Continuous` emission. Not a `ScalarBinding` — it selects an array/loop length rather than a rendered value, and `ScalarBinding` is `f32`-typed. |
+| `lifetime_seconds` | `ScalarBinding` | How long each particle lives before expiring. |
+| `size_px` | `ScalarBinding` | Particle quad size (circular, `[size_px, size_px]`). |
+| `speed_px` | `ScalarBinding` | Initial speed; each particle jitters between `0.5x`–`1.0x` of this. |
+| `spread_degrees` | `ScalarBinding` | Spawn cone width around straight up. |
+| `gravity_px` | `ScalarBinding` | Downward acceleration applied every step after spawn. |
 | `color` | `ParticleColor` | How each particle's color is chosen — see below. |
 | `additive` | `bool` | Additive blending (bright, overlapping particles glow) vs. premultiplied-alpha (opaque-ish). Decided once per `update()` call from the layer's currently-resolved value — a particle spawned under one style doesn't retroactively update if a *different* style is imported while it's still alive. |
 | `emission` | `EmissionMode` | `Burst` (default) or `Continuous { rate_per_second }`. |
@@ -429,6 +429,14 @@ this is what the RON serializer emits automatically; write it the same way by ha
 `EmissionMode::Continuous { rate_per_second }`: particles spawn every frame a note is held,
 spread across the *width* of its key (not its center point) — reads as the key being "ground
 down" rather than sparking once. `count` has no effect in this mode.
+
+`lifetime_seconds`/`size_px`/`speed_px`/`spread_degrees`/`gravity_px` (Phase S follow-up) are each
+resolved once per spawned burst/continuous-emission tick against the *triggering* note's
+velocity/pitch/track — the exact same call site and mechanism as `brightness` above (`render::
+effects::spawn_particles`/the continuous-emission loop), so e.g. a harder hit can spawn bigger,
+faster, longer-lived, more widely-spread, and/or more-gravity-affected particles than a soft one.
+**Breaking change**: an older `.fmstyle.ron` with a bare float on any of these five (e.g.
+`size_px: 4.0`) needs `size_px: Constant(4.0)` instead — see [Migration history](#migration-history).
 
 ### `ParticleColor`
 
@@ -473,15 +481,22 @@ from exactly one source:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `radius_x_px` / `radius_y_px` | `f32` | Independent horizontal/vertical radii — set equal for a circular flash, unequal for an ellipse. |
+| `radius_x_px` / `radius_y_px` | `ScalarBinding` | Independent horizontal/vertical radii — set equal for a circular flash, unequal for an ellipse. |
 | `color` | `FlashColor` | How the flash's color varies across its own width — see below. |
-| `decay_seconds` | `f32` | How long the fade-out takes (see `mode` for when the fade *starts*). |
+| `decay_seconds` | `ScalarBinding` | How long the fade-out takes (see `mode` for when the fade *starts*). |
 | `mode` | `FlashMode` | `Instant` (default) or `Sustained`. |
 | `brightness` | `ScalarBinding` | Default `Constant(1.0)`. Resolved once per spawned flash against the *triggering* note's velocity/pitch/track (`ScalarBinding::resolve_for_note`), then baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `Constant(1.0)` is a no-op. **Breaking change** (Phase R): older files with a bare float here need `brightness: Constant(1.0)` instead — see [Migration history](#migration-history). |
 | `layers` | `[GlowLayer; 3]` | Default tight/mid/wide, same as `Glow`. A flash is always additive, so this is always read (unlike `ParticleSpec::layers`, which non-additive particles ignore). |
 
 A flash always renders additively. It is fully "on" at spawn/at the start of its hold (see
 `mode`), fading to 0 over `decay_seconds`.
+
+`radius_x_px`/`radius_y_px`/`decay_seconds` (Phase S follow-up) are each resolved once per spawned
+flash against the *triggering* note's velocity/pitch/track — same call site and mechanism as
+`brightness` above (`render::effects::spawn_flash`) — so e.g. a harder hit can spawn a bigger
+and/or longer-lived flash than a soft one. **Breaking change**: an older `.fmstyle.ron` with a bare
+float on any of these three (e.g. `radius_x_px: 40.0`) needs `radius_x_px: Constant(40.0)` instead
+— see [Migration history](#migration-history).
 
 ### `FlashColor`
 
@@ -678,3 +693,7 @@ If a previously-working `.fmstyle.ron` file fails to load after an upgrade, chec
   (Phase R — wrap an existing bare float as `Constant(...)`, e.g. `brightness: 1.0` ->
   `brightness: Constant(1.0)`; `Glow.brightness`/`Pulse.brightness` are unaffected, still a plain
   `f32`)
+- `ParticleSpec.lifetime_seconds`/`size_px`/`speed_px`/`spread_degrees`/`gravity_px: f32` ->
+  `ScalarBinding`, `FlashSpec.radius_x_px`/`radius_y_px`/`decay_seconds: f32` -> `ScalarBinding`
+  (Phase S follow-up — same wrap-in-`Constant(...)` fix as the `brightness` change above; `count`
+  stays a plain `u32`, not converted)

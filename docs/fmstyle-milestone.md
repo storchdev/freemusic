@@ -1669,3 +1669,65 @@ visibly show the barrier/video/background through them while hard-velocity notes
 that a note with `glow: Some(..)` (e.g. combine with an existing glow sample by hand) still shows
 its corona at full strength even while its own fill is mostly transparent.
 
+### Phase S follow-up: `ScalarBinding` wired to `ParticleSpec`/`FlashSpec` shape fields
+
+Second item off the same brainstorm that produced Phase S's note alpha: of every remaining fixed
+`f32`/color field in the schema, `ParticleSpec`'s `lifetime_seconds`/`size_px`/`speed_px`/
+`spread_degrees`/`gravity_px` and `FlashSpec`'s `radius_x_px`/`radius_y_px`/`decay_seconds` were
+identified as the least speculative next candidates — *less* of a stretch than note alpha, not
+more, since `color`/`brightness` on these exact structs were already resolved per triggering note
+(Phase R / Phase R follow-up) at the exact call sites (`render::effects::spawn_particles`/
+continuous-emission loop/`spawn_flash`) these fields needed. Converting them was pure reuse of
+that existing plumbing, not new instance/shader work. `count: u32` was deliberately **not**
+converted — `ScalarBinding` is `f32`-typed and `count` selects a loop/array length rather than a
+rendered value, so it would need a distinct integer-typed binding type for no clearly-motivated
+use case; left as a plain `u32`. `NoteLayer::roundedness` (the other candidate raised in the same
+discussion) was explicitly deferred, not touched here.
+
+**Schema** (`crates/project/src/style.rs`): the eight fields above changed from `f32` to
+`ScalarBinding`, mirroring `brightness`'s existing shape and doc-comment convention exactly (no
+`#[serde(default)]` — these were already mandatory fields, so the schema change is purely about
+what shape a supplied value takes, same as the Phase R `brightness` conversion). **Breaking
+change**, no compat shim, per this project's pre-1.0 policy (see the top of this repo's
+`CLAUDE.md`) — a bare float on any of these eight now fails to parse; wrap it as `Constant(...)`.
+
+**Renderer** (`crates/render/src/effects.rs`): added `resolve_particle_shape(spec, interval) ->
+(f32, f32, f32, f32, f32)`, resolving all five `ParticleSpec` shape scalars against one
+triggering/held note in a single call (mirroring `resolve_particle_color`'s existing shape) —
+called once per note per spawn event (`spawn_particles`) or once per held note per frame
+(continuous emission), exactly where `brightness`/`color` were already being resolved, and its
+tuple threaded into `spawn_one_particle` (which now takes a `shape` tuple parameter instead of
+reading `spec.lifetime_seconds` etc. directly) alongside the already-resolved `color`/`brightness`.
+`spawn_flash` resolves its own three fields inline the same way (it only has one call site per
+note event, so no shared-resolution helper was needed there). No `Particle`/`Flash`/
+`EffectInstance` struct changed shape — only the *resolution* moved from "read a shared `spec`
+field" to "resolve once per note, then store/use the resolved value," identical in spirit to how
+`brightness` already worked.
+
+**Samples updated** (all eight fields are mandatory, so every existing sample using them needed a
+mechanical `N.N` -> `Constant(N.N)` wrap, regenerated via `cargo run -p project --example
+dump_sample_styles` rather than hand-edited, so the RON syntax is guaranteed to match this `ron`
+version's actual output): `sparks`, `ellipse-flash`, `grinding-particles`, `ygradient-particles`,
+`key-glow`, `showcase_blue_purple`, `match-note-color`, `velocity-sparks`. **`velocity-sparks`
+additionally enhanced** (not just mechanically wrapped) to actually exercise the new capability —
+`ParticleSpec::size_px`/`speed_px` and `FlashSpec::radius_x_px`/`radius_y_px` all changed from
+`Constant(...)` to `ByVelocity { low, high }`, so a hard keypress now visibly sparks bigger, faster
+particles and a bigger flash than a soft one, on top of the color/brightness variation Phase R/R-
+follow-up already gave it. `lifetime_seconds`/`spread_degrees`/`gravity_px`/`decay_seconds` were
+deliberately left as `Constant` on this sample — enough fields vary to prove the mechanism without
+every one of the eight doing so at once.
+
+**Tests**: `crates/project/src/style.rs` gained `particle_and_flash_shape_scalars_round_trip` (RON
+round-trip of the `ByVelocity` form across all eight fields at once, mirroring
+`transition_layer_brightness_fields_round_trip`'s existing `Constant`-only coverage); the three
+existing tests that construct bare-float `ParticleSpec`/`FlashSpec` literals
+(`transition_layer_brightness_fields_round_trip`, `particle_color_variants_round_trip`,
+`flash_color_variants_round_trip`) were updated to wrap every affected field in `Constant(...)`.
+
+**Verified**: `cargo build --workspace --all-targets`, `cargo test --workspace`, and `cargo
+fmt`/`cargo clippy --all-targets --workspace` all clean; `shipped_sample_styles_parse` finds every
+updated sample file. **Not yet manually run** (per the "never run the app yourself" rule) — worth
+confirming, next time someone has hands on the app: import `velocity-sparks.fmstyle.ron` and
+confirm a hard keypress's spark burst and flash visibly grow (not just brighten/recolor) compared
+to a soft keypress's.
+

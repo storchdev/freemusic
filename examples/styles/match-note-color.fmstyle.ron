@@ -44,11 +44,11 @@
         kind: ParticlesAndFlash,
         particles: Some((
             count: 0,
-            lifetime_seconds: 1.0,
-            size_px: 1.0,
-            speed_px: 200.0,
-            spread_degrees: 70.0,
-            gravity_px: 200.0,
+            lifetime_seconds: Constant(1.0),
+            size_px: Constant(1.0),
+            speed_px: Constant(200.0),
+            spread_degrees: Constant(70.0),
+            gravity_px: Constant(200.0),
             color: MatchNote,
             additive: true,
             emission: Continuous(
@@ -67,10 +67,10 @@
             )),
         )),
         flash: Some((
-            radius_x_px: 20.0,
-            radius_y_px: 10.0,
+            radius_x_px: Constant(20.0),
+            radius_y_px: Constant(10.0),
             color: MatchNote,
-            decay_seconds: 0.18,
+            decay_seconds: Constant(0.18),
             mode: Sustained,
             brightness: Constant(2.0),
             layers: ((

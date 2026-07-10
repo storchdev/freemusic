@@ -609,6 +609,7 @@ impl EffectsRenderer {
                                     interval.pitch,
                                     interval.track_id,
                                 );
+                                let shape = Self::resolve_particle_shape(spec, interval);
                                 let mut n = expected.floor() as u32;
                                 if self.rng.range(0.0, 1.0) < expected.fract() {
                                     n += 1;
@@ -616,7 +617,7 @@ impl EffectsRenderer {
                                 for _ in 0..n {
                                     let x = self.rng.range(interval.x_left, interval.x_right);
                                     self.spawn_one_particle(
-                                        x, barrier_y, spec, color, brightness, y_gradient,
+                                        x, barrier_y, spec, color, brightness, y_gradient, shape,
                                     );
                                 }
                             }
@@ -722,6 +723,34 @@ impl EffectsRenderer {
         }
     }
 
+    /// Resolves `ParticleSpec`'s five per-note-varying shape scalars (`lifetime_seconds`/
+    /// `size_px`/`speed_px`/`spread_degrees`/`gravity_px`) against one triggering/held note in one
+    /// call — every spawn site (`spawn_particles`, continuous emission) needs all five together,
+    /// same mechanism (`ScalarBinding::resolve_for_note`) as `brightness`/`color` above.
+    fn resolve_particle_shape(
+        spec: &ParticleSpec,
+        interval: &NoteInterval,
+    ) -> (f32, f32, f32, f32, f32) {
+        (
+            spec.lifetime_seconds.resolve_for_note(
+                interval.velocity,
+                interval.pitch,
+                interval.track_id,
+            ),
+            spec.size_px
+                .resolve_for_note(interval.velocity, interval.pitch, interval.track_id),
+            spec.speed_px
+                .resolve_for_note(interval.velocity, interval.pitch, interval.track_id),
+            spec.spread_degrees.resolve_for_note(
+                interval.velocity,
+                interval.pitch,
+                interval.track_id,
+            ),
+            spec.gravity_px
+                .resolve_for_note(interval.velocity, interval.pitch, interval.track_id),
+        )
+    }
+
     fn spawn_particles(
         &mut self,
         interval: &NoteInterval,
@@ -739,6 +768,7 @@ impl EffectsRenderer {
         let brightness =
             spec.brightness
                 .resolve_for_note(interval.velocity, interval.pitch, interval.track_id);
+        let shape = Self::resolve_particle_shape(spec, interval);
         for _ in 0..spec.count {
             self.spawn_one_particle(
                 interval.x_center(),
@@ -747,6 +777,7 @@ impl EffectsRenderer {
                 color,
                 brightness,
                 y_gradient,
+                shape,
             );
         }
     }
@@ -758,6 +789,7 @@ impl EffectsRenderer {
     /// resolve_for_note`) against the same triggering/held note `color` was resolved against —
     /// both callers resolve once per note (not once per particle) and pass the result in, rather
     /// than re-resolving per spawned particle, since neither varies within one note's burst.
+    /// `shape` is `resolve_particle_shape`'s tuple, resolved the same way and for the same reason.
     /// Non-additive "puff" particles get `hot_color`-whitened fill color (no corona); additive
     /// particles instead leave `color` unwhitened and pre-multiply `brightness` into `layer_amp`,
     /// since their corona is additive and whitens via saturation instead. `y_gradient`, if `Some`,
@@ -772,7 +804,9 @@ impl EffectsRenderer {
         color: [f32; 3],
         brightness: f32,
         y_gradient: Option<YGradientRange>,
+        shape: (f32, f32, f32, f32, f32),
     ) {
+        let (lifetime_seconds, size_px, speed_px, spread_degrees, gravity_px) = shape;
         let (color, margin_px, layer_amp, layer_sigma) = if spec.additive {
             let layer_amp = [
                 spec.layers[0].amplitude * brightness,
@@ -795,20 +829,17 @@ impl EffectsRenderer {
         };
         // Spread around straight up (canvas convention is y-down, so "up" is negative y) —
         // `angle_degrees` measured from that upward axis.
-        let angle_deg = -90.0
-            + self
-                .rng
-                .range(-spec.spread_degrees * 0.5, spec.spread_degrees * 0.5);
+        let angle_deg = -90.0 + self.rng.range(-spread_degrees * 0.5, spread_degrees * 0.5);
         let angle = angle_deg.to_radians();
-        let speed = spec.speed_px * self.rng.range(0.5, 1.0);
-        let lifetime = spec.lifetime_seconds.max(0.01);
+        let speed = speed_px * self.rng.range(0.5, 1.0);
+        let lifetime = lifetime_seconds.max(0.01);
         self.particles.push(Particle {
             pos: [x_px, y_px],
             vel: [angle.cos() * speed, angle.sin() * speed],
-            gravity_px: spec.gravity_px,
+            gravity_px,
             life_seconds: lifetime,
             lifetime_seconds: lifetime,
-            size_px: spec.size_px.max(0.5),
+            size_px: size_px.max(0.5),
             color,
             y_gradient,
             brightness,
@@ -851,6 +882,17 @@ impl EffectsRenderer {
         let brightness =
             spec.brightness
                 .resolve_for_note(interval.velocity, interval.pitch, interval.track_id);
+        let decay_seconds = spec.decay_seconds.resolve_for_note(
+            interval.velocity,
+            interval.pitch,
+            interval.track_id,
+        );
+        let radius_x_px =
+            spec.radius_x_px
+                .resolve_for_note(interval.velocity, interval.pitch, interval.track_id);
+        let radius_y_px =
+            spec.radius_y_px
+                .resolve_for_note(interval.velocity, interval.pitch, interval.track_id);
         let layer_amp = [
             spec.layers[0].amplitude * brightness,
             spec.layers[1].amplitude * brightness,
@@ -869,9 +911,9 @@ impl EffectsRenderer {
         self.flashes.push(Flash {
             pos: [x_px, y_px],
             decay_start_seconds,
-            decay_seconds: spec.decay_seconds.max(0.01),
-            radius_x_px: spec.radius_x_px.max(1.0),
-            radius_y_px: spec.radius_y_px.max(1.0),
+            decay_seconds: decay_seconds.max(0.01),
+            radius_x_px: radius_x_px.max(1.0),
+            radius_y_px: radius_y_px.max(1.0),
             color,
             margin_px,
             layer_amp,
