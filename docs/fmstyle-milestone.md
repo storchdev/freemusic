@@ -1581,15 +1581,23 @@ already resolved once per note and passed in rather than re-resolved per particl
 resolves `brightness` the same way, once, and uses it in place of the old `spec.brightness` in the
 `layer_amp` computation.
 
-**Breaking schema change**: any `.fmstyle.ron` with a bare float `brightness` inside a
+**Breaking schema change**: any `.fmstyle.ron`/`.fmproj.ron` with a bare float `brightness` inside a
 `ParticleSpec`/`FlashSpec` (e.g. `brightness: 1.0`) now fails to parse — RON expects the enum shape
 `brightness: Constant(1.0)`. Every shipped `examples/styles/*.fmstyle.ron` with a particle/flash
 `brightness` field was migrated via `scripts/refresh-sample-styles.sh` (8 files: `sparks`,
-`ellipse-flash`, `grinding-particles`, `key-glow`, `showcase_blue_purple`,
-`ygradient-particles`, `match-note-color`, `velocity-sparks`) — diffed before committing, and every
-diff was exactly the expected `brightness: N` -> `brightness: Constant(N)` (plus `velocity-sparks`'s
-intentional upgrade below). `Glow`/`Pulse`'s `brightness` fields are untouched by this change
-(still a plain float) since neither was converted.
+`ellipse-flash`, `grinding-particles`, `key-glow`, `showcase_blue_purple`, `ygradient-particles`,
+`match-note-color`, `velocity-sparks`) — diffed before committing, and every diff was exactly the
+expected `brightness: N` -> `brightness: Constant(N)` (plus `velocity-sparks`'s intentional upgrade
+below). `Glow`/`Pulse`'s `brightness` fields are untouched by this change (still a plain float)
+since neither was converted.
+
+A backward-compatible `ScalarBinding::Deserialize` (accepting a bare number as sugar for
+`Constant(that number)`, alongside the tagged shape) was briefly added, then deliberately removed
+per direct instruction — any real project file that breaks on this change gets hand-edited instead
+of the schema growing permanent bare-number-parsing logic to avoid it. One such file
+(`valseexportsmall.fmproj.ron`, outside this repo) was hand-migrated this way — every bare-float
+`brightness: N` inside its embedded `Style`'s `ParticleSpec`/`FlashSpec` literals rewritten to
+`brightness: Constant(N)`, nothing else touched.
 
 **Sample enhanced**: `velocity-sparks.fmstyle.ron` (added in Phase R for the color wiring) now also
 uses `ScalarBinding::ByVelocity { low: 0.3, high: 1.6 }` for both its particle and flash
