@@ -1971,3 +1971,15 @@ rebuilt clean. **Runtime look not yet confirmed** — worth checking: import
 `photoreal-sunburst.fmstyle.ron`, play a note, and watch for a tight bright core with rays radiating
 outward, a faint ring, and a subtle color fringe at the outer edge, rather than a plain round flash.
 
+**`GodRaySpec`'s `Default` impl retuned to match `photoreal-sunburst.fmstyle.ron`** (the sample
+above): `count` 6→32, `length_px` 420→72, `length_jitter` 0.5→0.0, `softness` 3.0→1.5,
+`rotation_speed_deg_per_sec` 0.0→30.0 (this field is now `#[serde(default =
+"default_god_ray_rotation_speed_deg_per_sec")]` instead of a bare `#[serde(default)]`, so it also
+picks up the new value rather than `0.0` when omitted from a `.fmstyle.ron` file), `pulse_speed`
+1.0→0.0, `pulse_amount` 0.6→0.0, `streakiness` 0.6→1.0, `flicker_speed` 1.2→4.0,
+`flicker_intensity` 0.55→1.0, `intensity` 1.4→0.5. `rotation_offset_deg` was already `0.0` in both
+places, unchanged. A newly-added `god_rays: Some(GodRaySpec::default())` (or one omitting several
+fields) now renders the tight, hard-flickering, fast-spinning sunburst look by default instead of
+the earlier wide/slow/pulsing beam pattern; `docs/fmstyle-format.md`'s `GodRaySpec` table updated
+to match.
+

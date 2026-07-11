@@ -526,18 +526,18 @@ group (Phase V), aimed at a "photograph of the sun from Earth" look rather than 
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `count` | `u32` | `6` | Number of angular beam slots around the flash's center. No practical upper cap — see below. |
-| `length_px` | `f32` | `420.0` | Beam reach in canvas px, before `length_jitter`/pulse shrink it. |
-| `length_jitter` | `f32` | `0.5` | Per-beam length variation (`0.0`-`1.0`), seeded per slot: `0.0` = every beam is exactly `length_px`; `1.0` = beams range anywhere from `0` to `length_px`. |
-| `softness` | `f32` | `3.0` | Angular falloff exponent: lower reads as wider/softer wedges, higher as narrower/sharper needles. |
+| `count` | `u32` | `32` | Number of angular beam slots around the flash's center. No practical upper cap — see below. |
+| `length_px` | `f32` | `72.0` | Beam reach in canvas px, before `length_jitter`/pulse shrink it. |
+| `length_jitter` | `f32` | `0.0` | Per-beam length variation (`0.0`-`1.0`), seeded per slot: `0.0` = every beam is exactly `length_px`; `1.0` = beams range anywhere from `0` to `length_px`. |
+| `softness` | `f32` | `1.5` | Angular falloff exponent: lower reads as wider/softer wedges, higher as narrower/sharper needles. |
 | `rotation_offset_deg` | `f32` | `0.0` | Fixed rotation of the whole beam pattern. |
-| `rotation_speed_deg_per_sec` | `f32` | `0.0` | Continuous rotation speed of the whole pattern. `0.0` is a no-op — see below for why this is a rigid whole-pattern spin, not per-beam wander. |
-| `pulse_speed` | `f32` | `1.0` | How fast each beam's own length breathes in and out via value noise. |
-| `pulse_amount` | `f32` | `0.6` | How far a beam's length can shrink at the pulse's trough, as a fraction of `length_px` (`0.0`-`1.0`). |
-| `streakiness` | `f32` | `0.6` | Internal streak-texture contrast along each beam's length (`0.0`-`1.0`). |
-| `flicker_speed` | `f32` | `1.2` | How fast each beam's whole-beam brightness flickers, independent of the streak texture — same value-noise mechanism as `FlashSpec::flicker_speed`, just per-beam. |
-| `flicker_intensity` | `f32` | `0.55` | How much the flicker dims a beam at its darkest point (`0.0` never dims, `1.0` can dim to fully dark). |
-| `intensity` | `f32` | `1.4` | Overall brightness multiplier on the whole god-ray contribution, independent of `FlashSpec::brightness` (which scales the corona's `layers`, not the rays). |
+| `rotation_speed_deg_per_sec` | `f32` | `30.0` | Continuous rotation speed of the whole pattern. `0.0` is a no-op — see below for why this is a rigid whole-pattern spin, not per-beam wander. |
+| `pulse_speed` | `f32` | `0.0` | How fast each beam's own length breathes in and out via value noise. |
+| `pulse_amount` | `f32` | `0.0` | How far a beam's length can shrink at the pulse's trough, as a fraction of `length_px` (`0.0`-`1.0`). |
+| `streakiness` | `f32` | `1.0` | Internal streak-texture contrast along each beam's length (`0.0`-`1.0`). |
+| `flicker_speed` | `f32` | `4.0` | How fast each beam's whole-beam brightness flickers, independent of the streak texture — same value-noise mechanism as `FlashSpec::flicker_speed`, just per-beam. |
+| `flicker_intensity` | `f32` | `1.0` | How much the flicker dims a beam at its darkest point (`0.0` never dims, `1.0` can dim to fully dark). |
+| `intensity` | `f32` | `0.5` | Overall brightness multiplier on the whole god-ray contribution, independent of `FlashSpec::brightness` (which scales the corona's `layers`, not the rays). |
 
 Beams sit on `count` fixed, evenly-spaced angular slots. There is deliberately no angular
 *wander* — an earlier iteration let the whole pattern drift side to side, which read as the beams

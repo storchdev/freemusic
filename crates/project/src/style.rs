@@ -924,10 +924,10 @@ pub struct GodRaySpec {
     /// Fixed rotation of the whole beam pattern, in degrees.
     #[serde(default)]
     pub rotation_offset_deg: f32,
-    /// Continuous rotation speed of the whole pattern, in degrees/second. `0.0` (default) is a
-    /// no-op — see this struct's own doc comment for why angular *wander* (individual beams
-    /// drifting) was rejected, as distinct from this rigid whole-pattern spin.
-    #[serde(default)]
+    /// Continuous rotation speed of the whole pattern, in degrees/second. `0.0` is a no-op — see
+    /// this struct's own doc comment for why angular *wander* (individual beams drifting) was
+    /// rejected, as distinct from this rigid whole-pattern spin.
+    #[serde(default = "default_god_ray_rotation_speed_deg_per_sec")]
     pub rotation_speed_deg_per_sec: f32,
     /// How fast each beam's own length breathes in and out via value noise.
     #[serde(default = "default_god_ray_pulse_speed")]
@@ -963,7 +963,7 @@ impl Default for GodRaySpec {
             length_jitter: default_god_ray_length_jitter(),
             softness: default_god_ray_softness(),
             rotation_offset_deg: 0.0,
-            rotation_speed_deg_per_sec: 0.0,
+            rotation_speed_deg_per_sec: default_god_ray_rotation_speed_deg_per_sec(),
             pulse_speed: default_god_ray_pulse_speed(),
             pulse_amount: default_god_ray_pulse_amount(),
             streakiness: default_god_ray_streakiness(),
@@ -975,34 +975,37 @@ impl Default for GodRaySpec {
 }
 
 fn default_god_ray_count() -> u32 {
-    6
+    32
 }
 fn default_god_ray_length_px() -> f32 {
-    420.0
+    72.0
 }
 fn default_god_ray_length_jitter() -> f32 {
-    0.5
+    0.0
 }
 fn default_god_ray_softness() -> f32 {
-    3.0
+    1.5
+}
+fn default_god_ray_rotation_speed_deg_per_sec() -> f32 {
+    30.0
 }
 fn default_god_ray_pulse_speed() -> f32 {
-    1.0
+    0.0
 }
 fn default_god_ray_pulse_amount() -> f32 {
-    0.6
+    0.0
 }
 fn default_god_ray_streakiness() -> f32 {
-    0.6
+    1.0
 }
 fn default_god_ray_flicker_speed() -> f32 {
-    1.2
+    4.0
 }
 fn default_god_ray_flicker_intensity() -> f32 {
-    0.55
+    1.0
 }
 fn default_god_ray_intensity() -> f32 {
-    1.4
+    0.5
 }
 
 /// Faint colored ring at a fixed radius around a flash's center — a common lens-flare
