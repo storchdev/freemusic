@@ -359,12 +359,11 @@
   <div id="rail-header">
     <p class="eyebrow">freemusic &middot; shader exploration</p>
     <h1>Barrier FX Lab</h1>
-    <p class="subtitle">Standalone playground for the note-highway barrier: the existing wavy-edge + 3-layer corona model, plus new electric/wispy options not in the app yet.</p>
+    <p class="subtitle">Standalone playground for the note-highway barrier: the existing wavy-edge + 3-layer corona model, plus new electric/wispy options not in the app yet. Also now includes the barrier-hit flash (today's exact round-blob model) plus experimental rays/halo-ring controls, for prototyping a "sun in camera" starburst look.</p>
     <div class="presets" id="presets"></div>
     <div class="action-row">
       <button id="pulse-btn" type="button">Trigger pulse</button>
-      <label class="auto-pulse"><input type="checkbox" id="auto-pulse" /> auto, every</label>
-      <span class="val" id="auto-pulse-val" style="font-family: var(--mono); font-size:11px; color:var(--text-dim);">0.5s</span>
+      <label class="auto-pulse"><input type="checkbox" id="auto-pulse" /> always on</label>
     </div>
     <div class="action-row" style="border-top: none; margin-top: 6px; padding-top: 0; gap: 6px;">
       <button id="export-btn" type="button" class="preset-btn" style="width: 100%;">Export JSON</button>
@@ -453,6 +452,44 @@ const SCHEMA = [
   { key: "wispSway", group: "wisps", type: "range", label: "Sway", min: 0, max: 1, step: 0.01, default: 0.5 },
   { key: "wispIntensity", group: "wisps", type: "range", label: "Intensity", min: 0, max: 2, step: 0.02, default: 0.9 },
 
+  { key: "flashEnabled", group: "flash", type: "checkbox", label: "Flash enabled", default: false },
+  { key: "flashColor", group: "flash", type: "color", label: "Flash color", default: "#ffffff" },
+  { key: "flashXFrac", group: "flash", type: "range", label: "Position X", min: 0, max: 1, step: 0.01, default: 0.5 },
+  { key: "flashYOffset", group: "flash", type: "range", label: "Position Y offset", min: -200, max: 200, step: 1, unit: "px", default: 0 },
+  { key: "flashRadiusX", group: "flash", type: "range", label: "Radius X", min: 5, max: 200, step: 1, unit: "px", default: 70 },
+  { key: "flashRadiusY", group: "flash", type: "range", label: "Radius Y", min: 5, max: 200, step: 1, unit: "px", default: 40 },
+  { key: "flashBrightness", group: "flash", type: "range", label: "Brightness", min: 0, max: 4, step: 0.02, default: 1.0 },
+  { key: "flashDecay", group: "flash", type: "range", label: "Decay", min: 0.05, max: 2, step: 0.01, unit: "s", default: 0.2 },
+  { key: "flashLayerAmp1", group: "flash", type: "range", label: "Layer 1 amp", min: 0, max: 6, step: 0.05, default: 2.6 },
+  { key: "flashLayerSigma1", group: "flash", type: "range", label: "Layer 1 σ", min: 0.5, max: 40, step: 0.5, unit: "px", default: 2.0 },
+  { key: "flashLayerAmp2", group: "flash", type: "range", label: "Layer 2 amp", min: 0, max: 6, step: 0.05, default: 1.1 },
+  { key: "flashLayerSigma2", group: "flash", type: "range", label: "Layer 2 σ", min: 0.5, max: 60, step: 0.5, unit: "px", default: 5.0 },
+  { key: "flashLayerAmp3", group: "flash", type: "range", label: "Layer 3 amp", min: 0, max: 6, step: 0.05, default: 0.38 },
+  { key: "flashLayerSigma3", group: "flash", type: "range", label: "Layer 3 σ", min: 0.5, max: 100, step: 1, unit: "px", default: 10.0 },
+  { key: "flashFlickerSpeed", group: "flash", type: "range", label: "Flicker speed", min: 0, max: 5, step: 0.02, default: 0 },
+  { key: "flashFlickerIntensity", group: "flash", type: "range", label: "Flicker intensity", min: 0, max: 1, step: 0.01, default: 0 },
+
+  { key: "ringRadius", group: "halo", type: "range", label: "Halo ring radius", min: 0, max: 300, step: 1, unit: "px", default: 90 },
+  { key: "ringWidth", group: "halo", type: "range", label: "Halo ring width", min: 1, max: 60, step: 1, unit: "px", default: 14 },
+  { key: "ringIntensity", group: "halo", type: "range", label: "Halo ring intensity", min: 0, max: 1.5, step: 0.02, default: 0.25 },
+
+  { key: "godRaysEnabled", group: "godrays", type: "checkbox", label: "God rays enabled", default: true },
+  { key: "godRayCount", group: "godrays", type: "range", label: "Beam count", min: 2, max: 24, step: 1, default: 6 },
+  { key: "godRayLength", group: "godrays", type: "range", label: "Beam length", min: 5, max: 900, step: 1, unit: "px", default: 420 },
+  { key: "godRayLengthJitter", group: "godrays", type: "range", label: "Length jitter", min: 0, max: 1, step: 0.01, default: 0.5 },
+  { key: "godRaySoftness", group: "godrays", type: "range", label: "Angular softness", min: 0.5, max: 20, step: 0.1, default: 3.0 },
+  { key: "godRayRotationOffset", group: "godrays", type: "range", label: "Rotation offset", min: 0, max: 360, step: 1, unit: "deg", default: 0 },
+  { key: "godRayRotationSpeed", group: "godrays", type: "range", label: "Rotation speed", min: -60, max: 60, step: 1, unit: "deg/s", default: 0 },
+  { key: "godRayPulseSpeed", group: "godrays", type: "range", label: "Pulse speed (in/out)", min: 0, max: 5, step: 0.02, default: 1.0 },
+  { key: "godRayPulseAmount", group: "godrays", type: "range", label: "Pulse amount (in/out)", min: 0, max: 1, step: 0.01, default: 0.6 },
+  { key: "godRayStreakiness", group: "godrays", type: "range", label: "Streakiness", min: 0, max: 1, step: 0.01, default: 0.6 },
+  { key: "godRayFlickerSpeed", group: "godrays", type: "range", label: "Flicker speed", min: 0, max: 5, step: 0.02, default: 1.2 },
+  { key: "godRayFlickerIntensity", group: "godrays", type: "range", label: "Flicker intensity", min: 0, max: 1, step: 0.01, default: 0.55 },
+  { key: "godRayIntensity", group: "godrays", type: "range", label: "Intensity", min: 0, max: 3, step: 0.02, default: 1.4 },
+
+  { key: "chromaticEnabled", group: "chromatic", type: "checkbox", label: "Chromatic aberration enabled", default: true },
+  { key: "chromaticAmount", group: "chromatic", type: "range", label: "Amount", min: 0, max: 0.25, step: 0.005, default: 0.05 },
+
   { key: "barrierYFrac", group: "scene", type: "range", label: "Barrier height", min: 0.15, max: 0.6, step: 0.01, default: 0.34 },
   { key: "keyWidth", group: "scene", type: "range", label: "Key width", min: 16, max: 60, step: 1, unit: "px", default: 34 },
   { key: "vignette", group: "scene", type: "range", label: "Vignette", min: 0, max: 1, step: 0.02, default: 0.35 },
@@ -465,6 +502,10 @@ const GROUPS = [
   { id: "wave", title: "Wavy edge" },
   { id: "filament", title: "Electric — sliding filament" },
   { id: "wisps", title: "Electric — wisps" },
+  { id: "flash", title: "Flash — bloom / glow (core, today's app)" },
+  { id: "halo", title: "Flash — halo ring" },
+  { id: "godrays", title: "Flash — god rays (volumetric)" },
+  { id: "chromatic", title: "Flash — chromatic aberration" },
   { id: "scene", title: "Scene" },
 ];
 
@@ -478,6 +519,7 @@ const PRESETS = {
     strandCount: 6, strandSpread: 16, strandJitter: 0.8, strandThickness: 1.3, strandHaloAmp: 1.0, strandHaloSigma: 6, strandGlow: 1.5, strandFlicker: 2.0,
     filamentIntensity: 0.7, filamentSpeed: 0.9, filamentScale: 42,
     wispDensity: 0.55, wispHeight: 46, wispFlicker: 1.4, wispSway: 0.5, wispIntensity: 0.9,
+    flashEnabled: false,
     barrierYFrac: 0.34, keyWidth: 34, vignette: 0.35, exposure: 1.0,
   },
   "Cool plasma": {
@@ -489,6 +531,7 @@ const PRESETS = {
     strandCount: 7, strandSpread: 20, strandJitter: 0.9, strandThickness: 1.0, strandHaloAmp: 1.2, strandHaloSigma: 5, strandGlow: 1.6, strandFlicker: 3.2,
     filamentIntensity: 1.1, filamentSpeed: 1.8, filamentScale: 26,
     wispDensity: 0.7, wispHeight: 60, wispFlicker: 2.4, wispSway: 0.8, wispIntensity: 1.2,
+    flashEnabled: false,
     barrierYFrac: 0.34, keyWidth: 34, vignette: 0.4, exposure: 1.05,
   },
   "Ember pulse": {
@@ -500,6 +543,7 @@ const PRESETS = {
     strandCount: 4, strandSpread: 22, strandJitter: 0.6, strandThickness: 2.0, strandHaloAmp: 0.7, strandHaloSigma: 9, strandGlow: 1.1, strandFlicker: 1.0,
     filamentIntensity: 0.4, filamentSpeed: 0.4, filamentScale: 60,
     wispDensity: 0.4, wispHeight: 80, wispFlicker: 0.9, wispSway: 0.35, wispIntensity: 1.1,
+    flashEnabled: false,
     barrierYFrac: 0.36, keyWidth: 36, vignette: 0.3, exposure: 1.1,
   },
   "Minimal (today)": {
@@ -511,12 +555,101 @@ const PRESETS = {
     strandCount: 1, strandSpread: 0, strandJitter: 0, strandThickness: 1.4, strandHaloAmp: 0, strandHaloSigma: 5, strandGlow: 0, strandFlicker: 1,
     filamentIntensity: 0, filamentSpeed: 0, filamentScale: 42,
     wispDensity: 0.5, wispHeight: 0, wispFlicker: 1, wispSway: 0.5, wispIntensity: 0,
+    flashEnabled: false,
     barrierYFrac: 0.34, keyWidth: 34, vignette: 0.3, exposure: 1.0,
+  },
+  "Flash: app default": {
+    coreColor: "#f4f1ea", glowColor: "#f4f1ea", showBar: true, thickness: 4,
+    brightnessBase: 1.0, brightnessPeak: 1.5, pulseDecay: 0.3,
+    glowIntensity: 0.7, glowSizeScale: 1.0,
+    layerAmp1: 2.6, layerSigma1: 5, layerAmp2: 1.1, layerSigma2: 16, layerAmp3: 0.38, layerSigma3: 48,
+    wavyEnabled: false, wavyMode: "0", waveAmp: 0, waveLen: 55, waveSpeed: 0, slideSpeed: 0,
+    strandCount: 1, strandSpread: 0, strandJitter: 0, strandThickness: 1.4, strandHaloAmp: 0, strandHaloSigma: 5, strandGlow: 0, strandFlicker: 1,
+    filamentIntensity: 0, filamentSpeed: 0, filamentScale: 42,
+    wispDensity: 0.5, wispHeight: 0, wispFlicker: 1, wispSway: 0.5, wispIntensity: 0,
+    flashEnabled: true, flashColor: "#ffffff", flashXFrac: 0.5, flashYOffset: 0,
+    flashRadiusX: 70, flashRadiusY: 40, flashBrightness: 1.0, flashDecay: 0.2,
+    flashLayerAmp1: 2.6, flashLayerSigma1: 2.0, flashLayerAmp2: 1.1, flashLayerSigma2: 5.0, flashLayerAmp3: 0.38, flashLayerSigma3: 10.0,
+    flashFlickerSpeed: 0, flashFlickerIntensity: 0,
+    ringRadius: 90, ringWidth: 14, ringIntensity: 0,
+    godRaysEnabled: false, godRayCount: 6, godRayLength: 20, godRayLengthJitter: 0.5, godRaySoftness: 3.0,
+    godRayRotationOffset: 0, godRayRotationSpeed: 0, godRayPulseSpeed: 1.0, godRayPulseAmount: 0.6,
+    godRayStreakiness: 0.6,
+    godRayFlickerSpeed: 1.2, godRayFlickerIntensity: 0.55, godRayIntensity: 1.4,
+    chromaticEnabled: false, chromaticAmount: 0.05,
+    barrierYFrac: 0.34, keyWidth: 34, vignette: 0.3, exposure: 1.0,
+  },
+  // Exact settings dialed in by hand (via Export settings) for the "photograph of the sun from
+  // Earth" target look -- see the god-rays/halo/chromatic-aberration groups' own comments for what
+  // each surviving slider does.
+  "Flash: photoreal sunburst": {
+    coreColor: "#fff6e0", glowColor: "#fff6e0", showBar: true, thickness: 4,
+    brightnessBase: 1, brightnessPeak: 1.5, pulseDecay: 0.3,
+    glowIntensity: 0.5, glowSizeScale: 1,
+    layerAmp1: 2.6, layerSigma1: 5, layerAmp2: 1.1, layerSigma2: 16, layerAmp3: 0.38, layerSigma3: 48,
+    wavyEnabled: false, wavyMode: "0", waveAmp: 0, waveLen: 55, waveSpeed: 0, slideSpeed: 0,
+    strandCount: 1, strandSpread: 0, strandJitter: 0, strandThickness: 1.4, strandHaloAmp: 0, strandHaloSigma: 5, strandGlow: 0, strandFlicker: 1,
+    filamentIntensity: 0, filamentSpeed: 0, filamentScale: 42,
+    wispDensity: 0.5, wispHeight: 0, wispFlicker: 1, wispSway: 0.5, wispIntensity: 0,
+    flashEnabled: true, flashColor: "#fff6e0", flashXFrac: 0.5, flashYOffset: 200,
+    flashRadiusX: 11, flashRadiusY: 11, flashBrightness: 1.12, flashDecay: 0.05,
+    flashLayerAmp1: 2.05, flashLayerSigma1: 5.5, flashLayerAmp2: 1.75, flashLayerSigma2: 17, flashLayerAmp3: 0.6, flashLayerSigma3: 21.5,
+    flashFlickerSpeed: 0, flashFlickerIntensity: 0,
+    ringRadius: 67, ringWidth: 24, ringIntensity: 0.1,
+    godRaysEnabled: true, godRayCount: 24, godRayLength: 72, godRayLengthJitter: 0, godRaySoftness: 1.7,
+    godRayRotationOffset: 4, godRayRotationSpeed: 0, godRayPulseSpeed: 0, godRayPulseAmount: 0,
+    godRayStreakiness: 1,
+    godRayFlickerSpeed: 4.16, godRayFlickerIntensity: 1, godRayIntensity: 0.38,
+    chromaticEnabled: true, chromaticAmount: 0.07,
+    barrierYFrac: 0.34, keyWidth: 34, vignette: 0.45, exposure: 1.1,
   },
 };
 
 const params = {};
 for (const s of SCHEMA) params[s.key] = s.default;
+
+// ---------------------------------------------------------------------------
+// localStorage persistence: survives both a page reload and this artifact
+// being republished (updating the page's own content doesn't touch the
+// browser's localStorage for that origin), so slider tweaks outlive both.
+// Only known SCHEMA keys are read back, same "ignore unrecognized keys"
+// tolerance as Import, so a stale save from a previous version of this file
+// can't inject garbage keys into params.
+// ---------------------------------------------------------------------------
+const STORAGE_KEY = "freemusic-barrier-fx-lab:params:v1";
+let restoredFromStorage = false;
+
+function saveParamsToStorage() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
+  } catch (err) {
+    // Storage unavailable (private browsing, quota, etc.) -- tweaks just won't persist.
+  }
+}
+
+function loadParamsFromStorage() {
+  let raw;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch (err) {
+    return;
+  }
+  if (!raw) return;
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (err) {
+    return;
+  }
+  if (!data || typeof data !== "object") return;
+  for (const s of SCHEMA) {
+    if (Object.prototype.hasOwnProperty.call(data, s.key)) {
+      params[s.key] = data[s.key];
+      restoredFromStorage = true;
+    }
+  }
+}
+loadParamsFromStorage();
 
 // ---------------------------------------------------------------------------
 // Build the control rail
@@ -558,6 +691,7 @@ for (const g of GROUPS) {
       input.addEventListener("input", () => {
         params[s.key] = parseFloat(input.value);
         val.textContent = fmt(input.value);
+        saveParamsToStorage();
       });
       row.appendChild(input);
       row.appendChild(val);
@@ -565,7 +699,7 @@ for (const g of GROUPS) {
       input = document.createElement("input");
       input.type = "checkbox";
       input.checked = !!s.default;
-      input.addEventListener("input", () => { params[s.key] = input.checked; });
+      input.addEventListener("input", () => { params[s.key] = input.checked; saveParamsToStorage(); });
       row.appendChild(input);
     } else if (s.type === "select") {
       input = document.createElement("select");
@@ -575,13 +709,13 @@ for (const g of GROUPS) {
         if (val === s.default) opt.selected = true;
         input.appendChild(opt);
       }
-      input.addEventListener("input", () => { params[s.key] = input.value; });
+      input.addEventListener("input", () => { params[s.key] = input.value; saveParamsToStorage(); });
       row.appendChild(input);
     } else if (s.type === "color") {
       input = document.createElement("input");
       input.type = "color";
       input.value = s.default;
-      input.addEventListener("input", () => { params[s.key] = input.value; });
+      input.addEventListener("input", () => { params[s.key] = input.value; saveParamsToStorage(); });
       row.appendChild(input);
     }
     input.id = "ctl-" + s.key;
@@ -605,6 +739,9 @@ function syncControlsFromParams() {
     }
   }
 }
+// Controls above were built from each SCHEMA entry's own `default`; if a previous session's
+// settings were just restored from storage, reflect those instead before first paint.
+if (restoredFromStorage) syncControlsFromParams();
 
 // Presets
 const presetsEl = document.getElementById("presets");
@@ -617,21 +754,23 @@ for (const name of Object.keys(PRESETS)) {
   btn.addEventListener("click", () => {
     Object.assign(params, PRESETS[name]);
     syncControlsFromParams();
+    saveParamsToStorage();
     if (activeBtn) activeBtn.classList.remove("active");
     btn.classList.add("active");
     activeBtn = btn;
   });
   presetsEl.appendChild(btn);
-  if (name === "SeeMusic gold") { btn.classList.add("active"); activeBtn = btn; }
+  if (name === "SeeMusic gold" && !restoredFromStorage) { btn.classList.add("active"); activeBtn = btn; }
 }
 
 // ---------------------------------------------------------------------------
 // Pulse trigger (simulates a note landing on the barrier)
 // ---------------------------------------------------------------------------
-let pulseStart = null;
+let lastTriggerTime = null;
 let currentPulse = 0;
+let currentFlashPulse = 0;
 function triggerPulse(nowSec) {
-  pulseStart = nowSec;
+  lastTriggerTime = nowSec;
 }
 document.getElementById("pulse-btn").addEventListener("click", () => triggerPulse(clock()));
 document.addEventListener("keydown", (e) => {
@@ -641,18 +780,9 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// "always on" just forces full intensity every frame (see frame() below) rather than
+// periodically re-triggering the decaying pulse -- no interval/timer needed.
 const autoCheckbox = document.getElementById("auto-pulse");
-const autoValSpan = document.getElementById("auto-pulse-val");
-let autoInterval = null;
-autoCheckbox.addEventListener("input", () => {
-  if (autoCheckbox.checked) {
-    autoInterval = setInterval(() => triggerPulse(clock()), 500);
-  } else if (autoInterval) {
-    clearInterval(autoInterval);
-    autoInterval = null;
-  }
-});
-autoValSpan.textContent = "0.5s";
 
 // ---------------------------------------------------------------------------
 // Export: dump the exact live params object as JSON, for pasting into the app
@@ -732,6 +862,7 @@ document.getElementById("import-apply").addEventListener("click", () => {
     return;
   }
   syncControlsFromParams();
+  saveParamsToStorage();
   if (activeBtn) { activeBtn.classList.remove("active"); activeBtn = null; }
   closeImport();
 });
@@ -810,6 +941,40 @@ uniform float uBarrierYFrac;
 uniform float uKeyWidth;
 uniform float uVignette;
 uniform float uExposure;
+
+uniform float uFlashEnabled;
+uniform vec3 uFlashColor;
+uniform float uFlashXFrac;
+uniform float uFlashYOffset;
+uniform float uFlashRadiusX;
+uniform float uFlashRadiusY;
+uniform float uFlashBrightness;
+uniform float uFlashPulse;
+uniform vec3 uFlashLayerAmp;
+uniform vec3 uFlashLayerSigma;
+uniform float uFlashFlickerSpeed;
+uniform float uFlashFlickerIntensity;
+
+uniform float uRingRadius;
+uniform float uRingWidth;
+uniform float uRingIntensity;
+
+uniform float uGodRaysEnabled;
+uniform float uGodRayCount;
+uniform float uGodRayLength;
+uniform float uGodRayLengthJitter;
+uniform float uGodRaySoftness;
+uniform float uGodRayRotationOffset;
+uniform float uGodRayRotationSpeed;
+uniform float uGodRayPulseSpeed;
+uniform float uGodRayPulseAmount;
+uniform float uGodRayStreakiness;
+uniform float uGodRayFlickerSpeed;
+uniform float uGodRayFlickerIntensity;
+uniform float uGodRayIntensity;
+
+uniform float uChromaticEnabled;
+uniform float uChromaticAmount;
 
 // --- value noise, same construction as barrier.wgsl's hash21/noise2 ---
 float hash21(vec2 p) {
@@ -944,6 +1109,141 @@ vec3 pianoKeys(float fragX, float fragY, float keysTop) {
   return key;
 }
 
+// Today's real flash (render::effects::spawn_flash / effects.wgsl's fs_glow): a fixed elliptical
+// additive corona, alpha == uFlashPulse (1 at spawn, decaying to 0 over decay_seconds, computed
+// JS-side). No angular/directional component at all -- this is exactly why today's flash reads as
+// a round blob (our-flash.png) rather than the reference's radiating-rays "sun in camera" look
+// (flash-example.png). Everything below (volumetric god rays, halo ring, chromatic aberration) is
+// an experimental addition on top of this core, not yet ported into the real renderer.
+//
+// The three functions below return plain scalar strength (no color folded in), so
+// flashContribution can re-sample the whole stack once per color channel at a slightly
+// different radius for chromatic aberration -- see that function's doc comment.
+
+// Bloom / glow: the original 3-layer tight/mid/wide additive corona -- today's real flash exactly.
+float flashCoreStrength(vec2 offset) {
+  vec2 norm = offset / vec2(max(uFlashRadiusX, 0.01), max(uFlashRadiusY, 0.01));
+  float edgeDist = max(length(norm) - 1.0, 0.0) * min(uFlashRadiusX, uFlashRadiusY);
+  vec3 amp = uFlashLayerAmp * uFlashBrightness;
+  return amp.x * exp(-edgeDist / max(uFlashLayerSigma.x, 0.01))
+       + amp.y * exp(-edgeDist / max(uFlashLayerSigma.y, 0.01))
+       + amp.z * exp(-edgeDist / max(uFlashLayerSigma.z, 0.01));
+}
+
+const float TWO_PI = 6.28318530718;
+
+// The "photograph of the sun from Earth" look settled on a fixed shape for these three -- they're
+// no longer exposed as sliders, just baked in here. GOD_RAY_TAPER shapes the brightness gradient
+// along a beam's length (paired with the outerCut hard boundary below, which is what actually
+// confines "Beam length" regardless of this exponent -- see that variable's comment).
+// GOD_RAY_NOISE_SCALE sizes the streak texture sampled along each beam; drift (animating that
+// texture over time) turned out not to matter for this look, so it's fixed at 0 -- the only motion
+// left is the length pulse and brightness flicker below.
+const float GOD_RAY_TAPER = 0.65;
+const float GOD_RAY_NOISE_SCALE = 0.2;
+
+// Volumetric god rays: a handful of much *wider* and *longer* beams than a typical starburst (low
+// uGodRaySoftness exponent = broad angular cone), sitting on fixed evenly-spaced slots -- no
+// angular wander (that read as the beams wiggling side to side, not the intended look). Instead
+// each beam's own reach breathes in and out over time via noise on its length
+// (uGodRayPulseSpeed/uGodRayPulseAmount), like a solar corona ray visibly extending and
+// retracting, plus a whole-beam brightness flicker on top of the internal streak texture -- streak
+// noise alone only textures a beam that's always "on"; the flicker is what makes individual beams
+// gutter/reappear over time.
+float flashGodRayStrength(vec2 offset) {
+  float r = length(offset);
+  float theta = atan(offset.y, offset.x);
+  float rot = radians(uGodRayRotationOffset + uTime * uGodRayRotationSpeed);
+  float thetaR = mod(theta - rot, TWO_PI);
+  float slot = thetaR / TWO_PI * uGodRayCount;
+  float idx = floor(slot);
+  float frac = fract(slot) - 0.5;
+
+  float seed = hash21(vec2(idx * 31.7, 11.3));
+
+  // "Go in and out": each beam's own length is modulated by its own noise-driven pulse (not a
+  // fixed value), so the beam visibly grows and shrinks rather than staying a static wedge --
+  // seed offsets each beam's phase so they don't all breathe in lockstep.
+  float pulseN = noise2(vec2(seed * 23.0 + 4.0, uTime * uGodRayPulseSpeed + seed * 7.0));
+  pulseN = clamp(pulseN * 0.5 + 0.5, 0.0, 1.0);
+  float lenPulse = mix(1.0 - uGodRayPulseAmount, 1.0, pulseN);
+
+  float len = uGodRayLength * (1.0 - uGodRayLengthJitter * 0.5 + uGodRayLengthJitter * seed) * lenPulse;
+
+  float angFall = pow(max(cos(frac * 3.14159265), 0.0), max(uGodRaySoftness, 0.1));
+  // radFall alone shapes the brightness gradient along the beam, but for GOD_RAY_TAPER < 1.0
+  // exp(-pow(x, taper)) has a fat power-law tail that never really reaches zero -- shrinking len
+  // mostly dimmed the whole beam rather than shortening it, since even the tail out at several
+  // multiples of len stayed non-negligible. outerCut below is a hard, explicit boundary tied
+  // directly to len (independent of taper's shape) so "Beam length" (and its pulse) actually
+  // confines where the ray is visible; radFall still controls how it fades within that bound.
+  float radFall = exp(-pow(r / max(len, 1.0), GOD_RAY_TAPER));
+  float outerCut = 1.0 - smoothstep(len * 0.7, len * 1.15, r);
+
+  float streakN = noise2(vec2(idx * 5.0 + seed * 9.0, r * GOD_RAY_NOISE_SCALE * 0.02));
+  streakN = clamp(streakN * 0.5 + 0.5, 0.0, 1.0);
+  float streak = mix(1.0 - uGodRayStreakiness, 1.0, streakN);
+
+  float flick = noise2(vec2(idx * 4.1 + 6.0, uTime * uGodRayFlickerSpeed + seed * 19.0));
+  flick = pow(clamp(flick * 0.5 + 0.5, 0.0, 1.0), 2.2);
+  float beamFlick = 1.0 - uGodRayFlickerIntensity + uGodRayFlickerIntensity * flick;
+
+  float innerCut = smoothstep(0.0, min(uFlashRadiusX, uFlashRadiusY) * 0.4, r);
+
+  return angFall * radFall * streak * innerCut * outerCut * beamFlick * uGodRayIntensity;
+}
+
+// Faint colored ring at a fixed radius -- a common lens-flare "diffraction halo" accent.
+float flashRingStrength(vec2 offset) {
+  float d = abs(length(offset) - uRingRadius);
+  return exp(-d / max(uRingWidth, 0.1)) * uRingIntensity;
+}
+
+// The combined (colorless) light strength at offset, gated by each effect's own enabled flag --
+// shared by every channel sample flashContribution takes below.
+float flashTotalStrength(vec2 offset) {
+  float s = flashCoreStrength(offset);
+  if (uGodRaysEnabled > 0.5) s += flashGodRayStrength(offset);
+  if (uRingIntensity > 0.0) s += flashRingStrength(offset);
+  return s;
+}
+
+vec3 flashContribution(vec2 frag) {
+  if (uFlashEnabled < 0.5 || uFlashPulse <= 0.0) return vec3(0.0);
+
+  float flick = 1.0;
+  if (uFlashFlickerIntensity > 0.0) {
+    float n = noise2(vec2(42.0 * 7.0, uTime * uFlashFlickerSpeed + 42.0 * 3.0));
+    float f = pow(clamp(n * 0.5 + 0.5, 0.0, 1.0), 1.4);
+    flick = 1.0 - uFlashFlickerIntensity + uFlashFlickerIntensity * f;
+  }
+  float t = uFlashPulse * flick;
+
+  vec2 center = vec2(uResolution.x * uFlashXFrac, uResolution.y * uBarrierYFrac + uFlashYOffset);
+  vec2 offset = frag - center;
+
+  // Chromatic aberration: rather than the usual "sample a texture three times" trick (there's no
+  // texture here, everything is procedural), each color channel re-evaluates the *entire* light
+  // stack with offset scaled by a slightly different factor -- exactly like a lens's radial
+  // distortion varying by wavelength, the error is ~0 near the flash center and grows with
+  // distance from it, so the fringe shows up right where it would photographically: at the outer
+  // edge of the bloom/rays/god-rays, not as a uniform tint over the whole light.
+  vec3 strengthRgb;
+  if (uChromaticEnabled > 0.5 && uChromaticAmount > 0.0) {
+    float ca = uChromaticAmount;
+    strengthRgb = vec3(
+      flashTotalStrength(offset * (1.0 + ca)),
+      flashTotalStrength(offset),
+      flashTotalStrength(offset * (1.0 - ca))
+    );
+  } else {
+    float s = flashTotalStrength(offset);
+    strengthRgb = vec3(s, s, s);
+  }
+
+  return uFlashColor * strengthRgb * t;
+}
+
 void main() {
   vec2 frag = gl_FragCoord.xy;
   float barrierY = uResolution.y * uBarrierYFrac;
@@ -1023,6 +1323,8 @@ void main() {
   }
   light += uGlowColor * strandLight * uStrandGlow * brightness * (1.0 - occlusion);
 
+  light += flashContribution(frag);
+
   // scene: dark gradient background + procedural piano keys below the barrier
   float bgT = clamp(frag.y / uResolution.y, 0.0, 1.0);
   vec3 bg = mix(vec3(0.05, 0.03, 0.035), vec3(0.02, 0.016, 0.03), bgT);
@@ -1068,6 +1370,15 @@ const UNIFORM_NAMES = [
   "uFilamentIntensity", "uFilamentSpeed", "uFilamentScale",
   "uWispDensity", "uWispHeight", "uWispFlicker", "uWispSway", "uWispIntensity",
   "uBarrierYFrac", "uKeyWidth", "uVignette", "uExposure",
+  "uFlashEnabled", "uFlashColor", "uFlashXFrac", "uFlashYOffset", "uFlashRadiusX", "uFlashRadiusY",
+  "uFlashBrightness", "uFlashPulse", "uFlashLayerAmp", "uFlashLayerSigma",
+  "uFlashFlickerSpeed", "uFlashFlickerIntensity",
+  "uRingRadius", "uRingWidth", "uRingIntensity",
+  "uGodRaysEnabled", "uGodRayCount", "uGodRayLength", "uGodRayLengthJitter", "uGodRaySoftness",
+  "uGodRayRotationOffset", "uGodRayRotationSpeed", "uGodRayPulseSpeed", "uGodRayPulseAmount",
+  "uGodRayStreakiness",
+  "uGodRayFlickerSpeed", "uGodRayFlickerIntensity", "uGodRayIntensity",
+  "uChromaticEnabled", "uChromaticAmount",
 ];
 const loc = {};
 for (const name of UNIFORM_NAMES) loc[name] = gl.getUniformLocation(program, name);
@@ -1099,16 +1410,25 @@ function frame() {
   resize();
   const t = clock();
 
-  if (pulseStart !== null) {
-    const elapsed = t - pulseStart;
-    if (params.pulseDecay > 0 && elapsed >= 0 && elapsed < params.pulseDecay) {
-      currentPulse = 1.0 - elapsed / params.pulseDecay;
-    } else {
-      currentPulse = 0;
-      pulseStart = null;
+  // Both the barrier's own pulse and the (independently-decaying) flash are driven off the
+  // same trigger timestamp, but with their own decay lengths -- neither nulls the trigger, so
+  // whichever decay is longer keeps fading correctly after the other has already hit zero.
+  currentPulse = 0;
+  currentFlashPulse = 0;
+  if (lastTriggerTime !== null) {
+    const elapsed = t - lastTriggerTime;
+    if (elapsed >= 0) {
+      if (params.pulseDecay > 0 && elapsed < params.pulseDecay) {
+        currentPulse = 1.0 - elapsed / params.pulseDecay;
+      }
+      if (params.flashDecay > 0 && elapsed < params.flashDecay) {
+        currentFlashPulse = 1.0 - elapsed / params.flashDecay;
+      }
     }
-  } else {
-    currentPulse = 0;
+  }
+  if (autoCheckbox.checked) {
+    currentPulse = 1;
+    currentFlashPulse = 1;
   }
 
   gl.uniform2f(loc.uResolution, canvas.width, canvas.height);
@@ -1158,6 +1478,41 @@ function frame() {
   gl.uniform1f(loc.uKeyWidth, params.keyWidth);
   gl.uniform1f(loc.uVignette, params.vignette);
   gl.uniform1f(loc.uExposure, params.exposure);
+
+  const fc = hexToLinear(params.flashColor);
+  gl.uniform1f(loc.uFlashEnabled, params.flashEnabled ? 1 : 0);
+  gl.uniform3f(loc.uFlashColor, fc[0], fc[1], fc[2]);
+  gl.uniform1f(loc.uFlashXFrac, params.flashXFrac);
+  gl.uniform1f(loc.uFlashYOffset, params.flashYOffset);
+  gl.uniform1f(loc.uFlashRadiusX, params.flashRadiusX);
+  gl.uniform1f(loc.uFlashRadiusY, params.flashRadiusY);
+  gl.uniform1f(loc.uFlashBrightness, params.flashBrightness);
+  gl.uniform1f(loc.uFlashPulse, currentFlashPulse);
+  gl.uniform3f(loc.uFlashLayerAmp, params.flashLayerAmp1, params.flashLayerAmp2, params.flashLayerAmp3);
+  gl.uniform3f(loc.uFlashLayerSigma, params.flashLayerSigma1, params.flashLayerSigma2, params.flashLayerSigma3);
+  gl.uniform1f(loc.uFlashFlickerSpeed, params.flashFlickerSpeed);
+  gl.uniform1f(loc.uFlashFlickerIntensity, params.flashFlickerIntensity);
+
+  gl.uniform1f(loc.uRingRadius, params.ringRadius);
+  gl.uniform1f(loc.uRingWidth, params.ringWidth);
+  gl.uniform1f(loc.uRingIntensity, params.ringIntensity);
+
+  gl.uniform1f(loc.uGodRaysEnabled, params.godRaysEnabled ? 1 : 0);
+  gl.uniform1f(loc.uGodRayCount, params.godRayCount);
+  gl.uniform1f(loc.uGodRayLength, params.godRayLength);
+  gl.uniform1f(loc.uGodRayLengthJitter, params.godRayLengthJitter);
+  gl.uniform1f(loc.uGodRaySoftness, params.godRaySoftness);
+  gl.uniform1f(loc.uGodRayRotationOffset, params.godRayRotationOffset);
+  gl.uniform1f(loc.uGodRayRotationSpeed, params.godRayRotationSpeed);
+  gl.uniform1f(loc.uGodRayPulseSpeed, params.godRayPulseSpeed);
+  gl.uniform1f(loc.uGodRayPulseAmount, params.godRayPulseAmount);
+  gl.uniform1f(loc.uGodRayStreakiness, params.godRayStreakiness);
+  gl.uniform1f(loc.uGodRayFlickerSpeed, params.godRayFlickerSpeed);
+  gl.uniform1f(loc.uGodRayFlickerIntensity, params.godRayFlickerIntensity);
+  gl.uniform1f(loc.uGodRayIntensity, params.godRayIntensity);
+
+  gl.uniform1f(loc.uChromaticEnabled, params.chromaticEnabled ? 1 : 0);
+  gl.uniform1f(loc.uChromaticAmount, params.chromaticAmount);
 
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   requestAnimationFrame(frame);

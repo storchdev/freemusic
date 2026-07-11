@@ -272,7 +272,15 @@ touching that area of the code:
   the directory's own `README.md`. **The strand bundle has since been ported into the real app**
   (Phase O, `project::StrandSpec`/`WavySpec::strands`, gated to `WavyMode::Edge` — see
   `docs/fmstyle-format.md` and `docs/fmstyle-milestone.md`); the sliding-filament/wisp controls in
-  the lab remain unported experiments.
+  the lab remain unported experiments. The lab also has a "Flash" section covering the separate
+  barrier-hit flash (`crates/render/src/effects.rs`/`effects.wgsl`, `project::FlashSpec`), aimed at
+  a "photograph of the sun from Earth" look: bloom/glow (today's real flash exactly — a fixed
+  elliptical additive corona, unchanged), god rays (a few wider/longer noise-streaked volumetric
+  beams that pulse in and out along their own length rather than wander angularly — wander was tried
+  and read as wiggling, not the intended look, so it was removed), a small halo ring accent, and
+  chromatic aberration (re-samples the whole light stack per color channel at a slightly different
+  radius). None of the god-ray/halo/chromatic-aberration work is ported into the real renderer yet —
+  only the bloom/glow group matches production.
 - **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–U) of the
   `.fmstyle.ron` extensible visual style format: schema/plumbing, the vendored note pipeline
   (dropping the `neothesia-core` dependency), note fill effects (gradient/sheen/glow), barrier
