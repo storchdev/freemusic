@@ -6,8 +6,8 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use project::{
-    ColorBinding, EmissionMode, FlashColor, FlashMode, FlashSpec, ParticleColor, ParticleSpec,
-    TransitionKind, TransitionLayer,
+    ColorBinding, EmissionMode, FlashColor, FlashMode, FlashSpec, GodRaySpec, ParticleColor,
+    ParticleSpec, RingSpec, TransitionKind, TransitionLayer,
 };
 
 use super::notes::NoteInterval;
@@ -34,6 +34,10 @@ const GLOW_CUTOFF_SIGMAS: f32 = 5.0;
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ViewUniform {
     transform: [f32; 16],
+    /// x = transport time (seconds), read by `effects.wgsl`'s Phase V god-ray pulse/flicker/
+    /// rotation noise — yzw unused, packed into a vec4 (rather than a bare trailing f32) to match
+    /// this codebase's uniform-buffer convention and avoid manual tail padding.
+    time: [f32; 4],
 }
 
 fn orthographic_projection(width: f32, height: f32) -> [f32; 16] {
@@ -51,6 +55,7 @@ impl Default for ViewUniform {
     fn default() -> Self {
         Self {
             transform: orthographic_projection(1.0, 1.0),
+            time: [0.0; 4],
         }
     }
 }
@@ -67,6 +72,14 @@ impl Default for ViewUniform {
 /// horizontal gradient (see `project::FlashColor`) reads all of these; a particle (which only
 /// ever has one color) simply has every stop set equal, which interpolates to that one color
 /// everywhere and is pixel-identical to a plain `color: vec3<f32>` field would have been.
+///
+/// `godray_a`/`godray_b`/`godray_c`/`ring_chromatic` (Phase V) carry `project::GodRaySpec`/
+/// `RingSpec`/`FlashSpec::chromatic_aberration`, packed 1:1 with `effects.wgsl`'s `Instance`
+/// fields of the same names — see that shader's doc comments for the packing layout. Only
+/// `spawn_flash` ever fills these with non-zero data; every particle instance leaves them zeroed
+/// (`ZERO_GOD_RAYS`/`ZERO_RING_CHROMATIC` below), which `fs_glow` treats as "effect off" (`count <
+/// 0.5`, `ring_intensity <= 0.0`, `chromatic_amount <= 0.0`), reproducing the pre-Phase-V corona
+/// exactly.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct EffectInstance {
@@ -79,7 +92,17 @@ struct EffectInstance {
     /// (a plain multiply, not a `hot_color` mix — additive saturation whitens for free).
     layer_amp: [f32; 3],
     layer_sigma: [f32; 3],
+    godray_a: [f32; 4],
+    godray_b: [f32; 4],
+    godray_c: [f32; 4],
+    ring_chromatic: [f32; 4],
 }
+
+/// Zero-filled god-ray/ring/chromatic-aberration params — every non-flash `EffectInstance` (all
+/// particles) carries these unchanged, which `fs_glow` reads as "effect off" (see
+/// `EffectInstance`'s own doc comment).
+const ZERO_GOD_RAYS: ([f32; 4], [f32; 4], [f32; 4]) = ([0.0; 4], [0.0; 4], [0.0; 4]);
+const ZERO_RING_CHROMATIC: [f32; 4] = [0.0; 4];
 
 // `color_stops` below is hand-unrolled to `FLASH_GRADIENT_STOPS == 5` explicit locations (5..=9) —
 // `wgpu::vertex_attr_array!` takes a literal list of `location => format` entries, not a
@@ -92,7 +115,7 @@ const _: () = assert!(
 );
 
 impl EffectInstance {
-    fn attributes() -> [wgpu::VertexAttribute; 11] {
+    fn attributes() -> [wgpu::VertexAttribute; 15] {
         wgpu::vertex_attr_array![
             1 => Float32x2,  // center
             2 => Float32x2,  // core_radius
@@ -105,6 +128,10 @@ impl EffectInstance {
             9 => Float32x3,  // color_stops[4]
             10 => Float32x3, // layer_amp
             11 => Float32x3, // layer_sigma
+            12 => Float32x4, // godray_a
+            13 => Float32x4, // godray_b
+            14 => Float32x4, // godray_c
+            15 => Float32x4, // ring_chromatic
         ]
     }
 
@@ -247,6 +274,60 @@ struct Flash {
     /// Random per-spawn seed so simultaneous flashes don't flicker in lockstep — see
     /// `flash_flicker`'s `seed` parameter.
     flicker_seed: f32,
+    /// Phase V god-ray/ring/chromatic-aberration params, resolved once at spawn time from
+    /// `FlashSpec::god_rays`/`ring`/`chromatic_aberration` — see `EffectInstance`'s doc comment
+    /// for the packing layout. `ZERO_GOD_RAYS`/`ZERO_RING_CHROMATIC` for a flash with none of
+    /// these set, which `fs_glow` renders identically to a pre-Phase-V flash.
+    godray_a: [f32; 4],
+    godray_b: [f32; 4],
+    godray_c: [f32; 4],
+    ring_chromatic: [f32; 4],
+}
+
+/// `EffectInstance::godray_a`/`b`/`c` from a `project::GodRaySpec`, or `ZERO_GOD_RAYS` if the
+/// flash has none — see that struct's own field docs for what each packed slot means.
+fn resolve_god_ray_params(spec: Option<&GodRaySpec>) -> ([f32; 4], [f32; 4], [f32; 4]) {
+    let Some(g) = spec else {
+        return ZERO_GOD_RAYS;
+    };
+    (
+        [
+            // `count` gates the whole effect on/off in `fs_glow` (`count < 0.5` == off) — clamp
+            // to at least 1 so a `Some(GodRaySpec { .. })` with a bare `count: 0` (nonsensical but
+            // representable) doesn't silently disable itself.
+            (g.count.max(1)) as f32,
+            g.length_px,
+            g.length_jitter,
+            g.softness,
+        ],
+        [
+            g.rotation_offset_deg,
+            g.rotation_speed_deg_per_sec,
+            g.pulse_speed,
+            g.pulse_amount,
+        ],
+        [
+            g.streakiness,
+            g.flicker_speed,
+            g.flicker_intensity,
+            g.intensity,
+        ],
+    )
+}
+
+/// `EffectInstance::ring_chromatic` from a `project::RingSpec` (or `None`) plus
+/// `FlashSpec::chromatic_aberration` — see `EffectInstance`'s own doc comment for the packing.
+fn resolve_ring_chromatic_params(ring: Option<&RingSpec>, chromatic_aberration: f32) -> [f32; 4] {
+    let (radius_px, width_px, intensity) = match ring {
+        Some(r) => (r.radius_px, r.width_px, r.intensity),
+        None => (0.0, 1.0, 0.0),
+    };
+    [
+        radius_px,
+        width_px.max(0.01),
+        intensity,
+        chromatic_aberration.max(0.0),
+    ]
 }
 
 /// Linearly interpolates between two already-linear colors.
@@ -400,7 +481,11 @@ impl EffectsRenderer {
                 label: Some("effects_view_bind_group_layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // `VERTEX` alone was enough before Phase V — `fs_glow` now also reads
+                    // `view_uniform.time.x` directly (the god-ray pulse/flicker/rotation noise is
+                    // per-pixel, so it can't be baked into a vertex-stage-only value), so the
+                    // fragment stage needs visibility into this binding too.
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -717,6 +802,7 @@ impl EffectsRenderer {
             0,
             bytemuck::cast_slice(&[ViewUniform {
                 transform: orthographic_projection(self.canvas_size.0, self.canvas_size.1),
+                time: [time_seconds, 0.0, 0.0, 0.0],
             }]),
         );
         self.upload(device, queue);
@@ -967,11 +1053,22 @@ impl EffectsRenderer {
             spec.layers[1].sigma_px,
             spec.layers[2].sigma_px,
         ];
-        let margin_px = spec
+        let (godray_a, godray_b, godray_c) = resolve_god_ray_params(spec.god_rays.as_ref());
+        let ring_chromatic =
+            resolve_ring_chromatic_params(spec.ring.as_ref(), spec.chromatic_aberration);
+        // The quad must reach as far as the farthest-visible effect, not just the corona layers —
+        // a god ray's own length (`godray_a[1]`, before the `* 1.5` jitter headroom and `* 1.15`
+        // outer-cut falloff in `effects.wgsl`'s `god_ray_strength`) or the ring's outer edge
+        // (`ring_chromatic[0] + ring_chromatic[1]`) can both reach well past the base corona,
+        // otherwise the quad edge would visibly clip the rays/ring.
+        let corona_margin_px = spec
             .layers
             .iter()
             .fold(0.0f32, |acc, layer| acc.max(layer.sigma_px))
             * GLOW_CUTOFF_SIGMAS;
+        let god_ray_margin_px = godray_a[1] * 2.0;
+        let ring_margin_px = ring_chromatic[0] + ring_chromatic[1];
+        let margin_px = corona_margin_px.max(god_ray_margin_px).max(ring_margin_px);
         self.flashes.push(Flash {
             pos: [x_px, y_px],
             decay_start_seconds,
@@ -985,6 +1082,10 @@ impl EffectsRenderer {
             flicker_speed,
             flicker_intensity: flicker_intensity.clamp(0.0, 1.0),
             flicker_seed,
+            godray_a,
+            godray_b,
+            godray_c,
+            ring_chromatic,
         });
     }
 
@@ -1036,6 +1137,10 @@ impl EffectsRenderer {
                 color_stops,
                 layer_amp: flash.layer_amp,
                 layer_sigma: flash.layer_sigma,
+                godray_a: flash.godray_a,
+                godray_b: flash.godray_b,
+                godray_c: flash.godray_c,
+                ring_chromatic: flash.ring_chromatic,
             });
         }
 
@@ -1058,6 +1163,10 @@ impl EffectsRenderer {
                 color_stops: [particle.color; FLASH_GRADIENT_STOPS],
                 layer_amp: particle.layer_amp,
                 layer_sigma: particle.layer_sigma,
+                godray_a: ZERO_GOD_RAYS.0,
+                godray_b: ZERO_GOD_RAYS.1,
+                godray_c: ZERO_GOD_RAYS.2,
+                ring_chromatic: ZERO_RING_CHROMATIC,
             });
         }
     }

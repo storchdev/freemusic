@@ -489,6 +489,9 @@ from exactly one source:
 | `layers` | `[GlowLayer; 3]` | Default tight/mid/wide, same as `Glow`. A flash is always additive, so this is always read (unlike `ParticleSpec::layers`, which non-additive particles ignore). |
 | `flicker_speed` | `ScalarBinding` | Default `Constant(0.0)` (no flicker). How fast the flash's brightness flickers over transport time — see below. |
 | `flicker_intensity` | `ScalarBinding` | Default `Constant(0.0)` (no flicker). How much the flicker dims the flash at its darkest point, `0.0`-`1.0`. |
+| `god_rays` | `Option<GodRaySpec>` | Default `None`. Volumetric "sun rays" radiating from the flash's center — see [`GodRaySpec`](#godrayspec) below. |
+| `ring` | `Option<RingSpec>` | Default `None`. A faint diffraction-halo ring around the flash's center — see [`RingSpec`](#ringspec) below. |
+| `chromatic_aberration` | `f32` | Default `0.0` (no-op). Lens-dispersion-style color fringing — see below. |
 
 A flash always renders additively. It is fully "on" at spawn/at the start of its hold (see
 `mode`), fading to 0 over `decay_seconds`.
@@ -513,6 +516,72 @@ entirely (or loading an older `.fmstyle.ron` that predates them) reproduces the 
 steady behavior. Most noticeable on `FlashMode::Sustained` (a long hold has time to visibly
 flicker); on `Instant` the flash usually decays before more than a fraction of a flicker cycle
 plays out.
+
+### `GodRaySpec`
+
+Volumetric "sun rays" radiating outward from a flash's center, on top of its ordinary elliptical
+corona (`FlashSpec::layers`) — ported from `explorations/barrier-fx-lab`'s "Flash — god rays"
+group (Phase V), aimed at a "photograph of the sun from Earth" look rather than a round blob.
+`FlashSpec::god_rays: None` (default) renders the flash exactly as it rendered before this phase.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `count` | `u32` | `6` | Number of angular beam slots around the flash's center. No practical upper cap — see below. |
+| `length_px` | `f32` | `420.0` | Beam reach in canvas px, before `length_jitter`/pulse shrink it. |
+| `length_jitter` | `f32` | `0.5` | Per-beam length variation (`0.0`-`1.0`), seeded per slot: `0.0` = every beam is exactly `length_px`; `1.0` = beams range anywhere from `0` to `length_px`. |
+| `softness` | `f32` | `3.0` | Angular falloff exponent: lower reads as wider/softer wedges, higher as narrower/sharper needles. |
+| `rotation_offset_deg` | `f32` | `0.0` | Fixed rotation of the whole beam pattern. |
+| `rotation_speed_deg_per_sec` | `f32` | `0.0` | Continuous rotation speed of the whole pattern. `0.0` is a no-op — see below for why this is a rigid whole-pattern spin, not per-beam wander. |
+| `pulse_speed` | `f32` | `1.0` | How fast each beam's own length breathes in and out via value noise. |
+| `pulse_amount` | `f32` | `0.6` | How far a beam's length can shrink at the pulse's trough, as a fraction of `length_px` (`0.0`-`1.0`). |
+| `streakiness` | `f32` | `0.6` | Internal streak-texture contrast along each beam's length (`0.0`-`1.0`). |
+| `flicker_speed` | `f32` | `1.2` | How fast each beam's whole-beam brightness flickers, independent of the streak texture — same value-noise mechanism as `FlashSpec::flicker_speed`, just per-beam. |
+| `flicker_intensity` | `f32` | `0.55` | How much the flicker dims a beam at its darkest point (`0.0` never dims, `1.0` can dim to fully dark). |
+| `intensity` | `f32` | `1.4` | Overall brightness multiplier on the whole god-ray contribution, independent of `FlashSpec::brightness` (which scales the corona's `layers`, not the rays). |
+
+Beams sit on `count` fixed, evenly-spaced angular slots. There is deliberately no angular
+*wander* — an earlier iteration let the whole pattern drift side to side, which read as the beams
+wiggling rather than radiating from a fixed sun, so it was removed; `rotation_speed_deg_per_sec`
+is a different and much subtler motion (a rigid whole-pattern spin) kept as an escape hatch.
+Instead each beam's own reach breathes in and out over time via seeded value noise
+(`pulse_speed`/`pulse_amount`), on top of an internal streak texture along its length
+(`streakiness`) and a separate whole-beam brightness flicker (`flicker_speed`/`flicker_intensity`)
+so individual beams gutter and reappear rather than staying uniformly "on".
+
+Unlike `StrandSpec`'s fixed strand-count loop (capped at 8), beam selection
+(`render::effects::god_ray_strength`/`effects.wgsl`'s WGSL port of the same formula) is a direct
+per-pixel angle-to-slot computation, not a loop over `count` beams — `count` has no practical
+upper cap, and the cost of a beam is the same O(1) regardless of how many slots share the circle.
+
+`count`/`length_px`/etc. are plain `f32`/`u32` (not `ScalarBinding`), unlike `radius_x_px`/
+`brightness`/etc. — these are a style-wide look, not something that typically varies per
+triggering note, same precedent as `GlowLayer::amplitude`/`sigma_px`.
+
+### `RingSpec`
+
+A faint colored ring at a fixed radius around a flash's center — a common lens-flare
+"diffraction halo" accent, ported from the same lab exploration as `GodRaySpec` (Phase V).
+`FlashSpec::ring: None` (default) renders no ring.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `radius_px` | `f32` | Ring radius in canvas px, measured from the flash's center. |
+| `width_px` | `f32` | Falloff width in px around `radius_px` — smaller reads as a crisp thin ring, larger as a soft broad band. |
+| `intensity` | `f32` | Brightness multiplier; the actual on/off switch — `intensity <= 0.0` renders no ring at all, same "zero is the no-op" convention `WavySpec::slide_speed` uses. |
+
+### Chromatic aberration
+
+`FlashSpec::chromatic_aberration: f32` (Phase V, default `0.0`) adds lens-dispersion-style color
+fringing: rather than a flat color tint, the entire light stack (corona + god rays + ring) is
+re-evaluated once per color channel (`render::effects`'s `total_strength`/`effects.wgsl`'s
+`total_strength`), each sampled at `offset * (1.0 ± chromatic_aberration)` — the same "error grows
+with distance from center" shape real lens chromatic aberration has, so the fringe shows up at the
+outer edge of the light (the rim of the corona, the tips of the god rays, the ring), not as a
+uniform wash over the whole flash. `0.0` is an exact no-op: a single unsplit strength sample,
+pixel-identical to a flash predating this phase and roughly a third of the fragment cost of a
+non-zero value (which samples the whole light stack three times). Typical useful values are small,
+e.g. `0.03`-`0.1` — larger values visibly separate the channels into distinct colored ghosts rather
+than a subtle fringe.
 
 ### `FlashColor`
 

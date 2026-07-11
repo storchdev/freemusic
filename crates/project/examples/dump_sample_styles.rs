@@ -6,8 +6,9 @@
 
 use project::{
     BarrierLayer, BlackKeyFill, ColorBinding, Fill, FlashColor, FlashMode, FlashSpec, Glow,
-    GlowLayer, NoteLayer, ParticleColor, ParticleSpec, Pulse, Ramp, ScalarBinding, Sheen,
-    StrandSpec, Style, Timed, TransitionKind, TransitionLayer, WavyMode, WavySpec,
+    GlowLayer, GodRaySpec, NoteLayer, ParticleColor, ParticleSpec, Pulse, Ramp, RingSpec,
+    ScalarBinding, Sheen, StrandSpec, Style, Timed, TransitionKind, TransitionLayer, WavyMode,
+    WavySpec,
 };
 
 fn glow_layers(tight: f32, mid: f32, wide: f32) -> [GlowLayer; 3] {
@@ -280,6 +281,9 @@ fn main() {
                 layers: glow_layers(2.0, 5.0, 10.0),
                 flicker_speed: ScalarBinding::Constant(0.0),
                 flicker_intensity: ScalarBinding::Constant(0.0),
+                god_rays: None,
+                ring: None,
+                chromatic_aberration: 0.0,
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -302,6 +306,9 @@ fn main() {
                 layers: glow_layers(2.0, 5.0, 10.0),
                 flicker_speed: ScalarBinding::Constant(0.0),
                 flicker_intensity: ScalarBinding::Constant(0.0),
+                god_rays: None,
+                ring: None,
+                chromatic_aberration: 0.0,
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -353,6 +360,9 @@ fn main() {
                 layers: glow_layers(2.0, 5.0, 10.0),
                 flicker_speed: ScalarBinding::Constant(1.5),
                 flicker_intensity: ScalarBinding::Constant(0.25),
+                god_rays: None,
+                ring: None,
+                chromatic_aberration: 0.0,
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -394,6 +404,75 @@ fn main() {
                 // (`spawn_flash`) — `1.0` is the deepest a flicker can dim, so this is the max
                 // meaningful value.
                 flicker_intensity: ScalarBinding::Constant(0.5),
+                god_rays: None,
+                ring: None,
+                chromatic_aberration: 0.0,
+            }),
+        }),
+        background: ColorBinding::Constant([0, 0, 0]),
+    };
+
+    // `GodRaySpec`/`RingSpec`/`FlashSpec::chromatic_aberration` (Phase V) — a straight translation
+    // of `explorations/barrier-fx-lab`'s "Flash: photoreal sunburst" preset (its own "Export
+    // settings" JSON output), the dialed-in target look for a "photograph of the sun from Earth"
+    // flash: a tight near-point core, 24 wide volumetric rays fixed in place (no pulse/rotation —
+    // `pulse_speed`/`pulse_amount`/`rotation_speed_deg_per_sec: 0.0`) but flickering hard and fast
+    // per-beam (`flicker_speed: 4.16`, `flicker_intensity: 1.0`) so individual rays gutter and
+    // reappear, a faint diffraction ring, and a small chromatic-aberration fringe at the outer
+    // edge of the light. `flashYOffset: 200` in the lab preset has no equivalent here (a flash
+    // always spawns at the triggering note's barrier position — same "lab-scene-only field" caveat
+    // `barrier_strands`'s own comment calls out for `barrierYFrac`/`keyWidth`/`vignette`/
+    // `exposure`); every other field below is a direct 1:1 field-name translation.
+    let photoreal_sunburst = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer::default()),
+        barrier: Timed::Static(visible_barrier()),
+        transition: Timed::Static(TransitionLayer {
+            kind: TransitionKind::Flash,
+            particles: None,
+            flash: Some(FlashSpec {
+                radius_x_px: ScalarBinding::Constant(6.0),
+                radius_y_px: ScalarBinding::Constant(6.0),
+                color: FlashColor::Solid(ColorBinding::Constant([255, 246, 224])),
+                decay_seconds: ScalarBinding::Constant(0.2),
+                mode: FlashMode::Sustained,
+                brightness: ScalarBinding::Constant(0.4),
+                layers: [
+                    GlowLayer {
+                        amplitude: 1.2,
+                        sigma_px: 25.0,
+                    },
+                    GlowLayer {
+                        amplitude: 0.9,
+                        sigma_px: 50.0,
+                    },
+                    GlowLayer {
+                        amplitude: 0.6,
+                        sigma_px: 50.0,
+                    },
+                ],
+                flicker_speed: ScalarBinding::Constant(0.0),
+                flicker_intensity: ScalarBinding::Constant(0.0),
+                god_rays: Some(GodRaySpec {
+                    count: 32,
+                    length_px: 72.0,
+                    length_jitter: 0.0,
+                    softness: 1.5,
+                    rotation_offset_deg: 0.0,
+                    rotation_speed_deg_per_sec: 30.0,
+                    pulse_speed: 0.0,
+                    pulse_amount: 0.0,
+                    streakiness: 1.0,
+                    flicker_speed: 4.0,
+                    flicker_intensity: 1.0,
+                    intensity: 0.50,
+                }),
+                ring: Some(RingSpec {
+                    radius_px: 67.0,
+                    width_px: 24.0,
+                    intensity: 0.1,
+                }),
+                chromatic_aberration: 0.07,
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -529,6 +608,9 @@ fn main() {
                 brightness: ScalarBinding::Constant(1.0),
                 flicker_speed: ScalarBinding::Constant(0.0),
                 flicker_intensity: ScalarBinding::Constant(0.0),
+                god_rays: None,
+                ring: None,
+                chromatic_aberration: 0.0,
                 layers: [
                     GlowLayer {
                         amplitude: 1.4,
@@ -685,6 +767,9 @@ fn main() {
                 layers: glow_layers(2.0, 5.0, 10.0),
                 flicker_speed: ScalarBinding::Constant(0.0),
                 flicker_intensity: ScalarBinding::Constant(0.0),
+                god_rays: None,
+                ring: None,
+                chromatic_aberration: 0.0,
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -860,6 +945,9 @@ fn main() {
                 layers: glow_layers(2.0, 5.0, 10.0),
                 flicker_speed: ScalarBinding::Constant(0.0),
                 flicker_intensity: ScalarBinding::Constant(0.0),
+                god_rays: None,
+                ring: None,
+                chromatic_aberration: 0.0,
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -878,6 +966,7 @@ fn main() {
     print_style("ygradient-particles", &ygradient_particles);
     print_style("key-glow", &key_glow);
     print_style("flickering-flash", &flickering_flash);
+    print_style("photoreal-sunburst", &photoreal_sunburst);
     print_style("dark-background", &dark_background);
     print_style("showcase_blue_purple", &showcase_blue_purple);
     print_style("velocity-colored-notes", &velocity_colored_notes);

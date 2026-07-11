@@ -1860,3 +1860,114 @@ unrelated reformatting churn. **Not yet manually run** (per the "never run the a
 — worth confirming: import `key-glow.fmstyle.ron`, hold a key down, and watch for a slow, irregular
 brightness waver on the sustained glow rather than a perfectly steady one.
 
+### Phase V: god rays / halo ring / chromatic aberration, ported from `explorations/barrier-fx-lab`'s "photoreal sunburst" flash
+
+The last unported group from the lab's "Flash" section (see that README's own writeup, and the
+`b9299bc` "photorealistic flash experiment" commit that added it): today's flash was a fixed
+elliptical 3-layer additive corona and nothing else, which reads as a round blob rather than the
+reference "photograph of the sun from Earth" look (radiating rays, a diffraction ring, a lens-like
+color fringe). The lab had already worked out the shape of all three effects and a dialed-in
+"Flash: photoreal sunburst" preset target look; this phase ports the shader math verbatim into
+`crates/render/src/effects.wgsl`/`effects.rs` and adds the matching schema to
+`crates/project/src/style.rs`.
+
+**Schema**: `FlashSpec` gained three new fields — `god_rays: Option<GodRaySpec>`, `ring:
+Option<RingSpec>` (both default `None`), and `chromatic_aberration: f32` (default `0.0`) — all
+three additive, not breaking: an older `.fmstyle.ron` predating this phase loads with all three at
+their no-op default and renders pixel-identical to before. `GodRaySpec` (`count`, `length_px`,
+`length_jitter`, `softness`, `rotation_offset_deg`, `rotation_speed_deg_per_sec`, `pulse_speed`,
+`pulse_amount`, `streakiness`, `flicker_speed`, `flicker_intensity`, `intensity`) and `RingSpec`
+(`radius_px`, `width_px`, `intensity`) are both plain-`f32`/`u32` structs, not `ScalarBinding` —
+unlike `radius_x_px`/`brightness`/etc., these describe a style-wide look rather than something
+that typically varies per triggering note, same precedent as `GlowLayer::amplitude`/`sigma_px`.
+See `docs/fmstyle-format.md`'s new `GodRaySpec`/`RingSpec`/"Chromatic aberration" sections for the
+full field-by-field spec.
+
+**Why no loop over beams**: the lab's `flashGodRayStrength` doesn't loop over `godRayCount` beams
+per pixel — it computes, for a given fragment's angle from the flash center, which single angular
+slot that fragment falls into (`slot = theta / TWO_PI * count`, `idx = floor(slot)`) and evaluates
+that one beam directly. This is O(1) per pixel regardless of beam count, unlike `StrandSpec`'s
+fixed 8-strand loop, so `GodRaySpec::count` has no practical upper cap the way `StrandSpec::count`
+does. The strength function lives entirely in `effects.wgsl` (ported as `god_ray_strength`/
+`ring_strength`/`total_strength`), unlike the CPU-side `flash_flicker`, since this needs true
+per-pixel evaluation (each fragment sits at a different angle/radius from the flash center) —
+there's no CPU equivalent the way flash alpha has one.
+
+**Time in the effects shader**: nothing in `effects.wgsl` previously needed transport time (flash
+alpha/flicker were already fully baked CPU-side into `EffectInstance::alpha` before upload) — the
+god-ray pulse/flicker/rotation noise is the first thing in this shader that needs it, since it's
+inherently per-pixel (each beam's phase differs by its own seed, sampled fresh every fragment).
+`effects.rs`'s `ViewUniform` gained a `time: [f32; 4]` field (x = transport time, yzw unused,
+packed into a spare vec4 rather than a bare trailing f32 to match `barrier.wgsl`'s own
+uniform-packing convention and sidestep any padding/alignment question), written every `update()`
+call alongside the existing transform. `effects.wgsl`'s `fs_glow` reads `view_uniform.time.x`
+directly rather than routing it through `VertexOutput`.
+
+**Bug found running it**: this shader is the first place `effects.wgsl` needed the view uniform
+in the *fragment* stage — `view_bind_group_layout`'s binding-0 entry was declared
+`visibility: wgpu::ShaderStages::VERTEX` (fine when only `vs_main` read the transform), which made
+pipeline creation panic at startup (`wgpu::Device::create_render_pipeline`, "Shader global
+ResourceBinding { group: 0, binding: 0 } is not available in the pipeline layout / Visibility
+flags don't include the shader stage") the moment `fs_glow` tried to read `view_uniform.time.x`.
+`cargo build`/`cargo check` don't catch this — `wgpu`/`naga` only validate a shader's bind-group
+requirements against the pipeline layout at `create_render_pipeline` time, which only runs once
+the app actually starts. Fixed by widening the entry to `wgpu::ShaderStages::VERTEX_FRAGMENT`.
+
+**Instance packing**: `EffectInstance` gained four `[f32; 4]` fields — `godray_a` (count,
+length_px, length_jitter, softness), `godray_b` (rotation_offset_deg, rotation_speed_deg_per_sec,
+pulse_speed, pulse_amount), `godray_c` (streakiness, flicker_speed, flicker_intensity, intensity),
+and `ring_chromatic` (ring_radius_px, ring_width_px, ring_intensity, chromatic_aberration) — four
+new hand-unrolled vertex attributes (locations 12-15, mirrored in `effects.wgsl`'s `Instance`/
+`VertexOutput`), same "shared instance struct" approach `color_stops`/`layer_amp`/`layer_sigma`
+already use. Every particle instance (and any flash with `god_rays`/`ring: None`,
+`chromatic_aberration: 0.0`) carries these zeroed (`ZERO_GOD_RAYS`/`ZERO_RING_CHROMATIC` in
+`effects.rs`), which `fs_glow` reads as "effect off" (`godray_a.x < 0.5`, `ring_chromatic.z <=
+0.0`, `ring_chromatic.w <= 0.0`) — a pixel-identical no-op for every instance that predates this
+phase, and (for the common `chromatic_aberration == 0.0` case) a cheaper single-sample path rather
+than the chromatic-aberration triple-sample one.
+
+**Quad margin**: a god ray can reach much farther than the base corona's `layers` (hundreds of px
+vs. tens), and the halo ring sits at its own fixed radius independent of the corona too — `margin_
+px` (which sizes `quad_radius`, i.e. how far past `core_radius` the instance's quad extends before
+`fs_glow` gets clipped by geometry) in `spawn_flash` now takes the max of the corona's own margin,
+`god_ray_length_px * 2.0` (headroom for length jitter/pulse and the shader's own `outer_cut`
+falloff past `len`), and the ring's outer edge (`ring_radius_px + ring_width_px`) — without this, a
+wide god-ray spec would visibly clip at the old, corona-only quad edge.
+
+**Floored vs. truncated modulo**: the lab's GLSL `mod(theta - rot, TWO_PI)` is floored division
+(result always has the same sign as the divisor); WGSL's `%` operator is truncated division
+(result has the same sign as the dividend), which matters here since `theta - rot` is frequently
+negative (`atan2` returns `[-π, π]`). Using `%` directly would have put negative angles into the
+wrong slot. `effects.wgsl` gained a small `floor_mod(x, y) -> f32` helper (`x - y * floor(x / y)`)
+to reproduce GLSL's `mod()` exactly.
+
+**Sample added**: `photoreal_sunburst` (`examples/styles/photoreal-sunburst.fmstyle.ron`), a
+direct field-by-field translation of the lab's own "Flash: photoreal sunburst" preset (its
+"Export settings" JSON) — a tight near-point core, 24 fixed (no pulse/rotation) but hard-flickering
+god rays (`flicker_speed: 4.16`, `flicker_intensity: 1.0`), a faint diffraction ring, and a small
+`0.07` chromatic-aberration fringe. `flashYOffset: 200` in the lab preset has no equivalent field
+here (a flash always spawns at the triggering note's own barrier position) — same "lab-scene-only
+field" caveat `barrier_strands`'s own comment already calls out for `barrierYFrac`/`keyWidth`/
+`vignette`/`exposure`; every other field is a direct 1:1 translation. `dump_sample_styles.rs`'s
+seven other `flash: Some(..)` samples all got explicit `god_rays: None`/`ring: None`/
+`chromatic_aberration: 0.0` (the default, spelled out), same "make the schema addition visible in
+every regenerated file" convention Phase U's flicker fields used.
+
+**Tests**: `crates/project/src/style.rs` gained
+`flash_without_god_ray_fields_loads_with_no_op_defaults` (an old-shaped `.fmstyle.ron` fragment
+loads `god_rays`/`ring`/`chromatic_aberration` at their no-op defaults) and
+`flash_god_rays_and_ring_round_trip` (a `FlashSpec` with both `Some(..)` round-trips through RON
+byte-for-byte). No new `crates/render` tests — the new math is entirely per-pixel WGSL
+(`god_ray_strength`/`ring_strength`/`total_strength`/`floor_mod` all live in `effects.wgsl`, not
+`effects.rs`), unlike Phase U's flicker which had a CPU-side function to unit-test.
+
+**Verified**: `cargo build --workspace --all-targets`, `cargo test --workspace`, and `cargo
+fmt`/`cargo clippy --all-targets --workspace` all clean; `scripts/refresh-sample-styles.sh` was run
+and its diff limited to the three new fields on the seven existing flash samples plus the one new
+`photoreal-sunburst.fmstyle.ron` file, no unrelated reformatting churn. The user ran the app and
+hit the bind-group-visibility panic above at startup (confirming the "`cargo build` doesn't
+validate WGSL against its pipeline layout" concern noted when this phase landed); fixed and
+rebuilt clean. **Runtime look not yet confirmed** — worth checking: import
+`photoreal-sunburst.fmstyle.ron`, play a note, and watch for a tight bright core with rays radiating
+outward, a faint ring, and a subtle color fringe at the outer edge, rather than a plain round flash.
+

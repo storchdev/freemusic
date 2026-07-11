@@ -888,6 +888,139 @@ impl Default for FlashColor {
     }
 }
 
+/// Volumetric "sun rays" radiating outward from a flash's center, on top of its ordinary elliptical
+/// corona (`FlashSpec::layers`) — ported from `explorations/barrier-fx-lab`'s "Flash — god rays"
+/// group (Phase V), aimed at a "photograph of the sun from Earth" look rather than a round blob.
+/// `None` on `FlashSpec::god_rays` (default) renders the flash exactly as it rendered before this
+/// phase: a plain elliptical corona, no rays.
+///
+/// Beams sit on `count` fixed, evenly-spaced angular slots — there is no angular wander (an earlier
+/// iteration let the whole pattern drift side to side, which read as the beams wiggling rather than
+/// radiating from a fixed sun, so it was removed; `rotation_speed_deg_per_sec` is kept as a rigid
+/// whole-pattern spin, a different and much subtler motion). Instead each beam's own reach breathes
+/// in and out over time via seeded value noise (`pulse_speed`/`pulse_amount`), on top of an
+/// internal streak texture along its length (`streakiness`) and a separate whole-beam brightness
+/// flicker (`flicker_speed`/`flicker_intensity`) so individual beams gutter and reappear rather than
+/// staying uniformly "on". Unlike `StrandSpec`'s fixed strand-count loop, beam selection is a
+/// direct per-pixel angle-to-slot computation (`render::effects`'s `god_ray_strength`/
+/// `effects.wgsl`'s WGSL port of the same formula) rather than a CPU or shader loop over `count`
+/// beams, so `count` has no practical upper cap.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GodRaySpec {
+    /// Number of angular beam slots around the flash's center.
+    #[serde(default = "default_god_ray_count")]
+    pub count: u32,
+    /// Beam reach in canvas px, before `length_jitter`/`pulse_amount` shrink it.
+    #[serde(default = "default_god_ray_length_px")]
+    pub length_px: f32,
+    /// Per-beam length variation, seeded per slot so it's stable frame-to-frame: `0.0` = every beam
+    /// is exactly `length_px`; `1.0` = beams range anywhere from `0` to `length_px`.
+    #[serde(default = "default_god_ray_length_jitter")]
+    pub length_jitter: f32,
+    /// Angular falloff exponent shaping each beam's width: lower reads as wider/softer wedges,
+    /// higher as narrower/sharper needles.
+    #[serde(default = "default_god_ray_softness")]
+    pub softness: f32,
+    /// Fixed rotation of the whole beam pattern, in degrees.
+    #[serde(default)]
+    pub rotation_offset_deg: f32,
+    /// Continuous rotation speed of the whole pattern, in degrees/second. `0.0` (default) is a
+    /// no-op — see this struct's own doc comment for why angular *wander* (individual beams
+    /// drifting) was rejected, as distinct from this rigid whole-pattern spin.
+    #[serde(default)]
+    pub rotation_speed_deg_per_sec: f32,
+    /// How fast each beam's own length breathes in and out via value noise.
+    #[serde(default = "default_god_ray_pulse_speed")]
+    pub pulse_speed: f32,
+    /// How far a beam's length can shrink at the pulse's trough, as a fraction of `length_px`
+    /// (`0.0`-`1.0`).
+    #[serde(default = "default_god_ray_pulse_amount")]
+    pub pulse_amount: f32,
+    /// Internal streak-texture contrast along each beam's length: `0.0` = a perfectly smooth beam,
+    /// `1.0` = strongly streaked.
+    #[serde(default = "default_god_ray_streakiness")]
+    pub streakiness: f32,
+    /// How fast each beam's whole-beam brightness flickers, independent of the streak texture —
+    /// same value-noise mechanism as `FlashSpec::flicker_speed`, just per-beam instead of
+    /// per-flash.
+    #[serde(default = "default_god_ray_flicker_speed")]
+    pub flicker_speed: f32,
+    /// How much the flicker dims a beam at its darkest point (`0.0` never dims, `1.0` can dim a
+    /// beam to fully dark at the trough).
+    #[serde(default = "default_god_ray_flicker_intensity")]
+    pub flicker_intensity: f32,
+    /// Overall brightness multiplier on the whole god-ray contribution, independent of
+    /// `FlashSpec::brightness` (which scales the ordinary corona's `layers`, not the rays).
+    #[serde(default = "default_god_ray_intensity")]
+    pub intensity: f32,
+}
+
+impl Default for GodRaySpec {
+    fn default() -> Self {
+        Self {
+            count: default_god_ray_count(),
+            length_px: default_god_ray_length_px(),
+            length_jitter: default_god_ray_length_jitter(),
+            softness: default_god_ray_softness(),
+            rotation_offset_deg: 0.0,
+            rotation_speed_deg_per_sec: 0.0,
+            pulse_speed: default_god_ray_pulse_speed(),
+            pulse_amount: default_god_ray_pulse_amount(),
+            streakiness: default_god_ray_streakiness(),
+            flicker_speed: default_god_ray_flicker_speed(),
+            flicker_intensity: default_god_ray_flicker_intensity(),
+            intensity: default_god_ray_intensity(),
+        }
+    }
+}
+
+fn default_god_ray_count() -> u32 {
+    6
+}
+fn default_god_ray_length_px() -> f32 {
+    420.0
+}
+fn default_god_ray_length_jitter() -> f32 {
+    0.5
+}
+fn default_god_ray_softness() -> f32 {
+    3.0
+}
+fn default_god_ray_pulse_speed() -> f32 {
+    1.0
+}
+fn default_god_ray_pulse_amount() -> f32 {
+    0.6
+}
+fn default_god_ray_streakiness() -> f32 {
+    0.6
+}
+fn default_god_ray_flicker_speed() -> f32 {
+    1.2
+}
+fn default_god_ray_flicker_intensity() -> f32 {
+    0.55
+}
+fn default_god_ray_intensity() -> f32 {
+    1.4
+}
+
+/// Faint colored ring at a fixed radius around a flash's center — a common lens-flare
+/// "diffraction halo" accent, ported from the same lab exploration as `GodRaySpec` (Phase V).
+/// `None` on `FlashSpec::ring` (default) renders no ring.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RingSpec {
+    /// Ring radius in canvas px, measured from the flash's center.
+    pub radius_px: f32,
+    /// Falloff width in px around `radius_px` — smaller reads as a crisp thin ring, larger as a
+    /// soft broad band.
+    pub width_px: f32,
+    /// Brightness multiplier; the actual on/off switch (`render::effects::ring_strength` treats
+    /// `intensity <= 0.0` as fully off, same "zero is the no-op" convention `WavySpec::slide_speed`
+    /// uses).
+    pub intensity: f32,
+}
+
 /// Decaying radial flash spawned on note arrival. A flash is always fully opaque at spawn, fading
 /// to 0 over `decay_seconds`; `brightness` alone controls how hot/white it looks, same mechanism
 /// as `Glow`'s doc comment.
@@ -934,6 +1067,25 @@ pub struct FlashSpec {
     /// the trough. Resolved once per spawned flash, same mechanism as `flicker_speed` above.
     #[serde(default = "default_zero_scalar")]
     pub flicker_intensity: ScalarBinding,
+    /// Volumetric "sun rays" radiating from the flash's center, on top of the ordinary elliptical
+    /// corona above — see `GodRaySpec`'s own doc comment (Phase V). `None` (default) is a no-op:
+    /// the flash renders exactly as it did before this phase.
+    #[serde(default)]
+    pub god_rays: Option<GodRaySpec>,
+    /// A faint lens-flare-style diffraction ring around the flash's center — see `RingSpec`'s own
+    /// doc comment (Phase V). `None` (default) renders no ring.
+    #[serde(default)]
+    pub ring: Option<RingSpec>,
+    /// Lens-dispersion-style color fringing (Phase V): the whole light stack (corona + god rays +
+    /// ring) is re-evaluated once per color channel at a slightly different radius from the
+    /// flash's center, rather than a flat color tint — the same "error grows with distance from
+    /// center" shape real lens chromatic aberration has, so the fringe shows up at the outer edge
+    /// of the light, not as a uniform wash over it. `0.0` (default) is an exact no-op (single
+    /// unsplit sample, pixel-identical to before this phase and half the fragment-shader cost of a
+    /// non-zero value). Typical useful range is small, e.g. `0.03`-`0.1` — larger values visibly
+    /// separate the channels into distinct colored ghosts rather than a subtle fringe.
+    #[serde(default)]
+    pub chromatic_aberration: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -1267,6 +1419,9 @@ mod tests {
                     layers: default_glow_layers(),
                     flicker_speed: ScalarBinding::Constant(0.0),
                     flicker_intensity: ScalarBinding::Constant(0.0),
+                    god_rays: None,
+                    ring: None,
+                    chromatic_aberration: 0.0,
                 }),
             }),
             background: default_background_color(),
@@ -1312,6 +1467,9 @@ mod tests {
                     layers: default_glow_layers(),
                     flicker_speed: ramp(0.5, 3.0),
                     flicker_intensity: ramp(0.2, 0.8),
+                    god_rays: None,
+                    ring: None,
+                    chromatic_aberration: 0.0,
                 }),
             }),
             background: default_background_color(),
@@ -1475,11 +1633,66 @@ mod tests {
                 layers: default_glow_layers(),
                 flicker_speed: ScalarBinding::Constant(0.0),
                 flicker_intensity: ScalarBinding::Constant(0.0),
+                god_rays: None,
+                ring: None,
+                chromatic_aberration: 0.0,
             };
             let text = ron::ser::to_string_pretty(&spec, ron::ser::PrettyConfig::new()).unwrap();
             let parsed: FlashSpec = ron::from_str(&text).unwrap();
             assert_eq!(spec, parsed);
         }
+    }
+
+    /// A `.fmstyle.ron` file missing the `god_rays`/`ring`/`chromatic_aberration` keys on
+    /// `FlashSpec` (Phase V) should load them as `None`/`None`/`0.0` — the flash renders exactly
+    /// as it did before this phase, same "old file still parses" contract as
+    /// `flash_without_flicker_fields_loads_with_zero_default` above.
+    #[test]
+    fn flash_without_god_ray_fields_loads_with_no_op_defaults() {
+        let text = "(radius_x_px: Constant(20.0), radius_y_px: Constant(20.0), decay_seconds: Constant(0.2))";
+        let spec: FlashSpec = ron::from_str(text).unwrap();
+        assert_eq!(spec.god_rays, None);
+        assert_eq!(spec.ring, None);
+        assert_eq!(spec.chromatic_aberration, 0.0);
+    }
+
+    /// `FlashSpec::god_rays`/`ring`/`chromatic_aberration` (Phase V) round-trip through RON.
+    #[test]
+    fn flash_god_rays_and_ring_round_trip() {
+        let spec = FlashSpec {
+            radius_x_px: ScalarBinding::Constant(11.0),
+            radius_y_px: ScalarBinding::Constant(11.0),
+            color: FlashColor::Solid(ColorBinding::Constant([255, 246, 224])),
+            decay_seconds: ScalarBinding::Constant(0.05),
+            mode: FlashMode::Instant,
+            brightness: ScalarBinding::Constant(1.12),
+            layers: default_glow_layers(),
+            flicker_speed: ScalarBinding::Constant(0.0),
+            flicker_intensity: ScalarBinding::Constant(0.0),
+            god_rays: Some(GodRaySpec {
+                count: 24,
+                length_px: 72.0,
+                length_jitter: 0.0,
+                softness: 1.7,
+                rotation_offset_deg: 4.0,
+                rotation_speed_deg_per_sec: 0.0,
+                pulse_speed: 0.0,
+                pulse_amount: 0.0,
+                streakiness: 1.0,
+                flicker_speed: 4.16,
+                flicker_intensity: 1.0,
+                intensity: 0.38,
+            }),
+            ring: Some(RingSpec {
+                radius_px: 67.0,
+                width_px: 24.0,
+                intensity: 0.1,
+            }),
+            chromatic_aberration: 0.07,
+        };
+        let text = ron::ser::to_string_pretty(&spec, ron::ser::PrettyConfig::new()).unwrap();
+        let parsed: FlashSpec = ron::from_str(&text).unwrap();
+        assert_eq!(spec, parsed);
     }
 
     /// A `.fmstyle.ron` file missing the `flicker_speed`/`flicker_intensity` keys on `FlashSpec`

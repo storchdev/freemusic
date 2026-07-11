@@ -274,14 +274,16 @@ touching that area of the code:
   `docs/fmstyle-format.md` and `docs/fmstyle-milestone.md`); the sliding-filament/wisp controls in
   the lab remain unported experiments. The lab also has a "Flash" section covering the separate
   barrier-hit flash (`crates/render/src/effects.rs`/`effects.wgsl`, `project::FlashSpec`), aimed at
-  a "photograph of the sun from Earth" look: bloom/glow (today's real flash exactly — a fixed
-  elliptical additive corona, unchanged), god rays (a few wider/longer noise-streaked volumetric
-  beams that pulse in and out along their own length rather than wander angularly — wander was tried
-  and read as wiggling, not the intended look, so it was removed), a small halo ring accent, and
+  a "photograph of the sun from Earth" look: bloom/glow (today's real flash's base corona — a fixed
+  elliptical additive corona), god rays (a handful of wider/longer noise-streaked volumetric beams
+  that pulse in and out along their own length rather than wander angularly — wander was tried and
+  read as wiggling, not the intended look, so it was removed), a small halo ring accent, and
   chromatic aberration (re-samples the whole light stack per color channel at a slightly different
-  radius). None of the god-ray/halo/chromatic-aberration work is ported into the real renderer yet —
-  only the bloom/glow group matches production.
-- **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–U) of the
+  radius). **The god-ray/halo-ring/chromatic-aberration group has since been ported into the real
+  app too** (Phase V, `project::GodRaySpec`/`RingSpec`/`FlashSpec::ring`/`god_rays`/
+  `chromatic_aberration` — see `docs/fmstyle-format.md` and `docs/fmstyle-milestone.md`); the
+  sliding-filament/wisp controls remain the lab's only unported experiments.
+- **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–V) of the
   `.fmstyle.ron` extensible visual style format: schema/plumbing, the vendored note pipeline
   (dropping the `neothesia-core` dependency), note fill effects (gradient/sheen/glow), barrier
   glow/pulse, transition particles/flash, per-key-color/wavy-barrier/elliptical-flash/continuous-
@@ -291,9 +293,10 @@ touching that area of the code:
   plus multicolor (author-painted or note-derived) flash gradients (Phase Q), real per-note
   resolution for `ColorBinding::ByVelocity`/`ByPitchClass`/`ByTrack` plus the `ScalarBinding`-typed
   `brightness` follow-up (Phase R), per-note alpha/transparency (Phase S), `ByPitch` scaling
-  continuously across the whole 88-key range (Phase T), and value-noise-based flicker
-  speed/intensity for `FlashMode::Sustained` flashes, ported from the barrier strand bundle's own
-  flicker (Phase U).
+  continuously across the whole 88-key range (Phase T), value-noise-based flicker speed/intensity
+  for `FlashMode::Sustained` flashes ported from the barrier strand bundle's own flicker (Phase U),
+  and the "photograph of the sun from Earth" volumetric god rays/diffraction ring/chromatic
+  aberration flash extras ported from `explorations/barrier-fx-lab` (Phase V).
 - **`docs/fmstyle-format.md`** — the living field-by-field `.fmstyle.ron` format spec (defaults,
   meaning, RON snippets, breaking-change log) — keep this in sync whenever the schema changes,
   it's the spec, not narrative.
