@@ -2026,3 +2026,50 @@ just two).
 Runtime look not yet confirmed by the user — per this file's own top-level rule, ask them to run the
 app and re-trigger the two-key and repeated-note cases from the original bug report.
 
+### Phase X: elliptical flash corona's hard rectangular clip (bug found in the same session as Phase W)
+
+Separate bug, same "photorealistic flash" screenshots that prompted Phase W: the elliptical flash
+corona (`effects.wgsl`'s `core_strength`, used only by flashes and additive particles — barrier and
+note glow use different, unaffected shapes, see below) rendered with a visible hard rectangular
+edge instead of fading smoothly to nothing, most obvious on a wide/flat flash ellipse (typical:
+`radius_x_px` spans the key width, `radius_y_px` is small).
+
+**Root cause**: `core_strength` converted the ellipse-normalized excess distance (`norm - 1.0`,
+where `norm = length(offset / core_radius)`, `norm == 1.0` exactly on the ellipse boundary) back
+into real pixels by multiplying by `min(core_radius.x, core_radius.y)` — correct only along the
+ellipse's minor axis. Away from it (e.g. along a wide ellipse's major/horizontal axis), this badly
+underestimates the true pixel distance past the boundary, so the `exp(-edge_dist_px / sigma_px)`
+falloff decays far more slowly in real pixels than `sigma_px` was tuned for and visibly outruns
+`spawn_flash`'s `margin_px` (sized from `sigma_px` on the assumption that the falloff decay really
+is in real pixels) — the quad's geometry ends before the glow has actually faded out, so what
+should be a soft fade instead gets clipped hard at the quad edge, reading as a rectangle overlaid
+on the corona. Confirmed this doesn't affect the other two glow shapes in the codebase: `barrier.
+wgsl`'s glow measures real distance-above/below-a-horizontal-bar directly (no ellipse involved),
+and `notes/shader.wgsl`'s glow measures distance from a real rounded-rect SDF (`dist(...)`) — both
+already physically correct in every direction, unlike the ellipse's normalized-then-rescaled
+approximation.
+
+**Fix**: replaced the `min(core_radius.x, core_radius.y)` rescale with the actual radial distance
+to the ellipse boundary — `offset / norm` is exactly the point where the ray from the ellipse's
+center through `offset` crosses the boundary (exact algebraically: scaling any point by `1/norm`
+brings its own `norm` to exactly `1.0`), so `length(offset) - length(offset) / norm` is the real
+pixel distance from that crossing point to `offset`, exact along both axes and a close geometric
+approximation to the true nearest-point distance everywhere in between (a real elliptical SDF is
+iterative/expensive; this radial approximation is the standard cheap substitute for exactly this
+kind of falloff shader and is more than accurate enough here). With this, the falloff decays in
+real pixels consistently in every direction, matching what `margin_px`'s `sigma_px * GLOW_CUTOFF_
+SIGMAS` assumes — no Rust-side change needed, the quad was always big enough once the shader's own
+distance measure became accurate.
+
+**Gotcha**: WGSL's `select(f, t, cond)` evaluates both `f` and `t` unconditionally (it's a plain
+function, not short-circuiting control flow like a ternary or `if`) — the naive `1.0 / norm` is
+evaluated even in the `norm <= 1.0` branch where the result is discarded, including at `offset ==
+vec2(0.0)` (`norm == 0.0`) where it would otherwise be a division by zero. Guarded with `max(norm,
+0.0001)` in the denominator so the unused branch stays finite rather than producing (an unused, but
+still real) NaN.
+
+**Verified**: `cargo build --workspace`, `cargo fmt`, and `cargo clippy --all-targets` all clean.
+No test harness in this repo instantiates the wgpu pipeline headlessly, so WGSL syntax here is only
+actually validated at `create_render_pipeline` time when the app starts (see Phase V's "bug found
+running it" note for the same limitation) — runtime look not yet confirmed by the user.
+

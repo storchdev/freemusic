@@ -298,7 +298,10 @@ touching that area of the code:
   the "photograph of the sun from Earth" volumetric god rays/diffraction ring/chromatic
   aberration flash extras ported from `explorations/barrier-fx-lab` (Phase V), and swapping all
   three glow pipelines (barrier, notes, effects) from linear-additive to screen blending to stop
-  overlapping/stacked glows from blowing out into a flat white plateau (Phase W).
+  overlapping/stacked glows from blowing out into a flat white plateau (Phase W), and fixing the
+  elliptical flash corona's hard rectangular clip on wide/flat flashes, caused by an inaccurate
+  ellipse-boundary-distance approximation that made the falloff decay slower than its quad margin
+  assumed (Phase X).
 - **`docs/fmstyle-format.md`** — the living field-by-field `.fmstyle.ron` format spec (defaults,
   meaning, RON snippets, breaking-change log) — keep this in sync whenever the schema changes,
   it's the spec, not narrative.

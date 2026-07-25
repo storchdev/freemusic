@@ -139,7 +139,20 @@ fn fs_puff(in: VertexOutput) -> @location(0) vec4<f32> {
 // where the tight/near-field layer dominates, not a distinct pipeline.
 fn core_strength(offset: vec2<f32>, core_radius: vec2<f32>, layer_amp: vec3<f32>, layer_sigma: vec3<f32>) -> f32 {
     let norm = length(offset / core_radius);
-    let edge_dist_px = max(norm - 1.0, 0.0) * min(core_radius.x, core_radius.y);
+    // `offset / norm` is the point where the ray from the center through `offset` crosses the
+    // ellipse boundary (exact on both axes, a close approximation elsewhere), so
+    // `length(offset) - length(offset) / norm` is the real pixel distance from that boundary to
+    // `offset`. Rescaling `(norm - 1.0)` by `min(core_radius.x, core_radius.y)` (the old formula)
+    // badly underestimates this away from the minor axis for an elongated ellipse (e.g. a flash's
+    // wide, flat corona) -- the falloff then decays far slower in real pixels than `sigma_px`
+    // intends and outruns the quad margin sized from it (`spawn_flash`'s `margin_px`), producing a
+    // hard rectangular clip at the quad edge instead of a soft fade to zero.
+    let dist = length(offset);
+    // `select`'s two value arguments are both evaluated unconditionally (unlike a ternary/`if`),
+    // so `1.0 / norm` needs `max(norm, 0.0001)` to stay finite at `offset == vec2(0.0)` (`norm ==
+    // 0.0`) even though that branch is discarded -- otherwise it's a NaN that never gets used but
+    // would still need to not exist.
+    let edge_dist_px = select(0.0, dist * (1.0 - 1.0 / max(norm, 0.0001)), norm > 1.0);
 
     var strength = 0.0;
     strength += layer_amp.x * exp(-edge_dist_px / max(layer_sigma.x, 0.01));

@@ -96,20 +96,20 @@
         )),
         flash: Some((
             radius_x_px: Constant(16.0),
-            radius_y_px: Constant(4.0),
+            radius_y_px: Constant(2.0),
             color: Solid(Constant((205, 190, 255))),
             decay_seconds: Constant(0.22),
             mode: Sustained,
-            brightness: Constant(1.0),
+            brightness: Constant(1.5),
             layers: ((
                 amplitude: 1.4,
-                sigma_px: 2.0,
-            ), (
-                amplitude: 0.7,
                 sigma_px: 5.0,
             ), (
-                amplitude: 0.1,
+                amplitude: 0.7,
                 sigma_px: 10.0,
+            ), (
+                amplitude: 0.3,
+                sigma_px: 50.0,
             )),
             flicker_speed: Constant(0.0),
             flicker_intensity: Constant(0.0),

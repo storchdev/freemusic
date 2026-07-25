@@ -601,11 +601,11 @@ fn main() {
             }),
             flash: Some(FlashSpec {
                 radius_x_px: ScalarBinding::Constant(16.0),
-                radius_y_px: ScalarBinding::Constant(4.0),
+                radius_y_px: ScalarBinding::Constant(2.0),
                 color: FlashColor::Solid(ColorBinding::Constant([205, 190, 255])),
                 decay_seconds: ScalarBinding::Constant(0.22),
                 mode: FlashMode::Sustained,
-                brightness: ScalarBinding::Constant(1.0),
+                brightness: ScalarBinding::Constant(1.5),
                 flicker_speed: ScalarBinding::Constant(0.0),
                 flicker_intensity: ScalarBinding::Constant(0.0),
                 god_rays: None,
@@ -614,15 +614,15 @@ fn main() {
                 layers: [
                     GlowLayer {
                         amplitude: 1.4,
-                        sigma_px: 2.0,
-                    },
-                    GlowLayer {
-                        amplitude: 0.7,
                         sigma_px: 5.0,
                     },
                     GlowLayer {
-                        amplitude: 0.1,
+                        amplitude: 0.7,
                         sigma_px: 10.0,
+                    },
+                    GlowLayer {
+                        amplitude: 0.3,
+                        sigma_px: 50.0,
                     },
                 ],
             }),
