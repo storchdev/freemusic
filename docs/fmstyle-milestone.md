@@ -1983,3 +1983,46 @@ fields) now renders the tight, hard-flickering, fast-spinning sunburst look by d
 the earlier wide/slow/pulsing beam pattern; `docs/fmstyle-format.md`'s `GodRaySpec` table updated
 to match.
 
+### Phase W: screen blend instead of linear-additive for all glow pipelines (overlap-blowout fix)
+
+The user reported that Phase V's god-ray flash (and glow effects generally) looked right for a
+single key but blew out into a flat, gradient-less "swath of pure white" the moment two nearby
+keys' glows overlapped, or a fading flash from one note stacked under a fresh flash from a repeated
+note. Root cause: `barrier.rs`'s `glow_pipeline`, `notes/pipeline.rs`'s `glow_pipeline`, and
+`effects.rs`'s `additive_pipeline` (flashes/additive particles) all used a GPU blend state of
+`src_factor: One, dst_factor: One, operation: Add` — plain linear-light addition straight onto the
+render target. The render target is an 8-bit UNORM surface, hard-clamped to `[0, 1]` after every
+draw call, so once any pixel's channel crossed 1.0 from one glow, every further additive
+contribution (a second overlapping glow, or a decaying flash stacked under a new one) was
+indistinguishable from it — 1.2 and 12.0 both clip to identical solid white. That's what turned an
+overlap into a flat plateau instead of "brighter, but still detailed." Clamping the *inputs* (tried
+before this phase, per the user) doesn't fix this — it just moves where the plateau starts.
+
+**Fix**: swap all three pipelines' blend state from linear-additive to screen blend (`result = src
++ dst - src*dst`), expressed as a GPU fixed-function blend state via `src_factor:
+wgpu::BlendFactor::OneMinusDst, dst_factor: wgpu::BlendFactor::One, operation: Add` — no shader/
+WGSL changes needed, since `Src*(1-Dst) + Dst*1` expands to exactly the screen formula. Applied to
+both the color and alpha `BlendComponent`s in all three pipelines for consistency, though only
+color is actually consumed downstream (the final surface is presented opaque). Screen blend is
+commutative and associative (`screen(a, screen(b, c))` expands to the same symmetric polynomial as
+`screen(screen(a, b), c)`), so multiple overlapping glows/flashes look identical regardless of draw
+order — no dependence on scene z-order or particle spawn order. It also asymptotes smoothly toward
+white as inputs approach 1 instead of overshooting-then-hard-clipping, so an overlap zone keeps
+visible shape/gradient (still reads as "brighter," not as an undifferentiated white blob) — this is
+the same fix for both reported cases (two overlapping keys, and a decaying flash stacked under a
+fresh one from a fast repeated note) since it's the same blend equation regardless of whether the
+two contributions come from different draw calls in the same frame or from frame-to-frame
+accumulation of a still-fading instance.
+
+**Not done**: an HDR intermediate render target (e.g. `Rgba16Float`) plus a final global tone-map
+pass (Reinhard/ACES) was considered and rejected as the fix here — it's the more "physically
+correct" industry-standard answer to bloom stacking, but requires restructuring the render-target
+format and adding a compositing/tonemap pass across the interactive preview, export, and the 6c
+offscreen-texture path, versus this phase's one-line-per-pipeline blend-state swap with no shader
+changes. Revisit if screen blend ever proves insufficient (e.g. for many-way overlaps rather than
+just two).
+
+**Verified**: `cargo build --workspace`, `cargo fmt`, and `cargo clippy --all-targets` all clean.
+Runtime look not yet confirmed by the user — per this file's own top-level rule, ask them to run the
+app and re-trigger the two-key and repeated-note cases from the original bug report.
+

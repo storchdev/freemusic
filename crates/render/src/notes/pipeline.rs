@@ -346,16 +346,19 @@ impl NotesPipeline {
         let instance_attributes = NoteInstance::attributes();
         let instance_layout = NoteInstance::layout(&instance_attributes);
 
-        // Additive: color/alpha both `src + dst` (`ONE`/`ONE`) — same convention `barrier.rs`'s
-        // `glow_pipeline` and `effects.rs`'s `additive_pipeline` already use.
+        // Screen blend: `src + dst - src*dst`, via `src_factor: OneMinusDst, dst_factor: One` —
+        // saturates smoothly toward white instead of overshooting past 1.0 and hard-clipping into
+        // a flat swath (what plain `ONE`/`ONE` addition did once two overlapping note glows, or a
+        // fading glow stacked under a fresh one, crossed 1.0 on any channel). Same convention
+        // `barrier.rs`'s `glow_pipeline` and `effects.rs`'s `additive_pipeline` already use.
         let additive_blend = wgpu::BlendState {
             color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
+                src_factor: wgpu::BlendFactor::OneMinusDst,
                 dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             },
             alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
+                src_factor: wgpu::BlendFactor::OneMinusDst,
                 dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             },

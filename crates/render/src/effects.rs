@@ -528,19 +528,26 @@ impl EffectsRenderer {
         let instance_attributes = EffectInstance::attributes();
         let instance_layout = EffectInstance::layout(&instance_attributes);
 
-        // Additive (`One, One`) for flashes and additive-mode particles (sparks, glints — light
-        // stacking on light, `fs_glow`'s additive-layered-sum formula); premultiplied-alpha
-        // (`One, OneMinusSrcAlpha`) for particles with `ParticleSpec::additive = false`
-        // (soft/smoke-like puffs that should occlude, not just brighten — `fs_puff`'s unchanged
-        // hard-edge shape). Each pipeline uses a different fragment entry point.
+        // Screen blend (`src + dst - src*dst`, via `src_factor: OneMinusDst, dst_factor: One`) for
+        // flashes and additive-mode particles (sparks, glints — light stacking on light, `fs_glow`'s
+        // additive-layered-sum formula): this saturates smoothly toward white instead of plain
+        // `ONE`/`ONE` addition overshooting past 1.0 and hard-clipping into a flat, gradient-less
+        // swath of pure white once two overlapping flashes (e.g. two nearby keys), or a decaying
+        // flash stacked under a fresh one (rapid repeated notes), pushed any channel over 1.0.
+        // Commutative and associative, so multiple overlapping instances look the same regardless
+        // of draw order. Premultiplied-alpha (`One, OneMinusSrcAlpha`) for particles with
+        // `ParticleSpec::additive = false` (soft/smoke-like puffs that should occlude, not just
+        // brighten — `fs_puff`'s unchanged hard-edge shape). Each pipeline uses a different
+        // fragment entry point. Same convention `barrier.rs`'s `glow_pipeline` and
+        // `notes/pipeline.rs`'s `glow_pipeline` already use.
         let additive_blend = wgpu::BlendState {
             color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
+                src_factor: wgpu::BlendFactor::OneMinusDst,
                 dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             },
             alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
+                src_factor: wgpu::BlendFactor::OneMinusDst,
                 dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             },

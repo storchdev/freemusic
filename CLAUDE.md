@@ -295,8 +295,10 @@ touching that area of the code:
   `brightness` follow-up (Phase R), per-note alpha/transparency (Phase S), `ByPitch` scaling
   continuously across the whole 88-key range (Phase T), value-noise-based flicker speed/intensity
   for `FlashMode::Sustained` flashes ported from the barrier strand bundle's own flicker (Phase U),
-  and the "photograph of the sun from Earth" volumetric god rays/diffraction ring/chromatic
-  aberration flash extras ported from `explorations/barrier-fx-lab` (Phase V).
+  the "photograph of the sun from Earth" volumetric god rays/diffraction ring/chromatic
+  aberration flash extras ported from `explorations/barrier-fx-lab` (Phase V), and swapping all
+  three glow pipelines (barrier, notes, effects) from linear-additive to screen blending to stop
+  overlapping/stacked glows from blowing out into a flat white plateau (Phase W).
 - **`docs/fmstyle-format.md`** — the living field-by-field `.fmstyle.ron` format spec (defaults,
   meaning, RON snippets, breaking-change log) — keep this in sync whenever the schema changes,
   it's the spec, not narrative.

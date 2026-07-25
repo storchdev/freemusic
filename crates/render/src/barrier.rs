@@ -137,16 +137,21 @@ impl BarrierRenderer {
             immediate_size: 0,
         });
 
-        // Additive: color/alpha both `src + dst` (`ONE`/`ONE`) — light stacking on light, same
-        // convention `effects.rs`'s `additive_blend` already uses for flashes/additive particles.
+        // Screen blend: `src + dst - src*dst`, via `src_factor: OneMinusDst, dst_factor: One` —
+        // light stacking on light, but saturating smoothly toward white instead of overshooting
+        // past 1.0 and hard-clipping (plain `ONE`/`ONE` addition let two overlapping glows, or a
+        // fading glow stacked under a fresh one, blow out into a flat swath of pure white with no
+        // gradient left once any channel crossed 1.0). Commutative and associative, so multiple
+        // overlapping glows look the same regardless of draw order. Same convention `effects.rs`'s
+        // `additive_blend` and `notes/pipeline.rs`'s `additive_blend` already use.
         let additive_blend = wgpu::BlendState {
             color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
+                src_factor: wgpu::BlendFactor::OneMinusDst,
                 dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             },
             alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
+                src_factor: wgpu::BlendFactor::OneMinusDst,
                 dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             },
