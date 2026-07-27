@@ -1,10 +1,7 @@
 (
     version: 1,
     notes: Static((
-        fill: Solid(ByPitch((
-            low: (40, 60, 220),
-            high: (255, 160, 40),
-        ))),
+        fill: Solid(Constant((255, 255, 255))),
         sheen: None,
         glow: None,
         roundedness: 1.0,
@@ -27,5 +24,8 @@
         flash: None,
     )),
     background: Constant((0, 0, 0)),
-    octave_lines: None,
+    octave_lines: Some((
+        color: (255, 255, 255, 60),
+        width_px: 2.0,
+    )),
 )

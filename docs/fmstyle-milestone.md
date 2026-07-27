@@ -2073,3 +2073,63 @@ No test harness in this repo instantiates the wgpu pipeline headlessly, so WGSL 
 actually validated at `create_render_pipeline` time when the app starts (see Phase V's "bug found
 running it" note for the same limitation) — runtime look not yet confirmed by the user.
 
+### Phase Y: octave lines (`OctaveLineSpec`)
+
+Added the "Octave lines" roadmap item from `README.md`: faint vertical reference lines at each
+octave's C boundary in the note highway, RGBA color + width as the only two knobs (no glow/pulse/
+wavy — deliberately kept as simple as the barrier's own `color`/`thickness` pair, since a reference
+grid has no need for the effect-layer machinery the other `.fmstyle.ron` layers carry).
+
+- **Schema**: `OctaveLineSpec { color: [u8; 4], width_px: f32 }` in `crates/project/src/style.rs`,
+  and a new top-level `Style::octave_lines: Option<OctaveLineSpec>` field (`#[serde(default)]`,
+  default `None`) — a plain, non-`Timed` field with no per-note timeline to key against, same
+  reasoning as `Style::background`. `Style::from_legacy` always produces `None` — there is no
+  legacy-slider equivalent at all, unlike every other axis (`notes`/`barrier`/`transition`/
+  `background`), which all have some quick-control mapping.
+- **Positioning reuses, rather than duplicates, the note layout's own math**: `render::notes`
+  already computes `octave_boundary_fractions(calibration) -> [f32; 10]` (the calibrated left
+  edge, the 8 interior C-boundaries, the calibrated right edge) to lay out each octave as its own
+  camera-stretch-able segment (see `keyboard_layout`'s doc comment). That function was made
+  `pub(crate)` and is called directly from the new `render::octave_lines` module, so the lines
+  always land exactly on the same x-coordinates the falling notes themselves are laid out
+  against — including under camera-stretch calibration — with no separate computation to drift out
+  of sync.
+- **New render module `crates/render/src/octave_lines.rs` + `octave_lines.wgsl`**, structured like
+  `barrier.rs`/`barrier.wgsl` (no vertex buffer, six hardcoded unit-quad corners per instance) but
+  simpler: one pipeline (not two — no separate opaque-core/glow-corona split, since there's no glow
+  here), one instanced draw call (`draw(0..6, 0..8)`, one instance per interior octave boundary)
+  instead of a CPU-side loop of 8 draw calls. The 8 line x-positions are packed into the uniform as
+  two `vec4<f32>`s (`array<f32, 8>` has no compact std140 uniform-buffer representation without
+  per-element padding) and indexed dynamically in the vertex shader via
+  `instance_index / 4u`/`instance_index % 4u`. Lines run from the top of the canvas down to the
+  barrier line — the same vertical extent the note highway itself occupies — computed directly in
+  the vertex shader rather than via a scissor rect (unlike `notes`/`barrier`, which do use scissor
+  rects for their own clipping), since a quad already naturally bounded to `[0, barrier_y]` needs no
+  extra clipping mechanism.
+- **Blending**: plain (non-additive) `wgpu::BlendState::ALPHA_BLENDING`, straight (non-premultiplied)
+  alpha — an RGBA line should read as an ordinary translucent overlay, not stack brighter against
+  itself or the notes/glow beneath it the way the additive glow passes do.
+- **Draw order**: `Compositor::render` draws `octave_lines` right after `video_quad` and before
+  `notes`, so a falling note visually occludes whichever line it's currently over, rather than the
+  line drawing on top of (and through) every note.
+- **Wiring**: `Project::effective_octave_lines()` mirrors `effective_note_layer`/
+  `effective_barrier_layer`/etc.'s "imported style wins, else synthesize from legacy" rule (trivial
+  here since the legacy branch is always `None`); `app`'s own `effective_octave_lines(&UiState)`
+  mirrors it the same way `effective_note_layer` etc. do there. `Compositor::update_octave_lines`
+  is a cheap uniform-only write (no instance rebuild), called unconditionally every redraw in both
+  `app::apply_post_ui_updates` and `export::run_inner`'s per-frame loop — same "always resync,
+  don't dirty-check" convention `update_barrier`/`update_transition` already use, chosen over a new
+  dirty-check flag for consistency and because recomputing 8 boundary fractions is trivial cost.
+- **New sample** `examples/styles/octave-lines.fmstyle.ron` (faint white lines, alpha 60/255, 2px
+  wide) generated via `cargo run -p project --example dump_sample_styles`, alongside a dedicated
+  round-trip test (`octave_lines_round_trips`) and a missing-field-defaults-to-`None` test
+  (`style_without_octave_lines_field_loads_as_none`) in `crates/project/src/style.rs`. Since
+  `octave_lines` is a new top-level `Style` field (always serialized, not `skip_serializing_if`),
+  every one of the 21 pre-existing `examples/styles/*.fmstyle.ron` files gained an `octave_lines:
+  None,` line too when regenerated from the same dump — matching what the generator has always
+  actually produced for every shipped sample, per this file's own header comment.
+
+**Verified**: `cargo build`/`cargo fmt`/`cargo clippy --all-targets`/`cargo test --workspace` all
+clean. Renderer/WGSL correctness not yet confirmed by the user running the app (see this file's
+top-level rule on why — no headless wgpu test harness here either).
+

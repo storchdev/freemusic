@@ -64,7 +64,6 @@ Ideas being considered for future work, roughly grouped:
 **`.fmstyle.ron` (visual style format)**
 - Custom note textures and background textures, both compatible with the note alpha that now
   exists (`NoteLayer::alpha`) — alpha would let a note "see through" into a static background
-- Octave lines
 - Experiment with more barrier settings
 - Experiment with more wispy/bubbly particles
 - Reflectivity settings, for a metal-bar look

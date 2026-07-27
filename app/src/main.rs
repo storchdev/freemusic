@@ -139,6 +139,24 @@ fn effective_background_color(ui_state: &UiState) -> [u8; 3] {
         .resolve_constant()
 }
 
+/// Same idea as `effective_note_layer`/`effective_barrier_layer`/`effective_transition_layer`, for
+/// the octave-boundary reference lines — mirrors `project::Project::effective_octave_lines`.
+/// Unlike those, there's no legacy slider at all for this axis, so a project with no imported
+/// style always resolves to `None` (no lines).
+fn effective_octave_lines(ui_state: &UiState) -> Option<project::OctaveLineSpec> {
+    ui_state
+        .style
+        .clone()
+        .unwrap_or_else(|| {
+            Style::from_legacy(
+                &ui_state.note_style,
+                &ui_state.barrier_style,
+                ui_state.background_color,
+            )
+        })
+        .octave_lines
+}
+
 /// sRGB u8 -> linear f32, matching `render::barrier::srgb_to_linear`/`render::effects::srgb_to_linear`
 /// — kept as its own small copy rather than shared (both of those are private to `render`), same
 /// call this codebase already makes twice for the identical conversion. Used for the preview
@@ -469,6 +487,7 @@ impl AppState {
                 export_progress: None,
                 export_message: None,
                 camera_stretch_capture: None,
+                hide_camera_stretch_handles: false,
             },
             last_instant: Instant::now(),
             last_decoded_position: None,
@@ -1270,6 +1289,13 @@ impl AppState {
             &self.gpu.queue,
             self.canvas_size,
             &self.ui_state.transform,
+        );
+        let octave_lines = effective_octave_lines(&self.ui_state);
+        self.compositor.update_octave_lines(
+            &self.gpu.queue,
+            (self.canvas_size.0 as f32, self.canvas_size.1 as f32),
+            &self.ui_state.calibration,
+            octave_lines.as_ref(),
         );
         let barrier_layer = effective_barrier_layer(&self.ui_state);
         let midi_time = (self.ui_state.position_seconds - self.ui_state.sync_offset_seconds) as f32;

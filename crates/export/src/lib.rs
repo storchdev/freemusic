@@ -119,6 +119,7 @@ fn run_inner(
     let note_layer = project.effective_note_layer();
     let barrier_layer = project.effective_barrier_layer();
     let transition_layer = project.effective_transition_layer();
+    let octave_lines = project.effective_octave_lines();
     let background_color = srgb_to_linear(project.effective_background_color());
     let mut compositor = Compositor::new(
         &handles,
@@ -191,6 +192,12 @@ fn run_inner(
         compositor.update_viewport(&gpu.queue, (width, height), &project.transform);
         let midi_time = t - project.sync_offset_seconds;
         compositor.update_midi(&gpu.queue, midi_time as f32);
+        compositor.update_octave_lines(
+            &gpu.queue,
+            (width as f32, height as f32),
+            &project.calibration,
+            octave_lines.as_ref(),
+        );
         compositor.update_barrier(
             &gpu.queue,
             (width as f32, height as f32),

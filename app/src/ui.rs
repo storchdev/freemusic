@@ -140,6 +140,13 @@ pub struct UiState {
     /// self-contained within `ui::draw` (unlike the `_requested` flags above, the app loop never
     /// looks at this) — it only ever writes into `calibration` once finished.
     pub camera_stretch_capture: Option<CameraStretchCapture>,
+    /// Hides the draggable teal/green camera-stretch anchor guides (`draw_camera_stretch_handles`)
+    /// on the preview without discarding the calibration itself — the anchors sit at exactly the
+    /// same 8 x-positions a `.fmstyle.ron` octave-lines style draws its own reference lines at, so
+    /// leaving them visible makes the octave lines impossible to actually see underneath. Purely
+    /// local UI preference, not persisted (same as `add_note_pitch` etc.) and independent of
+    /// `calibration.stretch` itself — toggling this never touches the calibration.
+    pub hide_camera_stretch_handles: bool,
 }
 
 /// The points recorded so far during a "Align notes to camera stretch" run, in click order: the
@@ -198,7 +205,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut UiState) {
         } else {
             draw_calibration_handles(ui, image_rect, &mut state.calibration);
             draw_barrier_handle(ui, image_rect, &mut state.calibration);
-            draw_camera_stretch_handles(ui, image_rect, &mut state.calibration);
+            if !state.hide_camera_stretch_handles {
+                draw_camera_stretch_handles(ui, image_rect, &mut state.calibration);
+            }
         }
     });
 
@@ -648,6 +657,15 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
     } else if ui.button("Align notes to camera stretch…").clicked() {
         state.camera_stretch_capture = Some(CameraStretchCapture::default());
     }
+    ui.checkbox(
+        &mut state.hide_camera_stretch_handles,
+        "Hide calibration guides on preview",
+    )
+    .on_hover_text(
+        "Hides the draggable green octave-anchor lines without clearing the calibration — \
+        useful for seeing a `.fmstyle.ron` octave-lines style's own reference lines underneath, \
+        which sit at the same positions.",
+    );
 
     ui.separator();
     ui.heading("Barrier");

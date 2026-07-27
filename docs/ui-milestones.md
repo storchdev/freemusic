@@ -580,6 +580,16 @@ Narrative history of the UI restructure and subsequent milestones/fixes, split o
   an old pre-stretch project to confirm it still looks identical (uniform spacing) with the new
   "Clear camera stretch"/"Align notes to camera stretch…" buttons both behaving sensibly, next
   time someone has hands on the running app.
+- **Follow-up: hiding the anchor guides** (added alongside the `.fmstyle.ron` octave-lines feature,
+  `docs/fmstyle-milestone.md`'s Phase Y) — the 8 draggable green anchors sit at exactly the same 8
+  x-positions an octave-lines style draws its own reference lines at, so once that feature existed
+  there was no way to actually *see* the rendered lines on the preview while a stretch calibration
+  was active; the anchors always drew on top of (and visually indistinguishable from) them. Added
+  `UiState::hide_camera_stretch_handles` (a plain, unpersisted UI toggle, same category as
+  `add_note_pitch` etc. — independent of `calibration.stretch` itself, so toggling it never touches
+  the saved calibration) and a "Hide calibration guides on preview" checkbox in the Keyboard tab
+  right after the camera-stretch buttons; `ui::draw` skips the `draw_camera_stretch_handles` call
+  entirely while it's checked.
 
 ## Note editor (non-destructive MIDI note deletion)
 

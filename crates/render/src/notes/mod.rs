@@ -600,7 +600,10 @@ struct LayoutKey {
 /// are placed proportionally to cumulative white-key count, which reproduces the pre-stretch
 /// single-`neutral_width` uniform layout exactly (every octave the same real width) — so
 /// `keyboard_layout` only needs one code path for both the calibrated and uncalibrated case.
-fn octave_boundary_fractions(calibration: &KeyboardCalibration) -> [f32; 10] {
+/// `pub(crate)` (rather than private) so `crate::octave_lines` can position its reference lines
+/// at the exact same 8 interior boundaries (`bounds[1..9]`) this function computes for the note
+/// layout itself, rather than duplicating the math.
+pub(crate) fn octave_boundary_fractions(calibration: &KeyboardCalibration) -> [f32; 10] {
     let mut bounds = [0.0; 10];
     bounds[0] = calibration.left_fraction;
     bounds[9] = calibration.right_fraction;

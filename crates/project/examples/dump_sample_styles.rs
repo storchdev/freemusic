@@ -6,9 +6,9 @@
 
 use project::{
     BarrierLayer, BlackKeyFill, ColorBinding, Fill, FlashColor, FlashMode, FlashSpec, Glow,
-    GlowLayer, GodRaySpec, NoteLayer, ParticleColor, ParticleSpec, Pulse, Ramp, RingSpec,
-    ScalarBinding, Sheen, StrandSpec, Style, Timed, TransitionKind, TransitionLayer, WavyMode,
-    WavySpec,
+    GlowLayer, GodRaySpec, NoteLayer, OctaveLineSpec, ParticleColor, ParticleSpec, Pulse, Ramp,
+    RingSpec, ScalarBinding, Sheen, StrandSpec, Style, Timed, TransitionKind, TransitionLayer,
+    WavyMode, WavySpec,
 };
 
 fn glow_layers(tight: f32, mid: f32, wide: f32) -> [GlowLayer; 3] {
@@ -89,6 +89,7 @@ fn main() {
         barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     let barrier_pulse = Style {
@@ -113,6 +114,7 @@ fn main() {
         }),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     let barrier_wavy = Style {
@@ -141,6 +143,7 @@ fn main() {
         }),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     let barrier_wavy_volume = Style {
@@ -169,6 +172,7 @@ fn main() {
         }),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     // The strand bundle ported from `explorations/barrier-fx-lab` — several thin,
@@ -250,6 +254,7 @@ fn main() {
         }),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     let sparks = Style {
@@ -287,6 +292,7 @@ fn main() {
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     let ellipse_flash = Style {
@@ -312,6 +318,7 @@ fn main() {
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     let grinding_particles = Style {
@@ -338,6 +345,7 @@ fn main() {
             flash: None,
         }),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     // `flicker_speed`/`flicker_intensity` give the sustained hold a gentle candle-like waver
@@ -366,6 +374,7 @@ fn main() {
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     // A `FlashMode::Sustained` white flash with a strong, fast flicker and a near-point core, so it
@@ -410,6 +419,7 @@ fn main() {
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     // `GodRaySpec`/`RingSpec`/`FlashSpec::chromatic_aberration` (Phase V) — a straight translation
@@ -476,6 +486,7 @@ fn main() {
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     // `background` is the one field being demonstrated here — everything else stays at (or close
@@ -502,6 +513,7 @@ fn main() {
         }),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([8, 10, 24]),
+        octave_lines: None,
     };
 
     let showcase_blue_purple = Style {
@@ -628,6 +640,7 @@ fn main() {
             }),
         }),
         background: ColorBinding::Constant([4, 2, 14]),
+        octave_lines: None,
     };
 
     // `Fill::CanvasGradient` — color depends on the note's current position on the
@@ -660,6 +673,7 @@ fn main() {
         barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     // `ParticleColor::YGradient` — unlike `Fixed`/`MatchNote` (baked once at spawn), each
@@ -702,6 +716,7 @@ fn main() {
             flash: None,
         }),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     // Demonstrates the "match note color" family in one place: the note glow's corona/rim samples
@@ -773,6 +788,7 @@ fn main() {
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     // Demonstrates `ColorBinding::ByVelocity` actually resolving per note (rather than falling
@@ -791,6 +807,7 @@ fn main() {
         barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     // Demonstrates `NoteLayer::alpha` (`ScalarBinding`) actually resolving per note: a soft
@@ -817,6 +834,7 @@ fn main() {
         // deliberately contrasting the note's cool light-blue fill, so a transparent note visibly
         // shifts toward it instead of blending into another near-black.
         background: ColorBinding::Constant([150, 70, 50]),
+        octave_lines: None,
     };
 
     // Demonstrates `ColorBinding::ByPitchClass` actually resolving per note: each of the 12 pitch
@@ -844,6 +862,7 @@ fn main() {
         barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     // Demonstrates `ColorBinding::ByPitch` — unlike `ByPitchClass` just above (which repeats the
@@ -864,6 +883,7 @@ fn main() {
         barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     // Demonstrates `ColorBinding::ByTrack` actually resolving per note: each MIDI track index gets
@@ -883,6 +903,7 @@ fn main() {
         barrier: Timed::Static(visible_barrier()),
         transition: Timed::Static(TransitionLayer::default()),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
     };
 
     // Demonstrates `ColorBinding`/`ScalarBinding::ByVelocity` resolving per note outside of note
@@ -926,6 +947,21 @@ fn main() {
             flash: None,
         }),
         background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: None,
+    };
+
+    // Faint white vertical lines marking each octave's C boundary in the note highway — a subtle
+    // reference grid, low alpha so it reads as a hint rather than a bold overlay.
+    let octave_lines = Style {
+        version: 1,
+        notes: Timed::Static(NoteLayer::default()),
+        barrier: Timed::Static(visible_barrier()),
+        transition: Timed::Static(TransitionLayer::default()),
+        background: ColorBinding::Constant([0, 0, 0]),
+        octave_lines: Some(OctaveLineSpec {
+            color: [255, 255, 255, 60],
+            width_px: 2.0,
+        }),
     };
 
     print_style("gradient-glow", &gradient_glow);
@@ -950,4 +986,5 @@ fn main() {
     print_style("pitch-gradient", &pitch_gradient);
     print_style("track-colored-notes", &track_colored_notes);
     print_style("velocity-sparks", &velocity_sparks);
+    print_style("octave-lines", &octave_lines);
 }

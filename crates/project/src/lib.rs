@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 mod style;
 pub use style::{
     BarrierLayer, BlackKeyFill, Border, ColorBinding, EmissionMode, Fill, FlashColor, FlashMode,
-    FlashSpec, Glow, GlowLayer, GodRaySpec, NoteLayer, ParticleColor, ParticleSpec, Pulse, Ramp,
-    RingSpec, ScalarBinding, Sheen, StrandSpec, Style, Timed, TransitionKind, TransitionLayer,
-    WavyMode, WavySpec,
+    FlashSpec, Glow, GlowLayer, GodRaySpec, NoteLayer, OctaveLineSpec, ParticleColor, ParticleSpec,
+    Pulse, Ramp, RingSpec, ScalarBinding, Sheen, StrandSpec, Style, Timed, TransitionKind,
+    TransitionLayer, WavyMode, WavySpec,
 };
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -303,6 +303,19 @@ impl Project {
             })
             .background
             .resolve_constant()
+    }
+
+    /// Same "imported style wins, otherwise synthesize from the legacy sliders" rule as
+    /// `effective_note_layer`/etc., for the octave-boundary reference lines. Unlike the other
+    /// axes there's no legacy slider for this at all — `Style::from_legacy` always produces
+    /// `None`, so a project with no imported style draws no octave lines.
+    pub fn effective_octave_lines(&self) -> Option<OctaveLineSpec> {
+        self.style
+            .clone()
+            .unwrap_or_else(|| {
+                Style::from_legacy(&self.note_style, &self.barrier_style, self.background_color)
+            })
+            .octave_lines
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {

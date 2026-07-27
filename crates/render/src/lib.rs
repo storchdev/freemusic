@@ -7,17 +7,19 @@
 mod barrier;
 mod effects;
 mod notes;
+mod octave_lines;
 mod video_quad;
 
 use project::{
-    AddedNote, BarrierLayer, KeyboardCalibration, NoteDurationEdit, NoteLayer, SkippedNote,
-    TransitionLayer, VideoTransform,
+    AddedNote, BarrierLayer, KeyboardCalibration, NoteDurationEdit, NoteLayer, OctaveLineSpec,
+    SkippedNote, TransitionLayer, VideoTransform,
 };
 
 pub use notes::{ActiveNote, GpuHandles};
 
 pub struct Compositor {
     video_quad: video_quad::VideoQuad,
+    octave_lines: octave_lines::OctaveLinesRenderer,
     notes: notes::NotesRenderer,
     barrier: barrier::BarrierRenderer,
     effects: effects::EffectsRenderer,
@@ -31,6 +33,7 @@ impl Compositor {
         note_layer: &NoteLayer,
     ) -> Self {
         let video_quad = video_quad::VideoQuad::new(gpu.device, gpu.texture_format);
+        let octave_lines = octave_lines::OctaveLinesRenderer::new(gpu.device, gpu.texture_format);
         let mut notes = notes::NotesRenderer::new(gpu);
         // No MIDI is loaded yet at construction time, so there's nothing to skip/edit/add.
         notes.resize(gpu, viewport, calibration, note_layer, &[], &[], &[]);
@@ -38,6 +41,7 @@ impl Compositor {
         let effects = effects::EffectsRenderer::new(gpu.device, gpu.texture_format);
         Self {
             video_quad,
+            octave_lines,
             notes,
             barrier,
             effects,
@@ -138,6 +142,27 @@ impl Compositor {
         self.notes.update(queue, time_seconds);
     }
 
+    /// Recomputes the octave-boundary reference lines' positions/color/width for the current
+    /// canvas size and calibration. Cheap uniform write only (no instance rebuild) — called
+    /// unconditionally every redraw, like `update_barrier`. `spec: None` (no `octave_lines`
+    /// configured) draws nothing.
+    pub fn update_octave_lines(
+        &mut self,
+        queue: &wgpu::Queue,
+        canvas_size: (f32, f32),
+        calibration: &KeyboardCalibration,
+        octave_lines: Option<&OctaveLineSpec>,
+    ) {
+        let barrier_fraction = calibration.barrier_fraction.clamp(0.05, 1.0);
+        self.octave_lines.set_style(
+            queue,
+            canvas_size,
+            barrier_fraction,
+            calibration,
+            octave_lines,
+        );
+    }
+
     /// Recomputes the barrier's geometry/color/glow and its note-arrival pulse intensity for
     /// `midi_time_seconds` (same sync-offset-subtracted convention as `update_midi`). Cheap
     /// uniform writes only — called unconditionally every redraw, like `update_viewport`, rather
@@ -186,6 +211,9 @@ impl Compositor {
 
     pub fn render<'rpass>(&'rpass mut self, render_pass: &mut wgpu::RenderPass<'rpass>) {
         self.video_quad.render(render_pass);
+        // Drawn before the notes themselves so falling notes visually occlude the grid lines they
+        // pass over, rather than the lines drawing on top of (and through) every note.
+        self.octave_lines.render(render_pass);
         self.notes.render(render_pass);
         self.barrier.render(render_pass);
         self.effects.render(render_pass);

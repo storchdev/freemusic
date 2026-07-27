@@ -39,4 +39,5 @@
         flash: None,
     )),
     background: Constant((150, 70, 50)),
+    octave_lines: None,
 )

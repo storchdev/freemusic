@@ -31,6 +31,7 @@ Top level:
     barrier: Static((/* BarrierLayer */)),
     transition: Static((/* TransitionLayer */)),
     background: Constant((0, 0, 0)),
+    octave_lines: None,
 )
 ```
 
@@ -41,6 +42,11 @@ scale leaving letterbox gaps) and behind the note highway above the barrier. Unl
 value has no per-note timeline to key against. A project with no imported style gets this from the
 Keyboard tab's own "Background" color picker (`Project::background_color`) instead, via
 `Style::from_legacy`'s third parameter.
+
+`octave_lines: Option<OctaveLineSpec>` (default `None`) draws faint vertical reference lines at
+each octave's C boundary in the note highway — see [Octave lines](#octave-lines-octavelinespec)
+below. Like `background`, it's a plain (non-`Timed`) field with no legacy-slider equivalent at
+all — `Style::from_legacy` always produces `None`.
 
 ## `Timed<T>`
 
@@ -370,6 +376,46 @@ field `WavySpec::slide_speed` already translates, so setting a nonzero `slide_sp
 `WavySpec` moves the whole strand bundle sideways along with the base edge, in lockstep.
 
 See `examples/styles/barrier-strands.fmstyle.ron` for a complete, renderable example.
+
+## Octave lines (`OctaveLineSpec`)
+
+```rust
+struct OctaveLineSpec { color: [u8; 4], width_px: f32 }
+```
+
+Faint vertical reference lines marking each octave's C boundary in the note highway — the left
+edge of C1 through C8, i.e. every multiple of 12 within the standard 88-key range (A0..C8) — a
+purely visual grid, not tied to any specific note. Lives on `Style::octave_lines: Option
+<OctaveLineSpec>` directly (not nested in `notes`/`barrier`/`transition`, and not wrapped in
+`Timed`), same reasoning as `background`: a canvas-wide value with no per-note timeline and no
+single note to key off of.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `color` | `[u8; 4]` (RGBA) | Line color, straight (non-premultiplied) alpha — lower alpha blends the lines subtly into whatever's beneath them (video footage or note fill) instead of drawing a bold overlay. |
+| `width_px` | `f32` | Line thickness in canvas px. |
+
+```ron
+octave_lines: Some((
+    color: (255, 255, 255, 60),
+    width_px: 2.0,
+)),
+```
+
+`None` (the default) draws no lines — the look every style had before this field existed. There is
+no legacy-slider equivalent at all; `Style::from_legacy` always produces `None`, so a project with
+no imported style never shows octave lines.
+
+The 8 lines are positioned at exactly the same x-coordinates the falling notes themselves lay out
+against (`render`'s `notes::octave_boundary_fractions`) — so if a project has camera-stretch
+calibration set (see `docs/ui-milestones.md`'s "Camera-stretch calibration" section), the lines
+stretch/compress per octave right along with the note lanes, always lining up with where each
+octave's keys actually sit in the footage. The lines span from the top of the canvas down to the
+barrier line — the same vertical extent the note highway itself occupies — and are drawn above the
+video but beneath the falling notes, so a note passing over a line visually occludes it rather than
+drawing on top of (and through) it.
+
+See `examples/styles/octave-lines.fmstyle.ron` for a complete, renderable example.
 
 ## Transition layer (`TransitionLayer`)
 

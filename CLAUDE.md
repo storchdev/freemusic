@@ -283,7 +283,7 @@ touching that area of the code:
   app too** (Phase V, `project::GodRaySpec`/`RingSpec`/`FlashSpec::ring`/`god_rays`/
   `chromatic_aberration` — see `docs/fmstyle-format.md` and `docs/fmstyle-milestone.md`); the
   sliding-filament/wisp controls remain the lab's only unported experiments.
-- **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–V) of the
+- **`docs/fmstyle-milestone.md`** — full phase-by-phase narrative (Phases A–Y) of the
   `.fmstyle.ron` extensible visual style format: schema/plumbing, the vendored note pipeline
   (dropping the `neothesia-core` dependency), note fill effects (gradient/sheen/glow), barrier
   glow/pulse, transition particles/flash, per-key-color/wavy-barrier/elliptical-flash/continuous-
@@ -298,10 +298,13 @@ touching that area of the code:
   the "photograph of the sun from Earth" volumetric god rays/diffraction ring/chromatic
   aberration flash extras ported from `explorations/barrier-fx-lab` (Phase V), and swapping all
   three glow pipelines (barrier, notes, effects) from linear-additive to screen blending to stop
-  overlapping/stacked glows from blowing out into a flat white plateau (Phase W), and fixing the
+  overlapping/stacked glows from blowing out into a flat white plateau (Phase W), fixing the
   elliptical flash corona's hard rectangular clip on wide/flat flashes, caused by an inaccurate
   ellipse-boundary-distance approximation that made the falloff decay slower than its quad margin
-  assumed (Phase X).
+  assumed (Phase X), and octave-boundary reference lines in the note highway
+  (`project::OctaveLineSpec`/`Style::octave_lines`, RGBA color + width, positioned off the same
+  `render::notes::octave_boundary_fractions` the falling notes themselves lay out against — Phase
+  Y).
 - **`docs/fmstyle-format.md`** — the living field-by-field `.fmstyle.ron` format spec (defaults,
   meaning, RON snippets, breaking-change log) — keep this in sync whenever the schema changes,
   it's the spec, not narrative.

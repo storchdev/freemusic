@@ -44,6 +44,11 @@ pub struct Style {
     /// every other color field in this schema) is all a background needs.
     #[serde(default = "default_background_color")]
     pub background: ColorBinding,
+    /// Vertical reference lines at each octave boundary in the note highway — see
+    /// `OctaveLineSpec`'s own doc comment. `None` (default) is a no-op: draws nothing, matching
+    /// how every style looked before this field existed.
+    #[serde(default)]
+    pub octave_lines: Option<OctaveLineSpec>,
 }
 
 impl Default for Style {
@@ -54,6 +59,7 @@ impl Default for Style {
             barrier: Timed::default(),
             transition: Timed::default(),
             background: default_background_color(),
+            octave_lines: None,
         }
     }
 }
@@ -110,6 +116,7 @@ impl Style {
             }),
             transition: Timed::Static(TransitionLayer::default()),
             background: ColorBinding::Constant(background_color),
+            octave_lines: None,
         }
     }
 }
@@ -1024,6 +1031,22 @@ pub struct RingSpec {
     pub intensity: f32,
 }
 
+/// Faint vertical reference lines marking each octave's C boundary in the note highway (the left
+/// edge of C1 through C8 — every multiple of 12 within the standard 88-key range), aligned to the
+/// same calibrated (and, if set, camera-stretched) key layout the falling notes themselves use —
+/// see `render`'s `notes::octave_boundary_fractions`, the single computation shared by both. A
+/// canvas-wide grid with no single note to key off of, so this is a plain `[u8; 4]`/`f32` pair
+/// rather than a `ColorBinding`/`Timed` layer, same reasoning as `Style::background`. `None` on
+/// `Style::octave_lines` (default) draws no lines.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct OctaveLineSpec {
+    /// RGBA, straight (non-premultiplied) alpha — lets a line blend subtly into whatever's behind
+    /// it (video footage or note fill) instead of only ever reading as fully opaque.
+    pub color: [u8; 4],
+    /// Line thickness in canvas px.
+    pub width_px: f32,
+}
+
 /// Decaying radial flash spawned on note arrival. A flash is always fully opaque at spawn, fading
 /// to 0 over `decay_seconds`; `brightness` alone controls how hot/white it looks, same mechanism
 /// as `Glow`'s doc comment.
@@ -1345,6 +1368,31 @@ mod tests {
         assert_eq!(style, parsed);
     }
 
+    /// `Style::octave_lines` round-trips its `Some(OctaveLineSpec)` form, not just the default
+    /// `None`.
+    #[test]
+    fn octave_lines_round_trips() {
+        let mut style =
+            Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
+        style.octave_lines = Some(OctaveLineSpec {
+            color: [255, 255, 255, 60],
+            width_px: 2.0,
+        });
+        let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
+        let parsed: Style = ron::from_str(&text).unwrap();
+        assert_eq!(style, parsed);
+    }
+
+    /// A `.fmstyle.ron` file with no `octave_lines` key at all should load as `None` (no lines),
+    /// not some other fallback — same "missing key defaults cleanly" convention as `background`'s
+    /// own test below.
+    #[test]
+    fn style_without_octave_lines_field_loads_as_none() {
+        let text = "(notes: Static((fill: Solid(Constant((1, 2, 3))), roundedness: 1.0, fall_speed: 400.0)))";
+        let style: Style = ron::from_str(text).unwrap();
+        assert_eq!(style.octave_lines, None);
+    }
+
     /// A `.fmstyle.ron` file with no `background` key at all should load it as black, not an
     /// arbitrary fallback.
     #[test]
@@ -1428,6 +1476,7 @@ mod tests {
                 }),
             }),
             background: default_background_color(),
+            octave_lines: None,
         };
         let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
         let parsed: Style = ron::from_str(&text).unwrap();
@@ -1476,6 +1525,7 @@ mod tests {
                 }),
             }),
             background: default_background_color(),
+            octave_lines: None,
         };
         let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
         let parsed: Style = ron::from_str(&text).unwrap();
