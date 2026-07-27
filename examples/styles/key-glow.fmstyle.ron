@@ -23,20 +23,20 @@
         particles: None,
         flash: Some((
             radius_x_px: Constant(20.0),
-            radius_y_px: Constant(5.0),
+            radius_y_px: Constant(3.0),
             color: Solid(Constant((255, 220, 140))),
             decay_seconds: Constant(0.1),
             mode: Sustained,
-            brightness: Constant(0.5),
+            brightness: Constant(0.8),
             layers: ((
                 amplitude: 2.6,
                 sigma_px: 2.0,
             ), (
                 amplitude: 1.1,
-                sigma_px: 5.0,
+                sigma_px: 10.0,
             ), (
                 amplitude: 0.38,
-                sigma_px: 10.0,
+                sigma_px: 25.0,
             )),
             flicker_speed: Constant(1.5),
             flicker_intensity: Constant(0.25),
