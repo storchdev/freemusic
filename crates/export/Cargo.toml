@@ -1,12 +1,12 @@
 [package]
 name = "export"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 ffmpeg-next = "8.1.0"
-mp4-encoder = { version = "0.0.0", path = "../mp4-encoder" }
+mp4-encoder = { version = "0.1.0", path = "../mp4-encoder" }
 pollster = "0.4.0"
 project = { version = "0.1.0", path = "../project" }
 render = { version = "0.1.0", path = "../render" }

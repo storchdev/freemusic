@@ -191,6 +191,13 @@ Windows/MSVC-specific and inert on Linux/macOS; full narrative is in `docs/narra
 fixed upstream, remove `vendor/ffmpeg-sys-next/` and its patch entry the same way as `ffmpeg-next`
 above.
 
+### Versioning
+
+All crates (`app` and every `crates/*` member) share one version number via `version.workspace =
+true`, sourced from `[workspace.package].version` in the root `Cargo.toml` — bump that one field to
+match the `v*` git tag before pushing a release tag (e.g. `version = "0.2.0"` for tag `v0.2.0`).
+Still pre-1.0 per this file's own versioning policy above, so `0.x.y` for now.
+
 ### Static/cross-platform release builds
 
 Added a `static-ffmpeg` cargo feature (on `app`, `export`, `video-pipeline`, `audio-playback`,
