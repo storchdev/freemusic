@@ -247,7 +247,7 @@ fn fit_rect(container: egui::Rect, aspect: f32) -> egui::Rect {
 const SIDE_PANEL_COLLAPSED_WIDTH: f32 = 28.0;
 const SIDE_PANEL_COLLAPSED_MAX_WIDTH: f32 = 56.0;
 
-/// Hand-rolled tab strip + content for the persistent side panel — see `docs/ui-milestones.md`'s
+/// Hand-rolled tab strip + content for the persistent side panel — see `docs/narratives/ui-milestones.md`'s
 /// 6c notes for why this replaced the four floating windows milestones 3-5 used.
 ///
 /// Collapsible via `egui::Panel::show_switched`, so the video/timeline can reclaim its width:
@@ -298,7 +298,7 @@ fn draw_side_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 // itself wider. Enabling horizontal scrolling pins this area's width to whatever's
                 // available and lets wider content scroll sideways instead, so the panel's resize
                 // drag can always reach `min_size` regardless of which tab is open — see
-                // `docs/ui-milestones.md`'s note on this egui behavior for more detail.
+                // `docs/narratives/ui-milestones.md`'s note on this egui behavior for more detail.
                 egui::ScrollArea::both()
                     .auto_shrink([false, false])
                     .show(ui, |ui| match state.active_tab {

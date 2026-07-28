@@ -1,7 +1,10 @@
-# The `.fmstyle.ron` extensible visual style milestone
+# The `.fmstyle.ron` extensible visual style milestone (narrative)
 
-Full phase-by-phase narrative (Phases A–L) of the extensible style format work, split out of
-CLAUDE.md. For the field-by-field format spec see `docs/fmstyle-format.md`.
+Full phase-by-phase narrative (Phases A–Y) of the extensible style format work — decision history,
+bugs found and fixed, and what worked vs. didn't, in the voice it was written in as each phase
+landed. For the current-state, field-by-field format spec (kept narrative-free), see
+`docs/fmstyle-format.md`. For design-history/migration content specifically, see the sibling
+`docs/narratives/fmstyle-history.md`.
 
 ### Extensible visual style format (Phase A of the `.fmstyle.ron` milestone)
 
@@ -1293,7 +1296,7 @@ per-note `Fill::VerticalGradient`, just blended across a different span.
   `view_uniform` was vertex-only (the transform/scale/barrier_fraction it carries were only ever
   read in `vs_main` before this phase). Fixed by adding `ShaderStages::FRAGMENT` to that entry's
   `visibility` — the uniform itself didn't need to change, only which stages are allowed to bind
-  it. Cargo build/clippy don't catch this class of bug (same gotcha `docs/fmstyle-history.md`'s
+  it. Cargo build/clippy don't catch this class of bug (same gotcha `docs/narratives/fmstyle-history.md`'s
   "Black-key gradient bug" section already notes for embedded WGSL: validation only happens when
   the pipeline/shader module is actually created at runtime) — worth double-checking bind group
   layout `visibility` flags whenever a shader change starts reading an existing uniform from a

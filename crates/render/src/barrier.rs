@@ -4,7 +4,7 @@
 //!
 //! Self-contained quad pass, structured like `video_quad.rs`: no vertex buffer (six hardcoded
 //! unit-quad corners, positioned/sized in the vertex shader from a uniform), one bind group.
-//! Historical glow/pulse rationale lives in `docs/implementation-notes.md`.
+//! Historical glow/pulse rationale lives in `docs/narratives/architecture.md`.
 
 use bytemuck::{Pod, Zeroable};
 

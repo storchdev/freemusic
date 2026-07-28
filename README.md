@@ -55,7 +55,8 @@ cargo run --bin app -- project.fmproj.ron                            # or open a
 cargo run --bin app -- project.fmproj.ron mystyle.fmstyle.ron        # or open a project and a style file
 ```
 
-See `docs/` for architecture, verification, implementation notes, and format history.
+See `docs/` for architecture, UI, build, and format documentation, and `docs/narratives/` for the
+design history and bug-postmortem narrative behind it.
 
 ## Roadmap
 
@@ -94,7 +95,7 @@ This project is licensed under the GNU General Public License v3.0 (GPL-3.0-only
   `docs/architecture.md` for the details of what changed.
 - `crates/render`'s note-highway shader and rendering approach were originally based on
   Neothesia's vendored `neothesia-core` waterfall renderer before being rewritten in-tree; see
-  `docs/fmstyle-history.md` for style-format history.
+  `docs/narratives/fmstyle-history.md` for style-format history.
 - All other dependencies are pulled from crates.io under their own published licenses (see
   `Cargo.lock` and each crate's own `Cargo.toml`/license file).
 

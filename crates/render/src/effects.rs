@@ -1,6 +1,6 @@
 //! Renders barrier-hit transitions: a fixed-pool CPU particle simulation plus decaying flashes,
 //! spawned when note arrivals cross the transport position. The simulation is stateful and uses
-//! separate additive and premultiplied-alpha pipelines; see `docs/implementation-notes.md`.
+//! separate additive and premultiplied-alpha pipelines; see `docs/narratives/architecture.md`.
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;

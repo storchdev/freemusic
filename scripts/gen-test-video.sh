@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Generates a synthetic test clip with a per-frame counter overlay, realistic keyframe interval,
 # and long enough default duration for real MIDI overlay checks. See
-# `docs/implementation-notes.md` and `docs/verification.md`.
+# `docs/narratives/verification.md` and `docs/verification.md`.
 #
 # Usage: gen-test-video.sh <output.mp4> [duration-seconds]
 set -euo pipefail

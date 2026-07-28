@@ -1,6 +1,8 @@
 # UI milestones (6a–6e and polish)
 
 Narrative history of the UI restructure and subsequent milestones/fixes, split out of CLAUDE.md.
+For a purely descriptive, current-state account of the UI these milestones built, see
+`docs/ui.md`.
 
 ### UI restructure: offscreen-texture preview, tabbed side panel, timeline (milestone 6c)
 

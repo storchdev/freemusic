@@ -1,6 +1,6 @@
 // Transition sprites are procedural shapes computed from each quad's local pixel offset.
 // `fs_puff` handles premultiplied-alpha particles; `fs_glow` handles additive particles/flashes.
-// Historical rationale for the split lives in `docs/implementation-notes.md`.
+// Historical rationale for the split lives in `docs/narratives/architecture.md`.
 //
 // `color_stops` (5 of them, `NOTE_COLOR_STOPS` on the Rust side) replaced a single `color`: a
 // flash can carry a horizontal gradient (author-painted or sampled from the note that triggered

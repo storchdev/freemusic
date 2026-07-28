@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Launches the app under a forced X11 backend so xdotool/import can see the window under WSLg and
-# Hyprland. Runs in this script's foreground on purpose; see `docs/implementation-notes.md`.
+# Hyprland. Runs in this script's foreground on purpose; see `docs/narratives/verification.md`.
 #
 # Usage: run-app.sh [video-file] [midi-file]
 set -euo pipefail

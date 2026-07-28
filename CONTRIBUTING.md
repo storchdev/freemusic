@@ -27,7 +27,7 @@ The repo is kept `fmt`-clean and `clippy`-clean; please run both before opening 
 
 There is no automated test suite for UI/rendering/timing behavior — this is intentional (see
 `CLAUDE.md`). Changes to `app`, `video-pipeline`, `render`, or `export` should be verified
-manually; `docs/verification.md` describes the patterns used historically (synthetic test clips,
+manually; `docs/verification.md` describes the current procedures (synthetic test clips,
 screenshotting, drag-interaction checks, MP4 export checks). Describe how you tested a change in
 your PR description.
 
@@ -52,7 +52,9 @@ and licenses" section for specifics. If you bring in code from another project:
 - Keep PRs focused — one logical change per PR is easier to review than a bundle of unrelated
   fixes.
 - Update the relevant doc in `docs/` (or `CLAUDE.md` for anything project-wide) alongside your
-  code change if it affects architecture, data flow, or a gotcha future contributors should know
-  about. These docs are meant to stay in sync with what the code actually does.
+  code change if it affects architecture or data flow — these docs describe the code as it is now
+  and are meant to stay in sync with it. If there's a gotcha, bug fix, or design decision future
+  contributors should know the story behind, add it to the matching file in `docs/narratives/`
+  instead (see `docs/narratives/README.md`).
 - Use clear, descriptive commit messages explaining *why* a change was made, not just what
   changed.

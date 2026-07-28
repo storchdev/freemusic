@@ -76,7 +76,7 @@ struct QuadVertex {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct StyleUniform {
-    /// x unused (previously a style-wide solid-vs-gradient flag — see `docs/fmstyle-history.md`'s
+    /// x unused (previously a style-wide solid-vs-gradient flag — see `docs/narratives/fmstyle-history.md`'s
     /// "Black-key gradient bug"), y = sheen_enabled, z = glow_enabled, w = `Glow::match_note_color`
     /// (1.0 = corona/rim use the note's own fill color sampled at the nearest edge point instead
     /// of `glow_color`).

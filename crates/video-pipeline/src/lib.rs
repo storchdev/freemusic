@@ -103,7 +103,7 @@ pub struct VideoPipeline {
 ///
 /// Split so the perf log can show whether a slowdown is file I/O (`demux`) or the frame-threaded
 /// decode workers (`receive`) versus main-thread userspace work (`scale`/`copy`) — see
-/// `docs/architecture.md`'s mouse-move lag investigation for why this split mattered.
+/// `docs/narratives/architecture.md`'s mouse-move lag investigation for why this split mattered.
 #[derive(Clone, Copy, Default)]
 pub struct DecodeTimings {
     /// Advancing `input.packets()` to the next packet: demux + the underlying file read. Blocking
@@ -125,7 +125,7 @@ pub struct DecodeTimings {
 
 /// Default frame-decode worker count, capped to avoid oversubscribing hybrid CPUs during
 /// interactive playback. Overridden by `FREEMUSIC_DECODE_THREADS`; see
-/// `docs/implementation-notes.md`.
+/// `docs/narratives/architecture.md`.
 fn default_decode_threads() -> usize {
     std::thread::available_parallelism()
         .map(usize::from)
@@ -169,7 +169,7 @@ impl VideoPipeline {
         // for a scrub/playback pipeline that's never decoding "live".
         //
         // Keep the default capped instead of using libavcodec's "all logical CPUs" choice; the
-        // history behind that cap is in `docs/implementation-notes.md`. `=0` restores libavcodec's
+        // history behind that cap is in `docs/narratives/architecture.md`. `=0` restores libavcodec's
         // own pick for tuning/comparison.
         let thread_count = std::env::var("FREEMUSIC_DECODE_THREADS")
             .ok()
@@ -236,7 +236,7 @@ impl VideoPipeline {
     /// backward jump or a forward jump bigger than [`MAX_FORWARD_STEP_SECONDS`] causes a real
     /// seek. `exact` controls whether post-seek decode may stop at the first frame after the
     /// keyframe (`false`, for live scrubs) or must advance to `target_seconds` (`true`, for export
-    /// and ordinary playback ticks). See `docs/implementation-notes.md`.
+    /// and ordinary playback ticks). See `docs/narratives/architecture.md`.
     pub fn seek_and_decode(
         &mut self,
         target_seconds: f64,
@@ -289,7 +289,7 @@ impl VideoPipeline {
         {
             // Already covered by the held frame — nothing to decode. Safe unconditionally
             // (independent of `exact`): it only returns early when the held frame already
-            // satisfies `target_seconds`. See `docs/ui-milestones.md`'s note on the
+            // satisfies `target_seconds`. See `docs/narratives/architecture.md`'s note on the
             // playback-jump/looping bug for why this must not be gated behind `!exact`.
             return Ok(DecodedFrameRef {
                 frame: self
@@ -341,7 +341,7 @@ impl VideoPipeline {
                     .unwrap_or(target_seconds);
 
                 // Only scale+copy the frame we're actually about to hand back — see
-                // `docs/architecture.md`'s note on catch-up-burst waste for why skipping earlier
+                // `docs/narratives/architecture.md`'s note on catch-up-burst waste for why skipping earlier
                 // frames in a burst (rather than scaling+copying every one) matters.
                 if exact && pts_seconds < target_seconds {
                     continue;

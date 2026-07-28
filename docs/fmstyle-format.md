@@ -2,7 +2,7 @@
 
 This is the field-by-field spec for the `.fmstyle.ron` visual style format. This document is the
 living contract of what's actually in the schema today; design history and migration notes live in
-`docs/fmstyle-history.md`. Keep both in sync when the schema changes.
+`docs/narratives/fmstyle-history.md`. Keep both in sync when the schema changes.
 
 Schema lives in `crates/project/src/style.rs`; keep that module's doc comment pointing back here.
 
@@ -136,7 +136,7 @@ enum Fill {
 across **each note's own on-screen height** — every note shows the full `top`->`bottom` range no
 matter where it currently sits on the canvas.
 
-`CanvasGradient` (Phase P) has the identical `{ top, bottom }` shape but blends across a fixed span
+`CanvasGradient` has the identical `{ top, bottom }` shape but blends across a fixed span
 of **the canvas itself** instead: canvas Y = 0 (top of the frame) resolves to `top`, the barrier
 line resolves to `bottom`, clamped beyond either end. Practically: whatever note is currently
 passing through a given on-screen height shows the same color there, regardless of pitch/key — a
@@ -402,13 +402,12 @@ octave_lines: Some((
 )),
 ```
 
-`None` (the default) draws no lines — the look every style had before this field existed. There is
-no legacy-slider equivalent at all; `Style::from_legacy` always produces `None`, so a project with
+`None` (the default) draws no lines. There is no legacy-slider equivalent at all; `Style::from_legacy` always produces `None`, so a project with
 no imported style never shows octave lines.
 
 The 8 lines are positioned at exactly the same x-coordinates the falling notes themselves lay out
 against (`render`'s `notes::octave_boundary_fractions`) — so if a project has camera-stretch
-calibration set (see `docs/ui-milestones.md`'s "Camera-stretch calibration" section), the lines
+calibration set (see `docs/ui.md`'s "Camera-stretch calibration" section), the lines
 stretch/compress per octave right along with the note lanes, always lining up with where each
 octave's keys actually sit in the footage. The lines span from the top of the canvas down to the
 barrier line — the same vertical extent the note highway itself occupies — and are drawn above the
@@ -469,20 +468,20 @@ this is what the RON serializer emits automatically; write it the same way by ha
 | `color` | `ParticleColor` | How each particle's color is chosen — see below. |
 | `additive` | `bool` | Additive blending (bright, overlapping particles glow) vs. premultiplied-alpha (opaque-ish). Decided once per `update()` call from the layer's currently-resolved value — a particle spawned under one style doesn't retroactively update if a *different* style is imported while it's still alive. |
 | `emission` | `EmissionMode` | `Burst` (default) or `Continuous { rate_per_second }`. |
-| `brightness` | `ScalarBinding` | Default `Constant(1.0)`. Resolved once per spawned burst/continuous-emission tick against the *triggering* note's velocity/pitch/track (`ScalarBinding::resolve_for_note` — same mapping as `ColorBinding`'s, see [`ColorBinding`/`ScalarBinding`](#colorbinding--scalarbinding)), then baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `Constant(1.0)` is a no-op. **Breaking change** (Phase R): older files with a bare float here (e.g. `brightness: 1.0`) need `brightness: Constant(1.0)` instead — see [Migration history](#migration-history). |
+| `brightness` | `ScalarBinding` | Default `Constant(1.0)`. Resolved once per spawned burst/continuous-emission tick against the *triggering* note's velocity/pitch/track (`ScalarBinding::resolve_for_note` — same mapping as `ColorBinding`'s, see [`ColorBinding`/`ScalarBinding`](#colorbinding--scalarbinding)), then baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `Constant(1.0)` is a no-op (for migrating an older file with a bare float here, see `docs/narratives/fmstyle-history.md`'s breaking-change log). |
 | `layers` | `[GlowLayer; 3]` | Default tight/mid/wide, same as `Glow`. **Only read when `additive: true`** — non-additive "puff" particles ignore this field entirely and render as a plain hard-edged dot, unaffected by any value here. |
 
 `EmissionMode::Continuous { rate_per_second }`: particles spawn every frame a note is held,
 spread across the *width* of its key (not its center point) — reads as the key being "ground
 down" rather than sparking once. `count` has no effect in this mode.
 
-`lifetime_seconds`/`size_px`/`speed_px`/`spread_degrees`/`gravity_px` (Phase S follow-up) are each
+`lifetime_seconds`/`size_px`/`speed_px`/`spread_degrees`/`gravity_px` are each
 resolved once per spawned burst/continuous-emission tick against the *triggering* note's
 velocity/pitch/track — the exact same call site and mechanism as `brightness` above (`render::
 effects::spawn_particles`/the continuous-emission loop), so e.g. a harder hit can spawn bigger,
 faster, longer-lived, more widely-spread, and/or more-gravity-affected particles than a soft one.
-**Breaking change**: an older `.fmstyle.ron` with a bare float on any of these five (e.g.
-`size_px: 4.0`) needs `size_px: Constant(4.0)` instead — see [Migration history](#migration-history).
+Each of these five is `ScalarBinding`-typed, not a bare float (for migrating an older file, see
+`docs/narratives/fmstyle-history.md`'s breaking-change log).
 
 ### `ParticleColor`
 
@@ -531,7 +530,7 @@ from exactly one source:
 | `color` | `FlashColor` | How the flash's color varies across its own width — see below. |
 | `decay_seconds` | `ScalarBinding` | How long the fade-out takes (see `mode` for when the fade *starts*). |
 | `mode` | `FlashMode` | `Instant` (default) or `Sustained`. |
-| `brightness` | `ScalarBinding` | Default `Constant(1.0)`. Resolved once per spawned flash against the *triggering* note's velocity/pitch/track (`ScalarBinding::resolve_for_note`), then baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `Constant(1.0)` is a no-op. **Breaking change** (Phase R): older files with a bare float here need `brightness: Constant(1.0)` instead — see [Migration history](#migration-history). |
+| `brightness` | `ScalarBinding` | Default `Constant(1.0)`. Resolved once per spawned flash against the *triggering* note's velocity/pitch/track (`ScalarBinding::resolve_for_note`), then baked into `layers[i].amplitude` at spawn time (a plain multiply, not a `hot_color` mix — see [Brightness/overexposure](#brightnessoverexposure)). `Constant(1.0)` is a no-op (for migrating an older file with a bare float here, see `docs/narratives/fmstyle-history.md`'s breaking-change log). |
 | `layers` | `[GlowLayer; 3]` | Default tight/mid/wide, same as `Glow`. A flash is always additive, so this is always read (unlike `ParticleSpec::layers`, which non-additive particles ignore). |
 | `flicker_speed` | `ScalarBinding` | Default `Constant(0.0)` (no flicker). How fast the flash's brightness flickers over transport time — see below. |
 | `flicker_intensity` | `ScalarBinding` | Default `Constant(0.0)` (no flicker). How much the flicker dims the flash at its darkest point, `0.0`-`1.0`. |
@@ -542,18 +541,18 @@ from exactly one source:
 A flash always renders additively. It is fully "on" at spawn/at the start of its hold (see
 `mode`), fading to 0 over `decay_seconds`.
 
-`radius_x_px`/`radius_y_px`/`decay_seconds` (Phase S follow-up) are each resolved once per spawned
+`radius_x_px`/`radius_y_px`/`decay_seconds` are each resolved once per spawned
 flash against the *triggering* note's velocity/pitch/track — same call site and mechanism as
 `brightness` above (`render::effects::spawn_flash`) — so e.g. a harder hit can spawn a bigger
-and/or longer-lived flash than a soft one. **Breaking change**: an older `.fmstyle.ron` with a bare
-float on any of these three (e.g. `radius_x_px: 40.0`) needs `radius_x_px: Constant(40.0)` instead
-— see [Migration history](#migration-history).
+and/or longer-lived flash than a soft one. Each of these three is `ScalarBinding`-typed, not a bare
+float (for migrating an older file, see `docs/narratives/fmstyle-history.md`'s breaking-change
+log).
 
-`flicker_speed`/`flicker_intensity` (Phase U) add an optional flicker to the flash's brightness,
+`flicker_speed`/`flicker_intensity` add an optional flicker to the flash's brightness,
 resolved once per spawned flash the same way as the other scalars above. Internally
 (`render::effects::flash_flicker`) this samples a seeded 2D value-noise field (the same
 hash-based, non-periodic approach `barrier.wgsl`'s strand-bundle flicker already uses — see
-[the strand-bundle section](fmstyle-milestone.md) — ported to the CPU side since a flash's alpha
+[the strand-bundle section](narratives/fmstyle-milestone.md) — ported to the CPU side since a flash's alpha
 is computed there, not in a shader) rather than a literal sine wave, so it reads as an irregular
 waver rather than a metronomic pulse. Each spawned flash gets its own random seed, so multiple
 simultaneous flashes (e.g. a held chord) don't flicker in lockstep. `flicker_intensity: 0.0` is an
@@ -566,9 +565,9 @@ plays out.
 ### `GodRaySpec`
 
 Volumetric "sun rays" radiating outward from a flash's center, on top of its ordinary elliptical
-corona (`FlashSpec::layers`) — ported from `explorations/barrier-fx-lab`'s "Flash — god rays"
-group (Phase V), aimed at a "photograph of the sun from Earth" look rather than a round blob.
-`FlashSpec::god_rays: None` (default) renders the flash exactly as it rendered before this phase.
+corona (`FlashSpec::layers`), aimed at a "photograph of the sun from Earth" look rather than a
+round blob. `FlashSpec::god_rays: None` (default) renders the flash with no rays, as an ordinary
+elliptical corona only.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
@@ -585,11 +584,11 @@ group (Phase V), aimed at a "photograph of the sun from Earth" look rather than 
 | `flicker_intensity` | `f32` | `1.0` | How much the flicker dims a beam at its darkest point (`0.0` never dims, `1.0` can dim to fully dark). |
 | `intensity` | `f32` | `0.5` | Overall brightness multiplier on the whole god-ray contribution, independent of `FlashSpec::brightness` (which scales the corona's `layers`, not the rays). |
 
-Beams sit on `count` fixed, evenly-spaced angular slots. There is deliberately no angular
-*wander* — an earlier iteration let the whole pattern drift side to side, which read as the beams
-wiggling rather than radiating from a fixed sun, so it was removed; `rotation_speed_deg_per_sec`
-is a different and much subtler motion (a rigid whole-pattern spin) kept as an escape hatch.
-Instead each beam's own reach breathes in and out over time via seeded value noise
+Beams sit on `count` fixed, evenly-spaced angular slots, with no angular *wander* (see
+`docs/narratives/fmstyle-history.md` for why wander was tried and rejected).
+`rotation_speed_deg_per_sec` is a rigid whole-pattern spin, a different and much subtler motion
+than wander would have been. Instead each beam's own reach breathes in and out over time via
+seeded value noise
 (`pulse_speed`/`pulse_amount`), on top of an internal streak texture along its length
 (`streakiness`) and a separate whole-beam brightness flicker (`flicker_speed`/`flicker_intensity`)
 so individual beams gutter and reappear rather than staying uniformly "on".
@@ -606,8 +605,7 @@ triggering note, same precedent as `GlowLayer::amplitude`/`sigma_px`.
 ### `RingSpec`
 
 A faint colored ring at a fixed radius around a flash's center — a common lens-flare
-"diffraction halo" accent, ported from the same lab exploration as `GodRaySpec` (Phase V).
-`FlashSpec::ring: None` (default) renders no ring.
+"diffraction halo" accent. `FlashSpec::ring: None` (default) renders no ring.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -617,15 +615,14 @@ A faint colored ring at a fixed radius around a flash's center — a common lens
 
 ### Chromatic aberration
 
-`FlashSpec::chromatic_aberration: f32` (Phase V, default `0.0`) adds lens-dispersion-style color
+`FlashSpec::chromatic_aberration: f32` (default `0.0`) adds lens-dispersion-style color
 fringing: rather than a flat color tint, the entire light stack (corona + god rays + ring) is
 re-evaluated once per color channel (`render::effects`'s `total_strength`/`effects.wgsl`'s
 `total_strength`), each sampled at `offset * (1.0 ± chromatic_aberration)` — the same "error grows
 with distance from center" shape real lens chromatic aberration has, so the fringe shows up at the
 outer edge of the light (the rim of the corona, the tips of the god rays, the ring), not as a
-uniform wash over the whole flash. `0.0` is an exact no-op: a single unsplit strength sample,
-pixel-identical to a flash predating this phase and roughly a third of the fragment cost of a
-non-zero value (which samples the whole light stack three times). Typical useful values are small,
+uniform wash over the whole flash. `0.0` is an exact no-op: a single unsplit strength sample, roughly a third of the fragment cost of
+a non-zero value (which samples the whole light stack three times). Typical useful values are small,
 e.g. `0.03`-`0.1` — larger values visibly separate the channels into distinct colored ghosts rather
 than a subtle fringe.
 
@@ -668,17 +665,15 @@ per-pixel sample of that note's actual rendered fill.
 Concretely, `color_at_barrier` mixes the note's own resolved `color_bottom` (its leading edge —
 the color visible right at arrival) toward `color_top` (its trailing edge) by how far the note has
 been held past arrival, mirroring `shader.wgsl`'s note-local fill math evaluated at the barrier's
-fixed canvas position. This is why the two `MatchNote` variants no longer talk about "the note's
-bottom color" the way an earlier version of this feature did: for a `Solid` or flat-colored note
-the leading- and trailing-edge colors are identical, so sampling only ever "the bottom" and
-sampling "whichever part is at the barrier" looked the same — but for a `VerticalGradient` note
-(or a flash/particle stream spawned continuously while a note is held), the part of the note
-actually crossing the barrier keeps advancing from the leading edge toward the trailing edge, so a
-fixed "always the bottom" sample would visibly stop matching the note's own color partway through
-a long-held note. `Fill::CanvasGradient` notes are the one case where this collapses back to a
-constant: that gradient is keyed to canvas position, not note-local progress, and the barrier is a
-fixed canvas position, so the color there is always the gradient's own barrier-line endpoint
-regardless of how long the note has been held.
+fixed canvas position. For a `Solid` or flat-colored note the leading- and trailing-edge colors are
+identical, so the result is just that one color — but for a `VerticalGradient` note (or a
+flash/particle stream spawned continuously while a note is held), the part of the note actually
+crossing the barrier keeps advancing from the leading edge toward the trailing edge, so `MatchNote`
+tracks that progression rather than staying fixed at the arrival color for a long-held note.
+`Fill::CanvasGradient` notes are the one case where this collapses back to a constant: that
+gradient is keyed to canvas position, not note-local progress, and the barrier is a fixed canvas
+position, so the color there is always the gradient's own barrier-line endpoint regardless of how
+long the note has been held.
 
 For a burst/`FlashMode::Instant` trigger this is evaluated once, right as the note arrives, so it
 behaves exactly as a "match the color at arrival" sample would — the general barrier-tracking
@@ -686,19 +681,13 @@ formula is a strict superset of that behavior, not a separate mode. It only visi
 fixed arrival-color sample for `EmissionMode::Continuous` particles and `FlashMode::Sustained`
 flashes, both of which stay active for a note's whole held duration.
 
-An earlier version of this feature instead sampled several points *across* a note's leading edge,
-specifically to reproduce a diagonal `Sheen` stripe's horizontal brightening band (the only thing
-that varies a note's color left-to-right — plain `Fill::Solid`/`VerticalGradient`/`CanvasGradient`
-are all uniform across a note's width, only ever varying color top-to-bottom or by canvas height).
-That was retracted: it meant hand-porting `shader.wgsl`'s fill/sheen math into Rust
-(`render::notes::mod.rs`, since removed), which only stayed correct for sheen specifically — any
-*other* future note-color effect (a different stripe/pattern, a texture, anything not already
-mirrored in that Rust port) would silently be invisible to `MatchNote` while still rendering
-correctly on the note itself, a maintenance trap that would only get worse as note styles grow.
-The `(color_top, color_bottom)` pair alone doesn't have this problem: every `Fill` variant, current
-or future, resolves to that pair by construction (`resolve_fill_base`'s contract), so `MatchNote`
-stays correct with zero additional code for anything built on top of that contract — the tradeoff
-is giving up the sheen-driven cross-section fidelity in exchange for that guarantee.
+`MatchNote` deliberately does not sample a diagonal `Sheen` stripe's horizontal brightening band —
+plain `Fill::Solid`/`VerticalGradient`/`CanvasGradient` are all uniform across a note's width
+(only ever varying color top-to-bottom or by canvas height), and `MatchNote` only ever resolves the
+`(color_top, color_bottom)` pair every `Fill` variant produces by construction
+(`resolve_fill_base`'s contract). This keeps `MatchNote` correct with zero additional code for any
+`Fill` variant, current or future, at the cost of not reflecting sheen's left-to-right variation —
+see `docs/narratives/fmstyle-history.md` for the design history behind this tradeoff.
 
 Note that `Glow::match_note_color` (the *note's own* halo/rim matching its own fill — a different
 mechanism from `ParticleColor`/`FlashColor::MatchNote`) doesn't have this tradeoff at all: it calls
@@ -778,7 +767,7 @@ light = color * sum(layer.amplitude * exp(-distance / layer.sigma_px)) * brightn
 
 `brightness` does not change reach. Reach is controlled by `layers[i].sigma_px`; brightness only
 changes intensity. Design history for earlier brightness/glow models lives in
-`docs/fmstyle-history.md`.
+`docs/narratives/fmstyle-history.md`.
 
 Where it lives per effect:
 
@@ -813,26 +802,6 @@ One place to check when a parsed field does not affect rendering:
 
 ## Migration history
 
-If a previously-working `.fmstyle.ron` file fails to load after an upgrade, check
-`docs/fmstyle-history.md`. The schema-breaking changes so far are:
-
-- `FlashSpec.radius_px` -> `radius_x_px` / `radius_y_px`
-- `BarrierLayer.kind` + `glow_radius_px` -> `glow: Option<Glow>`
-- `intensity` removed from `Glow`, `Pulse`, and `FlashSpec`
-- `Glow.radius_px` -> `layers: [GlowLayer; 3]`
-- `ParticleSpec.color: ColorBinding` -> `color: ParticleColor` (wrap an existing `Constant(...)`
-  etc. value as `Fixed(...)`)
-- `FlashSpec.color: ColorBinding` -> `color: FlashColor` (wrap an existing `Constant(...)` etc.
-  value as `Solid(...)`)
-- `ParticleColor::MatchNoteBottom` -> `MatchNote`, `FlashColor::MatchNoteBottom` -> `MatchNote`
-  (rename only, no other field shape change — see
-  [Note color sampling at the barrier](#note-color-sampling-at-the-barrier) for why "bottom" no
-  longer describes what these sample)
-- `ParticleSpec.brightness: f32` -> `ScalarBinding`, `FlashSpec.brightness: f32` -> `ScalarBinding`
-  (Phase R — wrap an existing bare float as `Constant(...)`, e.g. `brightness: 1.0` ->
-  `brightness: Constant(1.0)`; `Glow.brightness`/`Pulse.brightness` are unaffected, still a plain
-  `f32`)
-- `ParticleSpec.lifetime_seconds`/`size_px`/`speed_px`/`spread_degrees`/`gravity_px: f32` ->
-  `ScalarBinding`, `FlashSpec.radius_x_px`/`radius_y_px`/`decay_seconds: f32` -> `ScalarBinding`
-  (Phase S follow-up — same wrap-in-`Constant(...)` fix as the `brightness` change above; `count`
-  stays a plain `u32`, not converted)
+If a previously-working `.fmstyle.ron` file fails to load after an upgrade, see
+`docs/narratives/fmstyle-history.md`'s breaking-change log — the canonical, phase-by-phase record of
+every schema-breaking change and how to hand-migrate an old file across it.

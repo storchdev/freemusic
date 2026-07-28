@@ -6,7 +6,7 @@ struct Uniforms {
     crop_uv_max: vec2<f32>,
     brightness: f32,
     // Non-zero when the render target is plain `Unorm`, so the shader must sRGB-encode the
-    // sampled linear video color before storing. See `docs/implementation-notes.md`.
+    // sampled linear video color before storing. See `docs/narratives/architecture.md`.
     manual_srgb_encode: f32,
 };
 

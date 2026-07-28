@@ -237,7 +237,7 @@ struct AppState {
     /// Transport position `pipeline.seek_and_decode` was last called with, so a redraw that
     /// fires for an unrelated reason while paused (cursor blink in a text field, hover
     /// animations, mouse movement) doesn't re-invoke video decode at all — see
-    /// `docs/ui-milestones.md`'s "paused playback stuttering" note for the failure mode this
+    /// `docs/narratives/ui-milestones.md`'s "paused playback stuttering" note for the failure mode this
     /// guard avoids. `None` until the first frame is decoded.
     last_decoded_position: Option<f64>,
     /// `Some` while a background export thread is running; polled each redraw and cleared once
@@ -285,7 +285,7 @@ struct PerfStats {
     decode: Duration,
     // Purely-CPU sub-stages of `decode` (from `VideoPipeline::last_timings`), broken out so the
     // log can show *which* CPU stage balloons under load rather than one lumped number — see
-    // `docs/architecture.md`'s mouse-move lag investigation for why this split mattered. None of
+    // `docs/narratives/architecture.md`'s mouse-move lag investigation for why this split mattered. None of
     // these issue a GPU call, so ballooning here (while `acquire`/`render_submit` stay low)
     // points at CPU/IO contention, not GPU/compositor contention.
     demux: Duration,
@@ -1044,7 +1044,7 @@ impl AppState {
 
         // Skip decode entirely if the transport position hasn't actually moved since the last
         // decoded frame — see `last_decoded_position`'s doc comment and
-        // `docs/ui-milestones.md`'s paused-playback-stuttering note for why this guard matters.
+        // `docs/narratives/ui-milestones.md`'s paused-playback-stuttering note for why this guard matters.
         if self.last_decoded_position != Some(self.ui_state.position_seconds) {
             let trace_active = self.interaction_trace_active();
             if let Some(pipeline) = self.pipeline.as_mut() {
@@ -1462,7 +1462,7 @@ impl AppState {
         // animations, button flash, etc.) via each viewport's `repaint_delay` — `Duration::MAX`
         // means "nothing to animate", anything else is a real deadline (`ZERO` meaning "now").
         // `about_to_wait` folds this in alongside the playback schedule — see
-        // `docs/ui-milestones.md`'s egui-animation-repaint note for why this matters.
+        // `docs/narratives/ui-milestones.md`'s egui-animation-repaint note for why this matters.
         self.next_ui_redraw_at = full_output
             .viewport_output
             .get(&egui::ViewportId::ROOT)
@@ -1586,7 +1586,7 @@ impl ApplicationHandler for App {
         // whether to keep the loop going (see `next_playback_redraw_at`/`about_to_wait`), so this
         // generic repaint-on-any-event nudge only fires for OTHER events that need an immediate
         // repaint — requesting one here for `RedrawRequested` itself would create a
-        // self-sustaining loop at the display's full vsync rate; see `docs/architecture.md`'s
+        // self-sustaining loop at the display's full vsync rate; see `docs/narratives/architecture.md`'s
         // unthrottled-redraw-loop section. Passive pointer input during playback is also
         // excluded: otherwise simply moving or clicking the mouse turns playback into an
         // input-rate redraw loop and bypasses the video-frame scheduler. Cursor movement while a
@@ -1698,7 +1698,7 @@ impl ApplicationHandler for App {
         // independent reasons to wake up early. While PAUSED, whichever comes first wins (smooth
         // menu/panel animations). While PLAYING, the video cadence governs and egui's deadline is
         // NOT allowed to schedule a redraw *sooner* than the next frame — see
-        // `docs/architecture.md`'s mouse-move lag investigation for why an unclamped egui
+        // `docs/narratives/architecture.md`'s mouse-move lag investigation for why an unclamped egui
         // deadline during playback is a real problem, not just wasted work. Any real egui
         // animation still advances during playback, just at the video's frame cadence
         // (imperceptible). A `next_ui_redraw_at` *later* than the frame deadline is irrelevant —

@@ -527,7 +527,7 @@ impl NotesRenderer {
                 note: note.note,
                 start_seconds: note.start_seconds,
                 // Match the rendered note duration floor so the editor's active-note window
-                // matches what is visible. See `docs/implementation-notes.md`.
+                // matches what is visible. See `docs/narratives/architecture.md`.
                 end_seconds: (start_seconds + duration) as f64,
                 skipped: is_skipped,
                 edited: is_edited,
@@ -657,7 +657,7 @@ fn keyboard_layout(
             .max(1) as f32;
         let neutral_width = segment_width / white_count;
         // Query through the real keyboard end, then discard trailing keys, to avoid a
-        // `piano_layout` mid-octave truncation edge case. See `docs/implementation-notes.md`.
+        // `piano_layout` mid-octave truncation edge case. See `docs/narratives/architecture.md`.
         let full_range = KeyboardRange::new(segment_start..KEYBOARD_END);
         let layout =
             KeyboardLayout::from_range(Sizing::new(neutral_width, neutral_height), full_range);
@@ -728,7 +728,7 @@ mod tests {
     use super::*;
 
     /// Regression test for the mid-octave truncation crash `keyboard_layout`'s `full_range` works
-    /// around (see `docs/implementation-notes.md`) — confirms every segment lays out correctly,
+    /// around (see `docs/narratives/architecture.md`) — confirms every segment lays out correctly,
     /// with and without a camera-stretch calibration.
     #[test]
     fn keyboard_layout_does_not_panic_and_covers_all_88_keys() {

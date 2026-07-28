@@ -1,7 +1,9 @@
-# `.fmstyle.ron` history
+# `.fmstyle.ron` history (narrative)
 
-This file holds design history, migration notes, and bug-fix context for the style format. The
-current field-by-field contract lives in `docs/fmstyle-format.md`.
+This file holds design history, migration notes, and bug-fix context for the style format —
+decision history and worked/didn't-work narrative, not the current-state contract. The current
+field-by-field contract lives in `docs/fmstyle-format.md`. Phase-by-phase development narrative
+for the format lives alongside this file in `docs/narratives/fmstyle-milestone.md`.
 
 ## Black-key gradient bug
 
@@ -46,7 +48,36 @@ An earlier rim implementation used `color * brightness`, which could be dimmer t
 corona when layer amplitudes summed above `1.0`; the current rim matches the corona contribution
 at `distance == 0`.
 
+## `MatchNote` color sampling: the retracted per-pixel sheen sample
+
+An earlier version of `ParticleColor`/`FlashColor::MatchNote` sampled several points *across* a
+note's leading edge, specifically to reproduce a diagonal `Sheen` stripe's horizontal brightening
+band (the only thing that varies a note's color left-to-right — plain
+`Fill::Solid`/`VerticalGradient`/`CanvasGradient` are all uniform across a note's width, only ever
+varying color top-to-bottom or by canvas height). That was retracted: it meant hand-porting
+`shader.wgsl`'s fill/sheen math into Rust (`render::notes::mod.rs`, since removed), which only
+stayed correct for sheen specifically — any *other* future note-color effect (a different
+stripe/pattern, a texture, anything not already mirrored in that Rust port) would silently be
+invisible to `MatchNote` while still rendering correctly on the note itself, a maintenance trap
+that would only get worse as note styles grow. The current design — resolving only the
+`(color_top, color_bottom)` pair every `Fill` variant produces by construction
+(`resolve_fill_base`'s contract) — doesn't have this problem: every `Fill` variant, current or
+future, resolves to that pair, so `MatchNote` stays correct with zero additional code for anything
+built on top of that contract. The tradeoff is giving up the sheen-driven cross-section fidelity in
+exchange for that guarantee.
+
+## God rays: wander tried and rejected
+
+`GodRaySpec`'s beams were briefly given angular *wander* (the whole beam pattern drifting side to
+side over time), ported from the `barrier-fx-lab` exploration that originated the god-ray effect.
+It read as the beams wiggling rather than radiating from a fixed sun, so it was removed. The
+current design's `rotation_speed_deg_per_sec` (a rigid whole-pattern spin) is a deliberately
+different and subtler motion kept as an escape hatch, not a reintroduction of wander.
+
 ## Breaking-change log
+
+This is the canonical historical record of every schema-breaking phase; `docs/fmstyle-format.md`
+points here rather than repeating the "what the old shape was" detail inline.
 
 | Phase | Change |
 |---|---|
@@ -66,3 +97,13 @@ at `distance == 0`.
 | R | Breaking: `ParticleSpec.brightness: f32` and `FlashSpec.brightness: f32` became `ScalarBinding`; wrap an existing bare float as `Constant(...)`, e.g. `brightness: 1.0` -> `brightness: Constant(1.0)`. `Glow.brightness`/`Pulse.brightness` are unaffected, still a plain `f32`. Non-breaking in the same phase: `ColorBinding` gained `resolve_for_note`, so `ByVelocity`/`ByPitchClass`/`ByTrack` now really vary per note instead of resolving to one fixed representative color. |
 
 The schema-breaking phases so far are H, K, L, M, Q, and R.
+
+Also breaking, not tied to a lettered phase above: `ParticleColor::MatchNoteBottom` was renamed to
+`MatchNote`, and `FlashColor::MatchNoteBottom` was renamed to `MatchNote` (rename only, no other
+field shape change — see `docs/fmstyle-format.md`'s "Note color sampling at the barrier" section
+for why "bottom" no longer describes what these sample).
+
+Also breaking, a follow-up in the same session as Phase R: `ParticleSpec.lifetime_seconds`/
+`size_px`/`speed_px`/`spread_degrees`/`gravity_px: f32` and `FlashSpec.radius_x_px`/
+`radius_y_px`/`decay_seconds: f32` all became `ScalarBinding` (same wrap-in-`Constant(...)` fix as
+Phase R; `ParticleSpec.count` stays a plain `u32`, not converted).

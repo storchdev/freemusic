@@ -402,7 +402,7 @@ fn default_y_gradient_bottom_fraction() -> f32 {
 /// light source that reads as a genuine white-hot core fading through a tinted halo, rather than
 /// a single flat (possibly whitened) color at one spatial scale — see
 /// `docs/fmstyle-format.md`'s "Brightness/overexposure" section for the formula and design
-/// history in `docs/fmstyle-history.md`.
+/// history in `docs/narratives/fmstyle-history.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GlowLayer {
     pub amplitude: f32,
@@ -443,7 +443,7 @@ fn default_zero_scalar() -> ScalarBinding {
 /// how much light the corona adds — for the barrier's own opaque bar (`BarrierLayer::glow`) it
 /// also drives a `hot_color` desaturate-toward-white mix on the bar itself (`barrier.wgsl`'s
 /// `fs_core`). Notes (`NoteLayer::glow`) don't whiten their own opaque fill the same way (see
-/// `docs/fmstyle-history.md`'s "Glow and brightness design" for why); instead, right at the
+/// `docs/narratives/fmstyle-history.md`'s "Glow and brightness design" for why); instead, right at the
 /// boundary where the opaque fill meets the corona, the fill blends toward
 /// `color * (sum of layer amplitudes) * brightness` (clamped to a displayable 0–1 range) —
 /// matching not just this halo's raw color but its actual computed brightness right at the edge,
@@ -719,7 +719,7 @@ pub struct WavySpec {
 
 /// The horizontal barrier where falling notes stop. Presence of a `Glow` on `glow` is the on/off
 /// switch for the corona (`None` = flat line), the same pattern `NoteLayer::glow` uses — see
-/// `docs/fmstyle-history.md`'s breaking-change log for the older `kind`/`glow_radius_px` shape
+/// `docs/narratives/fmstyle-history.md`'s breaking-change log for the older `kind`/`glow_radius_px` shape
 /// this replaced. `show_bar` is independent of `glow` — whether the flat/opaque bar itself
 /// renders at all, separate from whether it has a corona. Defaults to `false` — the additive
 /// corona, not the flat opaque bar, is the look this format is designed around; a style that
