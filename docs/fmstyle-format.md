@@ -8,14 +8,14 @@ Schema lives in `crates/project/src/style.rs`; keep that module's doc comment po
 
 ## Overview
 
-A `.fmstyle.ron` file is a [RON](https://github.com/ron-rs/ron) document describing a `Style`. It's
-loaded via `Style::load(path)` and imported into a running project through the Project tab's
-"Import style…" button (native file picker) or the path text field underneath it (type/paste a
-path, then click "Load" or press Enter — `app/src/ui.rs::draw_project_tab`) — there's no other way
-to attach one to a project today. An imported style fully overrides the legacy note/barrier "quick
-control" sliders for whichever layers it sets; a project with no imported style has its look
-synthesized from those sliders via `Style::from_legacy` (see each layer section below for the
-exact legacy mapping).
+A `.fmstyle.ron` file is a [RON](https://github.com/ron-rs/ron) document describing a `Style`.
+`project::Project::style: Style` is always present (not optional) and always live: every field in
+this schema is directly editable from the app's Style tab (`app/src/style_ui.rs` has one reusable
+editor widget per schema shape — see `docs/ui.md`'s "Style tab" section), and a `.fmstyle.ron` file
+is purely an interchange format for moving a look to/from disk — `Style::load(path)`/`Style::save`,
+wired to the Project tab's "Import style…"/"Save style as…" buttons and the path text field
+(`app/src/ui.rs::draw_project_tab`). Importing a file replaces the live style wholesale; there is
+no per-layer merge.
 
 `version` is always `1` right now — there is no migration logic yet. Every field on every type in
 this schema is `#[serde(default)]`-compatible, so a file written by an older schema version still
@@ -39,14 +39,11 @@ Top level:
 visible behind the video wherever it doesn't fully cover the frame (e.g. a `VideoTransform` crop/
 scale leaving letterbox gaps) and behind the note highway above the barrier. Unlike `notes`/
 `barrier`/`transition` it's a plain `ColorBinding`, not wrapped in `Timed` — a single canvas-wide
-value has no per-note timeline to key against. A project with no imported style gets this from the
-Keyboard tab's own "Background" color picker (`Project::background_color`) instead, via
-`Style::from_legacy`'s third parameter.
+value has no per-note timeline to key against. Edited from the Style tab's "Background" section.
 
 `octave_lines: Option<OctaveLineSpec>` (default `None`) draws faint vertical reference lines at
 each octave's C boundary in the note highway — see [Octave lines](#octave-lines-octavelinespec)
-below. Like `background`, it's a plain (non-`Timed`) field with no legacy-slider equivalent at
-all — `Style::from_legacy` always produces `None`.
+below. Like `background`, it's a plain (non-`Timed`) field.
 
 ## `Timed<T>`
 
@@ -61,12 +58,13 @@ enum Timed<T> {
 
 `resolve(t)` returns the last key at or before `t`; if `t` precedes every key, it clamps to the
 first key rather than erroring. **v1 only ever calls `resolve(0.0)` once**, at the point a style is
-consumed by the renderer/legacy-fallback machinery — there is no live mid-song style swapping yet.
-A `Keyed` style with, say, a key at `30.0` currently has no effect until that call site is changed
-to re-resolve per-frame against transport time; until then, only the key at/before `t=0.0` (i.e.
-whichever key sits at the smallest time `<= 0.0`, or the first key if all keys are `> 0.0`) is ever
-visible. Practically, ship `Static` unless you're deliberately preparing for a future where
-per-frame resolution lands.
+consumed by the renderer — there is no live mid-song style swapping yet. A `Keyed` style with, say,
+a key at `30.0` currently has no effect until that call site is changed to re-resolve per-frame
+against transport time; until then, only the key at/before `t=0.0` (i.e. whichever key sits at the
+smallest time `<= 0.0`, or the first key if all keys are `> 0.0`) is ever visible. Practically, ship
+`Static` unless you're deliberately preparing for a future where per-frame resolution lands. The
+in-app Style tab only ever edits the `Static` case — see `docs/ui.md`'s "Style tab" section for
+how it handles (flattens) an imported `Keyed` layer.
 
 ## Notes layer (`NoteLayer`)
 
@@ -170,9 +168,6 @@ enum BlackKeyFill { Auto, Same, Custom(Fill) }
 - `Same`: no darkening; sharp keys use the exact same fill as natural keys.
 - `Custom(Fill)`: an independently resolved fill (solid or gradient) just for sharp keys, unrelated
   to the natural-key `fill`.
-
-Legacy mapping (`Style::from_legacy`, from `NoteStyle::black_key_color: BlackKeyColorMode`):
-`Auto`->`Auto`, `Same`->`Same`, `Custom(color)`->`Custom(Fill::Solid(Constant(color)))`.
 
 ### `Sheen`
 
@@ -402,8 +397,7 @@ octave_lines: Some((
 )),
 ```
 
-`None` (the default) draws no lines. There is no legacy-slider equivalent at all; `Style::from_legacy` always produces `None`, so a project with
-no imported style never shows octave lines.
+`None` (the default) draws no lines.
 
 The 8 lines are positioned at exactly the same x-coordinates the falling notes themselves lay out
 against (`render`'s `notes::octave_boundary_fractions`) — so if a project has camera-stretch

@@ -107,3 +107,20 @@ Also breaking, a follow-up in the same session as Phase R: `ParticleSpec.lifetim
 `size_px`/`speed_px`/`spread_degrees`/`gravity_px: f32` and `FlashSpec.radius_x_px`/
 `radius_y_px`/`decay_seconds: f32` all became `ScalarBinding` (same wrap-in-`Constant(...)` fix as
 Phase R; `ParticleSpec.count` stays a plain `u32`, not converted).
+
+Also breaking, from the session that added in-app editing for the whole schema (the Style tab —
+see `docs/ui.md`): `project::Project.style` changed from `Option<Style>` to a plain, always-present
+`Style` (`#[serde(default = "default_project_style")]`). `NoteStyle`, `BarrierStyle`,
+`BlackKeyColorMode`, and `Style::from_legacy` were deleted outright — before this, a project with
+no imported style had its look synthesized on the fly from those three legacy "quick control"
+types (edited by the old Keyboard tab's Barrier/Note style/Background sliders); after, the Style
+tab edits `Style` directly and there's no second, lower-capability representation of a look left to
+synthesize from. This was a deliberate design choice, not an oversight: once the Style tab could
+edit the *entire* schema, keeping the legacy slider system around as a fallback would have meant
+maintaining two ways to represent the same look indefinitely, for no remaining benefit — per
+`CLAUDE.md`'s pre-1.0 policy, the cleaner cut was preferred over a compatibility shim. A
+`.fmproj.ron` file predating this that has `barrier_style`/`note_style`/`background_color` fields
+still loads (unrecognized fields are ignored, not errors), but silently drops to
+`default_project_style()`'s look instead of reconstructing the old sliders' values — hand-add an
+equivalent `style: (...)` block (see the `NoteLayer`/`BarrierLayer` sections above) to any such
+file to preserve its old look. No project files in the repository itself needed this migration.

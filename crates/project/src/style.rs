@@ -10,16 +10,48 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BarrierStyle, NoteStyle};
-
 fn current_style_version() -> u32 {
     1
 }
 
-/// Black — the canvas background for a `.fmstyle.ron` that doesn't set `background` explicitly
-/// (or the no-imported-style legacy path, see `from_legacy`).
+/// Black — the canvas background for a `.fmstyle.ron` that doesn't set `background` explicitly.
 fn default_background_color() -> ColorBinding {
     ColorBinding::Constant([0, 0, 0])
+}
+
+/// `Project.style`'s serde default and "New Project"/"Reset to default look" value — the app's
+/// actual out-of-the-box look (blue notes, white visible barrier, black background), distinct
+/// from `Style::default()`/`NoteLayer::default()`/`BarrierLayer::default()` (schema-neutral
+/// defaults: plain white notes, no barrier bar shown). Kept separate so a fresh project's
+/// appearance doesn't depend on what a bare `#[derive(Default)]` happens to produce for each
+/// nested type.
+pub fn default_project_style() -> Style {
+    Style {
+        version: current_style_version(),
+        notes: Timed::Static(NoteLayer {
+            fill: Fill::Solid(ColorBinding::Constant([93, 188, 255])),
+            sheen: None,
+            glow: None,
+            roundedness: 1.0,
+            // Matches Neothesia's own vendored default (`default_animation_speed` in
+            // neothesia-core).
+            fall_speed: 400.0,
+            border: None,
+            black_key_fill: BlackKeyFill::Auto,
+            alpha: ScalarBinding::default(),
+        }),
+        barrier: Timed::Static(BarrierLayer {
+            color: ColorBinding::Constant([255, 255, 255]),
+            thickness: 4.0,
+            glow: None,
+            pulse: None,
+            wavy: None,
+            show_bar: true,
+        }),
+        transition: Timed::default(),
+        background: default_background_color(),
+        octave_lines: None,
+    }
 }
 
 /// Top-level `.fmstyle.ron` document: a resolved (or time-keyed) look for each of the three
@@ -76,49 +108,6 @@ impl Style {
             .map_err(|err| format!("failed to read {path:?}: {err}"))?;
         ron::from_str(&text).map_err(|err| format!("failed to parse {path:?}: {err}"))
     }
-
-    /// Produces the exact look the legacy `NoteStyle`/`BarrierStyle` sliders already draw —
-    /// `Fill::Solid`, no sheen/glow, no barrier glow, `TransitionKind::None` — so the renderer
-    /// can always consume a `Style`, whether it was imported from a file or synthesized from
-    /// whatever the Keyboard tab's sliders currently hold. `background_color` is the Keyboard
-    /// tab's own background color picker (`Project::background_color`), not part of `NoteStyle`/
-    /// `BarrierStyle` since it isn't note- or barrier-specific.
-    pub fn from_legacy(
-        note_style: &NoteStyle,
-        barrier_style: &BarrierStyle,
-        background_color: [u8; 3],
-    ) -> Self {
-        Self {
-            version: current_style_version(),
-            notes: Timed::Static(NoteLayer {
-                fill: Fill::Solid(ColorBinding::Constant(note_style.color)),
-                sheen: None,
-                glow: None,
-                roundedness: note_style.roundedness,
-                fall_speed: note_style.fall_speed,
-                border: None,
-                black_key_fill: match note_style.black_key_color {
-                    crate::BlackKeyColorMode::Auto => BlackKeyFill::Auto,
-                    crate::BlackKeyColorMode::Same => BlackKeyFill::Same,
-                    crate::BlackKeyColorMode::Custom(color) => {
-                        BlackKeyFill::Custom(Fill::Solid(ColorBinding::Constant(color)))
-                    }
-                },
-                alpha: ScalarBinding::default(),
-            }),
-            barrier: Timed::Static(BarrierLayer {
-                color: ColorBinding::Constant(barrier_style.color),
-                thickness: barrier_style.thickness,
-                glow: None,
-                pulse: None,
-                wavy: None,
-                show_bar: true,
-            }),
-            transition: Timed::Static(TransitionLayer::default()),
-            background: ColorBinding::Constant(background_color),
-            octave_lines: None,
-        }
-    }
 }
 
 /// Generic "resolved now, or keyed over time" wrapper — the extensibility spine that lets any
@@ -152,6 +141,35 @@ impl<T> Timed<T> {
 impl<T: Default> Default for Timed<T> {
     fn default() -> Self {
         Timed::Static(T::default())
+    }
+}
+
+impl<T: Clone> Timed<T> {
+    /// True if this is a time-keyed timeline rather than a single static value — see the module
+    /// doc comment on `Timed<T>` for why the in-app Style tab only edits the `Static` case.
+    pub fn is_keyed(&self) -> bool {
+        matches!(self, Timed::Keyed(_))
+    }
+
+    /// Collapses a `Keyed` timeline to `Static` at its `resolve(0.0)` value; a no-op if already
+    /// `Static`. v1 only ever resolves `Timed<T>` at `t = 0.0` (see `resolve`'s doc comment), so
+    /// this loses no currently-observable behavior — only unused keyframes past the first.
+    pub fn flatten_to_static(&mut self) {
+        if self.is_keyed() {
+            *self = Timed::Static(self.resolve(0.0).clone());
+        }
+    }
+
+    /// Mutable access to the `Static` value, for in-app editing. Panics if still `Keyed` — call
+    /// `flatten_to_static` first (the Style tab always does, via its "Edit as static" action,
+    /// before offering any editing controls for a `Keyed` layer).
+    pub fn static_mut(&mut self) -> &mut T {
+        match self {
+            Timed::Static(value) => value,
+            Timed::Keyed(_) => {
+                panic!("Timed::static_mut called on a Keyed value; call flatten_to_static first")
+            }
+        }
     }
 }
 
@@ -504,8 +522,8 @@ pub struct Border {
 }
 
 /// The falling notes themselves: fill plus optional sheen/glow/border layered on top, a
-/// roundedness fraction, and the fall speed (see `NoteStyle`'s doc comment for why fall speed
-/// also scales on-screen note length).
+/// roundedness fraction, and the fall speed in pixels/second — `fall_speed` also scales
+/// on-screen note length, since note quad height is `duration_seconds * fall_speed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NoteLayer {
     pub fill: Fill,
@@ -1276,7 +1294,7 @@ mod tests {
 
     #[test]
     fn style_ron_round_trip() {
-        let style = Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
+        let style = default_project_style();
         let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
         let parsed: Style = ron::from_str(&text).unwrap();
         assert_eq!(style, parsed);
@@ -1284,8 +1302,7 @@ mod tests {
 
     #[test]
     fn black_key_fill_custom_gradient_round_trips() {
-        let mut style =
-            Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
+        let mut style = default_project_style();
         let Timed::Static(notes) = &mut style.notes else {
             unreachable!()
         };
@@ -1302,8 +1319,7 @@ mod tests {
     /// `black_key_fill` override independent of the natural-key fill's own variant.
     #[test]
     fn canvas_gradient_fill_round_trips() {
-        let mut style =
-            Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
+        let mut style = default_project_style();
         let Timed::Static(notes) = &mut style.notes else {
             unreachable!()
         };
@@ -1324,8 +1340,7 @@ mod tests {
     /// through RON in its `ByVelocity` form, not just the `Constant` default.
     #[test]
     fn note_layer_alpha_round_trips() {
-        let mut style =
-            Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
+        let mut style = default_project_style();
         let Timed::Static(notes) = &mut style.notes else {
             unreachable!()
         };
@@ -1360,8 +1375,7 @@ mod tests {
 
     #[test]
     fn style_background_round_trips_with_a_non_default_color() {
-        let mut style =
-            Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
+        let mut style = default_project_style();
         style.background = ColorBinding::Constant([12, 34, 56]);
         let text = ron::ser::to_string_pretty(&style, ron::ser::PrettyConfig::new()).unwrap();
         let parsed: Style = ron::from_str(&text).unwrap();
@@ -1372,8 +1386,7 @@ mod tests {
     /// `None`.
     #[test]
     fn octave_lines_round_trips() {
-        let mut style =
-            Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
+        let mut style = default_project_style();
         style.octave_lines = Some(OctaveLineSpec {
             color: [255, 255, 255, 60],
             width_px: 2.0,
@@ -1406,8 +1419,7 @@ mod tests {
     /// round-trip through RON.
     #[test]
     fn barrier_layer_with_glow_and_pulse_brightness_round_trips() {
-        let mut style =
-            Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
+        let mut style = default_project_style();
         let Timed::Static(barrier) = &mut style.barrier else {
             unreachable!()
         };
@@ -1429,7 +1441,7 @@ mod tests {
 
     #[test]
     fn barrier_layer_without_glow_round_trips() {
-        let style = Style::from_legacy(&NoteStyle::default(), &BarrierStyle::default(), [0, 0, 0]);
+        let style = default_project_style();
         let Timed::Static(barrier) = &style.barrier else {
             unreachable!()
         };

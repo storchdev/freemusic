@@ -1,4 +1,5 @@
 mod gpu;
+mod style_ui;
 mod ui;
 
 use std::path::{Path, PathBuf};
@@ -65,96 +66,35 @@ fn even(value: u32) -> u32 {
     (value & !1).max(2)
 }
 
-/// The `NoteLayer` the compositor should actually draw: an imported style's notes layer, or one
-/// synthesized from the legacy `note_style`/`barrier_style` sliders if none has been imported —
-/// mirrors `project::Project::effective_note_layer`, which can't be used directly here since
-/// `UiState` isn't a `Project` (no video/MIDI paths to snapshot just to resolve this).
+/// The `NoteLayer` the compositor should actually draw, resolved at `t = 0.0` — mirrors
+/// `project::Project::effective_note_layer`, which can't be used directly here since `UiState`
+/// isn't a `Project` (no video/MIDI paths to snapshot just to resolve this).
 fn effective_note_layer(ui_state: &UiState) -> NoteLayer {
-    ui_state
-        .style
-        .clone()
-        .unwrap_or_else(|| {
-            Style::from_legacy(
-                &ui_state.note_style,
-                &ui_state.barrier_style,
-                ui_state.background_color,
-            )
-        })
-        .notes
-        .resolve(0.0)
-        .clone()
+    ui_state.style.notes.resolve(0.0).clone()
 }
 
 /// Same idea as `effective_note_layer`, for the barrier axis — mirrors
-/// `project::Project::effective_barrier_layer`, which can't be used directly here for the same
-/// reason `effective_note_layer` can't (`UiState` isn't a `Project`).
+/// `project::Project::effective_barrier_layer`.
 fn effective_barrier_layer(ui_state: &UiState) -> project::BarrierLayer {
-    ui_state
-        .style
-        .clone()
-        .unwrap_or_else(|| {
-            Style::from_legacy(
-                &ui_state.note_style,
-                &ui_state.barrier_style,
-                ui_state.background_color,
-            )
-        })
-        .barrier
-        .resolve(0.0)
-        .clone()
+    ui_state.style.barrier.resolve(0.0).clone()
 }
 
 /// Same idea as `effective_note_layer`/`effective_barrier_layer`, for the barrier-hit transition
 /// axis — mirrors `project::Project::effective_transition_layer`.
 fn effective_transition_layer(ui_state: &UiState) -> project::TransitionLayer {
-    ui_state
-        .style
-        .clone()
-        .unwrap_or_else(|| {
-            Style::from_legacy(
-                &ui_state.note_style,
-                &ui_state.barrier_style,
-                ui_state.background_color,
-            )
-        })
-        .transition
-        .resolve(0.0)
-        .clone()
+    ui_state.style.transition.resolve(0.0).clone()
 }
 
 /// Same idea as `effective_note_layer`/`effective_barrier_layer`/`effective_transition_layer`,
 /// for the canvas background — mirrors `project::Project::effective_background_color`.
 fn effective_background_color(ui_state: &UiState) -> [u8; 3] {
-    ui_state
-        .style
-        .clone()
-        .unwrap_or_else(|| {
-            Style::from_legacy(
-                &ui_state.note_style,
-                &ui_state.barrier_style,
-                ui_state.background_color,
-            )
-        })
-        .background
-        .resolve_constant()
+    ui_state.style.background.resolve_constant()
 }
 
 /// Same idea as `effective_note_layer`/`effective_barrier_layer`/`effective_transition_layer`, for
 /// the octave-boundary reference lines — mirrors `project::Project::effective_octave_lines`.
-/// Unlike those, there's no legacy slider at all for this axis, so a project with no imported
-/// style always resolves to `None` (no lines).
 fn effective_octave_lines(ui_state: &UiState) -> Option<project::OctaveLineSpec> {
-    ui_state
-        .style
-        .clone()
-        .unwrap_or_else(|| {
-            Style::from_legacy(
-                &ui_state.note_style,
-                &ui_state.barrier_style,
-                ui_state.background_color,
-            )
-        })
-        .octave_lines
+    ui_state.style.octave_lines
 }
 
 /// sRGB u8 -> linear f32, matching `render::barrier::srgb_to_linear`/`render::effects::srgb_to_linear`
@@ -454,9 +394,7 @@ impl AppState {
                 sync_offset_seconds: 0.0,
                 calibration: KeyboardCalibration::default(),
                 transform: project::VideoTransform::default(),
-                barrier_style: project::BarrierStyle::default(),
-                note_style: project::NoteStyle::default(),
-                background_color: [0, 0, 0],
+                style: project::default_project_style(),
                 skipped_notes: Vec::new(),
                 duration_edits: Vec::new(),
                 added_notes: Vec::new(),
@@ -473,12 +411,12 @@ impl AppState {
                 open_project_requested: false,
                 save_project_as_requested: false,
                 exit_requested: false,
-                style: None,
                 import_style_requested: false,
                 style_path: None,
                 reload_style_requested: false,
                 style_path_text: String::new(),
                 load_style_path_requested: false,
+                save_style_as_requested: false,
                 status_message: None,
                 export_path_text: String::new(),
                 export_fps: 30,
@@ -663,7 +601,7 @@ impl AppState {
     fn load_style(&mut self, path: &Path) {
         match Style::load(path) {
             Ok(style) => {
-                self.ui_state.style = Some(style);
+                self.ui_state.style = style;
                 self.ui_state.style_path = Some(path.to_path_buf());
                 self.ui_state.style_path_text = path.display().to_string();
                 self.ui_state.status_message =
@@ -685,9 +623,6 @@ impl AppState {
             sync_offset_seconds: self.ui_state.sync_offset_seconds,
             calibration: self.ui_state.calibration,
             transform: self.ui_state.transform,
-            barrier_style: self.ui_state.barrier_style,
-            note_style: self.ui_state.note_style,
-            background_color: self.ui_state.background_color,
             style: self.ui_state.style.clone(),
             skipped_notes: self.ui_state.skipped_notes.clone(),
             duration_edits: self.ui_state.duration_edits.clone(),
@@ -783,10 +718,7 @@ impl AppState {
         self.ui_state.sync_offset_seconds = 0.0;
         self.ui_state.calibration = KeyboardCalibration::default();
         self.ui_state.transform = project::VideoTransform::default();
-        self.ui_state.barrier_style = project::BarrierStyle::default();
-        self.ui_state.note_style = project::NoteStyle::default();
-        self.ui_state.background_color = [0, 0, 0];
-        self.ui_state.style = None;
+        self.ui_state.style = project::default_project_style();
         self.ui_state.style_path = None;
         self.ui_state.style_path_text = String::new();
         self.ui_state.skipped_notes = Vec::new();
@@ -821,9 +753,6 @@ impl AppState {
                 self.ui_state.sync_offset_seconds = project.sync_offset_seconds;
                 self.ui_state.calibration = project.calibration;
                 self.ui_state.transform = project.transform;
-                self.ui_state.barrier_style = project.barrier_style;
-                self.ui_state.note_style = project.note_style;
-                self.ui_state.background_color = project.background_color;
                 self.ui_state.style = project.style.clone();
                 self.ui_state.style_path = None;
                 self.ui_state.style_path_text = String::new();
@@ -1219,6 +1148,23 @@ impl AppState {
             let trimmed = self.ui_state.style_path_text.trim();
             if !trimmed.is_empty() {
                 self.load_style(&PathBuf::from(trimmed));
+            }
+        }
+        if self.ui_state.save_style_as_requested {
+            self.ui_state.save_style_as_requested = false;
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Style", &["ron"])
+                .set_file_name("style.fmstyle.ron")
+                .save_file()
+            {
+                self.ui_state.status_message = Some(match self.ui_state.style.save(&path) {
+                    Ok(()) => {
+                        self.ui_state.style_path = Some(path.clone());
+                        self.ui_state.style_path_text = path.display().to_string();
+                        format!("Saved style to {}", path.display())
+                    }
+                    Err(err) => err,
+                });
             }
         }
         if self.ui_state.new_project_requested {

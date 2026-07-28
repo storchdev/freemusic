@@ -25,11 +25,6 @@ pub struct UiState {
     pub sync_offset_seconds: f64,
     pub calibration: project::KeyboardCalibration,
     pub transform: project::VideoTransform,
-    pub barrier_style: project::BarrierStyle,
-    pub note_style: project::NoteStyle,
-    /// Canvas clear color for the legacy (no-imported-style) path — mirrors
-    /// `project::Project::background_color`, edited by the Keyboard tab's "Background" picker.
-    pub background_color: [u8; 3],
     /// Skip list — notes excluded from rendering/playback, mirroring
     /// `project::Project::skipped_notes`. Edited directly by the note editor's trash/restore
     /// icons (`draw_note_editor`) with no staging/confirmation step; the app loop dirty-checks
@@ -71,14 +66,12 @@ pub struct UiState {
     pub open_project_requested: bool,
     pub save_project_as_requested: bool,
     pub exit_requested: bool,
-    /// A fully imported `.fmstyle.ron` look, set by the Project tab's "Import style…" button.
-    /// When `Some`, this is the effective style the renderer should use instead of one
-    /// synthesized from `barrier_style`/`note_style` (see `project::Style::from_legacy`) — the
-    /// Keyboard tab's sliders still edit those legacy fields, but they're overridden while a
-    /// style is imported. `None` means "use the legacy sliders".
-    pub style: Option<project::Style>,
+    /// The project's live, always-present visual look — edited directly by the Style tab. Mirrors
+    /// `project::Project::style`.
+    pub style: project::Style,
     /// Set by the "Import style…" button; the app loop consumes and clears it each redraw,
-    /// popping a native `rfd` file picker and loading whatever the user chose into `style`.
+    /// popping a native `rfd` file picker and loading whatever the user chose into `style`
+    /// (replacing it wholesale).
     pub import_style_requested: bool,
     /// Filesystem path of the last-imported `.fmstyle.ron`, mirrored alongside `style` whenever
     /// it's loaded from a file (`None` for a style embedded directly in a loaded project, since
@@ -100,6 +93,11 @@ pub struct UiState {
     /// loop consumes and clears it each redraw, loading `style_path_text` the same way
     /// `reload_style_requested` loads `style_path`.
     pub load_style_path_requested: bool,
+    /// Set by the "Save style as…" button; the app loop consumes and clears it each redraw,
+    /// popping a native `rfd` save dialog and writing the current live `style` to whatever path
+    /// the user chose — the missing half of the import/export loop now that a style is always
+    /// live-edited rather than only ever loaded from a file.
+    pub save_style_as_requested: bool,
     pub status_message: Option<String>,
     /// Path typed into the Export text field; defaulted from the video path on first load.
     pub export_path_text: String,
@@ -185,6 +183,7 @@ pub enum Tab {
     #[default]
     Project,
     Keyboard,
+    Style,
     Transform,
     Export,
 }
@@ -285,6 +284,7 @@ fn draw_side_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 ui.horizontal_wrapped(|ui| {
                     tab_button(ui, state, Tab::Project, "Project");
                     tab_button(ui, state, Tab::Keyboard, "Keyboard");
+                    tab_button(ui, state, Tab::Style, "Style");
                     tab_button(ui, state, Tab::Transform, "Transform");
                     tab_button(ui, state, Tab::Export, "Export");
                     if ui.button("«").on_hover_text("Collapse panel").clicked() {
@@ -304,6 +304,7 @@ fn draw_side_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     .show(ui, |ui| match state.active_tab {
                         Tab::Project => draw_project_tab(ui, state),
                         Tab::Keyboard => draw_keyboard_tab(ui, state),
+                        Tab::Style => draw_style_tab(ui, state),
                         Tab::Transform => draw_transform_tab(ui, &mut state.transform),
                         Tab::Export => draw_export_tab(ui, state),
                     });
@@ -340,7 +341,7 @@ fn tab_button(ui: &mut egui::Ui, state: &mut UiState, tab: Tab, label: &str) {
 /// out-of-range result is reverted to whatever the field held before this edit began, rather than
 /// snapped to the nearest bound. Dragging the slider handle itself is unaffected (egui always
 /// keeps that within `range`).
-fn validated_slider(
+pub(crate) fn validated_slider(
     ui: &mut egui::Ui,
     value: &mut f32,
     range: std::ops::RangeInclusive<f32>,
@@ -362,7 +363,7 @@ fn validated_slider(
 
 /// Darkens an sRGB u8 color by `factor` — matches `render::notes`' own sharp-key darkening, used
 /// here only to seed a sensible starting color when switching the black-key mode to `Custom`.
-fn darken_color(color: [u8; 3], factor: f32) -> [u8; 3] {
+pub(crate) fn darken_color(color: [u8; 3], factor: f32) -> [u8; 3] {
     [
         (color[0] as f32 * factor) as u8,
         (color[1] as f32 * factor) as u8,
@@ -668,8 +669,11 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
     );
 
     ui.separator();
-    ui.heading("Barrier");
-    ui.label("Drag the guide on the preview, or use the slider below.");
+    ui.heading("Barrier position");
+    ui.label(
+        "Drag the guide on the preview, or use the slider below. Barrier appearance \
+        (color/glow/pulse/wavy edge) is on the Style tab.",
+    );
     ui.horizontal(|ui| {
         ui.label("Position:");
         validated_slider(
@@ -679,84 +683,64 @@ fn draw_keyboard_tab(ui: &mut egui::Ui, state: &mut UiState) {
             None,
         );
     });
-    ui.horizontal(|ui| {
-        ui.label("Color:");
-        ui.color_edit_button_srgb(&mut state.barrier_style.color);
-    });
-    ui.horizontal(|ui| {
-        ui.label("Thickness:");
-        validated_slider(ui, &mut state.barrier_style.thickness, 1.0..=12.0, None);
-    });
-    if ui.button("Reset barrier").clicked() {
+    if ui.button("Reset barrier position").clicked() {
         state.calibration.barrier_fraction =
             project::KeyboardCalibration::default().barrier_fraction;
-        state.barrier_style = project::BarrierStyle::default();
     }
+}
 
-    ui.separator();
-    ui.heading("Note style");
-    ui.horizontal(|ui| {
-        ui.label("Color:");
-        ui.color_edit_button_srgb(&mut state.note_style.color);
-    });
-    ui.horizontal(|ui| {
-        ui.label("Black keys:");
-        let mode_label = match state.note_style.black_key_color {
-            project::BlackKeyColorMode::Auto => "Auto",
-            project::BlackKeyColorMode::Same => "Same",
-            project::BlackKeyColorMode::Custom(_) => "Custom",
-        };
-        egui::ComboBox::from_id_salt("black_key_color_mode")
-            .selected_text(mode_label)
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(mode_label == "Auto", "Auto").clicked() {
-                    state.note_style.black_key_color = project::BlackKeyColorMode::Auto;
-                }
-                if ui.selectable_label(mode_label == "Same", "Same").clicked() {
-                    state.note_style.black_key_color = project::BlackKeyColorMode::Same;
-                }
-                if ui
-                    .selectable_label(mode_label == "Custom", "Custom")
-                    .clicked()
-                    && mode_label != "Custom"
-                {
-                    // Seed with the same darkening Auto already applies, so switching modes
-                    // doesn't jump to an arbitrary color.
-                    state.note_style.black_key_color = project::BlackKeyColorMode::Custom(
-                        darken_color(state.note_style.color, 0.6),
-                    );
-                }
-            });
-    });
-    if let project::BlackKeyColorMode::Custom(color) = &mut state.note_style.black_key_color {
-        ui.horizontal(|ui| {
-            ui.label("Black key color:");
-            ui.color_edit_button_srgb(color);
-        });
-    }
-    ui.horizontal(|ui| {
-        ui.label("Roundedness:");
-        validated_slider(ui, &mut state.note_style.roundedness, 0.0..=3.0, None);
-    });
-    ui.horizontal(|ui| {
-        ui.label("Fall speed:");
-        validated_slider(ui, &mut state.note_style.fall_speed, 50.0..=2000.0, Some(0));
-    })
-    .response
-    .on_hover_text("Also changes how long each note looks, since a note's on-screen length is its duration times this speed.");
-    if ui.button("Reset note style").clicked() {
-        state.note_style = project::NoteStyle::default();
+/// All visual styling: background, falling notes, barrier appearance, barrier-hit transitions
+/// (particles/flash), and octave reference lines — everything in `project::Style`. See
+/// `docs/fmstyle-format.md` for the full field-by-field contract these widgets edit, and
+/// `style_ui` for the reusable editor functions used throughout.
+fn draw_style_tab(ui: &mut egui::Ui, state: &mut UiState) {
+    ui.label(
+        "Edits here apply live. Use the Project tab's Import/Save-as buttons to load or share \
+        a look as a `.fmstyle.ron` file.",
+    );
+    if ui.button("Reset to default look").clicked() {
+        state.style = project::default_project_style();
     }
 
     ui.separator();
     ui.heading("Background");
-    ui.label("Canvas color behind the video and note highway.");
-    ui.horizontal(|ui| {
-        ui.label("Color:");
-        ui.color_edit_button_srgb(&mut state.background_color);
-    });
-    if ui.button("Reset background").clicked() {
-        state.background_color = [0, 0, 0];
+    crate::style_ui::edit_color_binding(
+        ui,
+        "background_color",
+        "Color",
+        &mut state.style.background,
+    );
+
+    ui.separator();
+    ui.heading("Octave lines");
+    crate::style_ui::optional_section(
+        ui,
+        "Show octave lines",
+        &mut state.style.octave_lines,
+        || project::OctaveLineSpec {
+            color: [255, 255, 255, 60],
+            width_px: 2.0,
+        },
+        crate::style_ui::edit_octave_line_spec,
+    );
+
+    ui.separator();
+    ui.heading("Notes");
+    if let Some(layer) = crate::style_ui::timed_static_mut(ui, &mut state.style.notes) {
+        crate::style_ui::edit_note_layer(ui, layer);
+    }
+
+    ui.separator();
+    ui.heading("Barrier");
+    if let Some(layer) = crate::style_ui::timed_static_mut(ui, &mut state.style.barrier) {
+        crate::style_ui::edit_barrier_layer(ui, layer);
+    }
+
+    ui.separator();
+    ui.heading("Transitions");
+    ui.label("Particles and/or a flash spawned when a note arrives at the barrier.");
+    if let Some(layer) = crate::style_ui::timed_static_mut(ui, &mut state.style.transition) {
+        crate::style_ui::edit_transition_layer(ui, layer);
     }
 }
 
@@ -780,6 +764,7 @@ fn draw_project_tab(ui: &mut egui::Ui, state: &mut UiState) {
 
     ui.separator();
     ui.heading("Style");
+    ui.label("Edit the live look on the Style tab; use these to load or share it as a file.");
     ui.horizontal(|ui| {
         if ui.button("Import style…").clicked() {
             state.import_style_requested = true;
@@ -791,6 +776,9 @@ fn draw_project_tab(ui: &mut egui::Ui, state: &mut UiState) {
         {
             state.reload_style_requested = true;
         }
+        if ui.button("Save style as…").clicked() {
+            state.save_style_as_requested = true;
+        }
     });
     ui.horizontal(|ui| {
         ui.label("Style file:");
@@ -800,10 +788,10 @@ fn draw_project_tab(ui: &mut egui::Ui, state: &mut UiState) {
             state.load_style_path_requested = true;
         }
     });
-    ui.label(if state.style.is_some() {
-        "Custom style imported (overrides note/barrier sliders)"
+    ui.label(if state.style_path.is_some() {
+        "Style imported from file — edit further in the Style tab, or Reload to discard edits"
     } else {
-        "Using note/barrier sliders (no style imported)"
+        "Style edited in the Style tab (not backed by a file)"
     });
 
     ui.separator();

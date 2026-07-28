@@ -20,8 +20,9 @@ it ended up that way.
   duration-floor bug.
 - **`ui-milestones.md`** — companion to `docs/ui.md`. The milestone-by-milestone history (6a–6e)
   of the UI restructure, barrier/note-highway styling, the File-menu/native-dialogs milestone,
-  keyboard navigation, synced audio playback, the timeline/waveform polish pass, and the bugs found
-  building each one.
+  keyboard navigation, synced audio playback, the timeline/waveform polish pass, the note editor,
+  the Style tab (full in-app `.fmstyle.ron` editing and the `Option<Style>` → `Style` unification
+  behind it), and the bugs found building each one.
 - **`fmstyle-milestone.md`** — companion to `docs/fmstyle-format.md`. The full phase-by-phase
   (Phase A–Y) development narrative of the `.fmstyle.ron` visual style format and its renderer.
 - **`fmstyle-history.md`** — also a companion to `docs/fmstyle-format.md`. Design history and

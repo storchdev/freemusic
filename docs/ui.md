@@ -27,12 +27,16 @@ computed rect, not the window as a whole.
 
 ## Side panel and tabs
 
-The side panel (`ui::Tab`) is a hand-rolled tab strip with four tabs:
+The side panel (`ui::Tab`) is a hand-rolled tab strip with five tabs:
 
 - **Project** — media open (Open Video…/Open MIDI… via native file-picker dialogs), sync offset,
-  and project actions (New Project, Open Project…, Save Project, Save Project As…, Exit).
-- **Keyboard** — keyboard calibration (left/right/barrier position), camera-stretch calibration,
-  barrier style, note style (color/roundedness/fall speed), and the note editor.
+  style file actions (Import/Reload/Save style as…), and project actions (New Project, Open
+  Project…, Save Project, Save Project As…, Exit).
+- **Keyboard** — keyboard calibration (left/right), camera-stretch calibration, barrier
+  *position*, and the note editor. Purely geometry/notes-as-data — not appearance.
+- **Style** — the project's full visual look: background, falling notes, barrier appearance
+  (color/glow/pulse/wavy edge), barrier-hit transitions (particles/flash), and octave reference
+  lines. See "Style tab" below.
 - **Transform** — video transform controls: brightness, scale, crop, rotation, tilt, translate.
 - **Export** — MP4 export controls and progress.
 
@@ -87,12 +91,15 @@ The Project tab holds all file/project actions — there is no separate top menu
 
 - **Open Video…**/**Open MIDI…** open a native file-picker dialog (`rfd::FileDialog::pick_file()`)
   and load the chosen file.
-- **New Project** clears the loaded video/MIDI and resets sync offset, calibration, transform,
-  barrier style, and note style to their defaults, recreating the compositor from scratch.
+- **New Project** clears the loaded video/MIDI and resets sync offset, calibration, transform, and
+  style to their defaults, recreating the compositor from scratch.
 - **Open Project…**/**Save Project As…** open a native file dialog that populates the project
   path text field, then run the same load/save logic as typing a path directly and pressing
   Load/Save.
 - **Save Project** saves to the currently-set project path.
+- **Import style…**/**⟳**/style path field/**Load**/**Save style as…** load or write the
+  project's `style` as a standalone `.fmstyle.ron` file — see "Style tab" below for the live
+  editing model these buttons feed into.
 - **Exit** closes the application.
 
 ## Keyboard shortcuts
@@ -110,32 +117,65 @@ field's own key handling takes priority).
 | Esc | Cancel an in-progress export |
 | Space | Play / pause |
 
-## Barrier and note-highway styling
+## Barrier position
 
 `project::KeyboardCalibration` includes `barrier_fraction` (0.0 = top of frame, 1.0 = bottom;
 default `0.8`), controlling where the note highway's hit line sits vertically. It's adjustable via
-both a slider and an on-canvas drag handle.
+both a slider (Keyboard tab) and an on-canvas drag handle. Barrier *appearance* (color, glow,
+pulse, wavy edge) is a Style tab concern — see below.
 
-Two style structs are persisted alongside calibration:
+The barrier line is drawn as an egui overlay on top of the preview and is UI-only — it never
+appears in an exported video, though its *position* still gates note clipping (notes stop
+rendering once they reach the hit line), a real effect (a GPU scissor rect) shared by both the
+interactive preview and export.
 
-- `BarrierStyle { color, thickness }` — the barrier line's appearance.
-- `NoteStyle { color, roundedness, fall_speed }` — falling-note appearance and speed.
+## Style tab
 
-The barrier line itself is drawn as an egui overlay on top of the preview and is UI-only — it
-never appears in an exported video. Note clipping at the barrier (notes stop rendering once they
-reach the hit line) is a real effect (a GPU scissor rect) shared by both the interactive preview
-and export.
+`project::Project::style: project::Style` is a full `.fmstyle.ron` look (see
+`docs/fmstyle-format.md` for the field-by-field schema) — always present, always live: every
+control on the Style tab edits it directly, and the compositor picks up the change on the very
+next redraw (the same `note_layer != applied_note_layer`-style dirty-check `app/src/main.rs`
+already used for the note editor drives this too, so no separate wiring was needed per field).
+There is no more "legacy sliders vs. imported style" distinction — a `.fmstyle.ron` file is purely
+an interchange format now (Project tab's Import/Reload/Save style as…), not the only way to set a
+look.
 
-Note color comes from `NoteStyle::color`; the darker/sharp-key variant is the same color with its
-channels multiplied by `0.6`. Note roundedness ranges `0.0..=3.0`: `0.0` gives square corners,
-`1.0` matches the renderer's normal corner rounding, and values up to `3.0` produce
-fully rounded/pill-shaped notes.
+The tab is organized into the same sections as the schema itself:
 
-Fall speed (`NoteStyle::fall_speed`, pixels/second, default `400.0`, slider range 50–2000) sets
-how fast notes travel down the highway. Because a note's on-screen length is
-`duration_seconds * fall_speed`, raising this slider makes notes both fall faster and appear
-proportionally longer, and lowering it makes them slower and shorter — there is no separate
-"note length" control.
+- **Background** — the canvas clear color (`style.background`).
+- **Octave lines** — optional faint per-octave reference lines (`style.octave_lines`).
+- **Notes** — fill (solid/vertical gradient/canvas gradient), optional sheen/glow, roundedness,
+  fall speed, black-key fill mode, alpha (`style.notes`).
+- **Barrier** — color, thickness, show/hide the solid bar, optional glow/pulse/wavy edge (with an
+  optional strand bundle), (`style.barrier`).
+- **Transitions** — particle bursts and/or a barrier-hit flash, including god rays/ring/chromatic
+  aberration on the flash (`style.transition`).
+
+All of this is built from a shared widget library in `app/src/style_ui.rs`: one editor function per
+schema shape, reused everywhere that shape appears (`edit_color_binding`/`edit_scalar_binding` for
+the `ColorBinding`/`ScalarBinding` per-note variants — `Constant`/`By velocity`/`By pitch class`/
+`By pitch`/`By track`, each with its own inline controls; `optional_section` for every `Option<T>`
+field, a checkbox that inserts/removes the value; `edit_glow`/`edit_glow_layers` shared by note and
+barrier glow; `edit_fill` shared by a note's own fill and its black-key override).
+
+**`Timed<T>` scope**: `style.notes`/`style.barrier`/`style.transition` are each wrapped in
+`Timed<T>` (static, or time-keyed — see `docs/fmstyle-format.md`). The Style tab only edits the
+`Static` case, since v1 only ever resolves a `Timed<T>` once at `t = 0.0` anyway. Importing a
+`.fmstyle.ron` whose layer is `Keyed` shows a notice and an "Edit as static" button
+(`style_ui::timed_static_mut`) that flattens it to `Static` at its `resolve(0.0)` value before any
+editing controls for that layer appear — no keyframes are dropped until that button is clicked.
+
+A "Reset to default look" button restores `style` to `project::default_project_style()` — the
+app's out-of-the-box look (blue notes, white visible barrier bar, black background), distinct from
+`Style::default()` (the schema-neutral default used when an old `.fmstyle.ron`/project file omits
+the field entirely).
+
+Note color/fall-speed/roundedness specifics: the black-key darkening under `BlackKeyFill::Auto` is
+the natural-key fill's channels multiplied by `0.6`; roundedness ranges `0.0..=3.0` (`0.0` square
+corners, `1.0` the renderer's normal rounding, up to `3.0` fully rounded/pill-shaped); fall speed
+(pixels/second, default `400.0`, slider range 50–2000) also scales on-screen note length, since a
+note's on-screen length is `duration_seconds * fall_speed` — there is no separate "note length"
+control.
 
 ## Camera-stretch calibration (per-octave keyboard perspective correction)
 
@@ -194,9 +234,10 @@ the transport position:
 
 ## Slider input behavior
 
-All sliders in the Transform tab (brightness, scale, rotation, tilt, translate, crop) and the
-Keyboard tab (calibration, barrier, note roundedness) go through a shared `validated_slider`
-helper:
+All sliders in the Transform tab (brightness, scale, rotation, tilt, translate, crop), the
+Keyboard tab (calibration, barrier position), and the Style tab (roundedness, fall speed,
+thickness, and the numeric fields inside `style_ui`'s editors) go through a shared
+`validated_slider` helper:
 
 - While a slider's numeric text field has keyboard focus, typing does not write into the bound
   value — only egui's internal text buffer changes as you type.

@@ -806,3 +806,73 @@ there" design the skip list already established.
   renders it immediately and shows up in the timeline's density strip, deleting an added note
   removes it for good (no restore), saving/reloading a project round-trips `duration_edits`/
   `added_notes`, and an export reflects the same edits/additions as the live preview.
+
+## Style tab: full in-app `.fmstyle.ron` editing
+
+Before this, the only way to get anything beyond the Keyboard tab's small "quick control" slider
+set (a solid note color/roundedness/fall speed, a solid barrier color/thickness, a background
+color) was to hand-write a `.fmstyle.ron` file externally and import it — none of the richer schema
+(gradients, glow, sheen, barrier pulse/wavy edge/strand bundles, particle/flash transitions, god
+rays, rings, chromatic aberration, per-note `ColorBinding`/`ScalarBinding` variation) had any UI at
+all. The goal of this milestone was to make the *entire* schema editable live in the app, per the
+user's own steer to split the Keyboard tab into Keyboard (calibration/notes-as-data) and a new
+Style tab (everything visual).
+
+- **Model unification came first, deliberately.** Building a full editor for `Style` while also
+  keeping the old `Option<Style>` "imported style overrides sliders" duality around would have left
+  two ways to represent the same look, with the legacy one strictly less capable — so
+  `project::Project.style` was changed from `Option<Style>` to a plain, always-present `Style`
+  before any UI work started, and `NoteStyle`/`BarrierStyle`/`BlackKeyColorMode`/
+  `Style::from_legacy` were deleted outright rather than kept as a fallback. See
+  `docs/narratives/fmstyle-history.md`'s breaking-change log for the full rationale and the
+  hand-migration note for a pre-existing `.fmproj.ron`. This paid off immediately: every
+  `effective_note_layer`/`effective_barrier_layer`/`effective_transition_layer`/
+  `effective_background_color`/`effective_octave_lines` accessor (both `Project`'s own and
+  `app/src/main.rs`'s `UiState`-flavored mirrors) collapsed from an `Option`-branching
+  `.clone().unwrap_or_else(|| Style::from_legacy(...))` to a one-line `self.style.<layer>.resolve
+  (0.0).clone()` — and no new dirty-check plumbing was needed at all, since `app/src/main.rs::
+  apply_post_ui_updates` already recomputed and pushed the effective note/barrier/transition/
+  background/octave-lines values to the compositor every redraw (with the note layer already
+  gated behind a `!=` dirty check via `#[derive(PartialEq)]`). Live editing "just worked" through
+  the existing pipeline the moment `UiState.style` stopped being optional.
+- **A default-look function, kept separate from the schema's own `Default`.** `Style::default()` /
+  `NoteLayer::default()` / `BarrierLayer::default()` are schema-neutral defaults (plain white
+  notes, no glow, `show_bar: false`) meant for "a field was missing in an old file," not "what a
+  fresh project should look like." A new `default_project_style()` function reproduces the old
+  from-legacy look byte-for-byte (blue `(93, 188, 255)` notes, white visible `4px` barrier,
+  black background) and is used for `Project.style`'s serde default, "New Project," and the Style
+  tab's "Reset to default look" button — keeping a fresh project's appearance unchanged by this
+  refactor was treated as a real requirement, not an afterthought.
+- **One widget library, not one editor per field.** `app/src/style_ui.rs` was built around the
+  handful of shapes the schema repeats constantly rather than writing bespoke UI per struct:
+  `edit_color_binding`/`edit_scalar_binding` (the 5-variant `ColorBinding`/`ScalarBinding` picker,
+  reused by every per-note-varying field in the schema — note fill, particle/flash color,
+  brightness, radii, and more), `optional_section` (the `Option<T>` enable/disable-via-checkbox
+  pattern, reused for `sheen`/`glow`/`pulse`/`wavy`/`strands`/`god_rays`/`ring`/`octave_lines`),
+  and `edit_glow`/`edit_glow_layers` (shared verbatim between `NoteLayer::glow` and
+  `BarrierLayer::glow`, since they're the same `Glow` struct). This kept the total added code far
+  smaller than one bespoke section per field would have, and means a future schema field usually
+  just needs a call into an existing widget rather than new plumbing.
+- **`Timed<T>` stayed out of scope, by design, not by accident.** v1 of the schema only ever
+  resolves a `Timed<T>` once at `t = 0.0` (no live mid-song style swapping), so editing a `Keyed`
+  timeline in the UI would be building a feature the renderer can't act on yet. Rather than either
+  silently discarding an imported style's keyframes or blocking the whole layer, `Timed` gained
+  `is_keyed`/`flatten_to_static`/`static_mut` methods and the Style tab shows a notice + explicit
+  "Edit as static" button (`style_ui::timed_static_mut`) per layer — a `Keyed` layer's controls
+  simply don't render until that button collapses it to `Static` at its `resolve(0.0)` value, so no
+  keyframe data is ever dropped without the user asking for it.
+- **The import/export loop was missing a direction.** Before this milestone, `.fmstyle.ron` files
+  could only be *imported*; there was no way to write a live-edited-in-app look back out to a file.
+  A "Save style as…" button (Project tab, next to Import/Reload) closes that gap using the same
+  `Style::save`/`rfd` save-dialog pattern "Save Project As…" already used.
+- Verified by `cargo build`/`cargo clippy --all-targets`/`cargo fmt` (workspace-wide) and
+  `cargo test -p project` (all 39 tests, including a rewritten `project_without_style_field_loads_
+  with_default_style` test — the old line-filter approach for stripping a serialized `style` field
+  out of test RON broke once `style` became a genuinely nested multi-line block instead of a single
+  `style: None,` line, and was replaced with a paren-depth-aware field-stripping helper). Not yet
+  manually exercised in the running app — worth checking next time someone has hands on it: every
+  section of the Style tab (background/octave lines/notes/barrier/transitions) edits live and the
+  preview updates on the next redraw, switching a `ColorBinding`/`ScalarBinding` variant preserves
+  a sensible starting value instead of jumping to an arbitrary one, importing a style with a
+  `Keyed` layer shows the flatten notice instead of a panic, and Save Project/Save style as…
+  round-trip an edited look correctly.

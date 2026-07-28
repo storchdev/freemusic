@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 
 mod style;
 pub use style::{
-    BarrierLayer, BlackKeyFill, Border, ColorBinding, EmissionMode, Fill, FlashColor, FlashMode,
-    FlashSpec, Glow, GlowLayer, GodRaySpec, NoteLayer, OctaveLineSpec, ParticleColor, ParticleSpec,
-    Pulse, Ramp, RingSpec, ScalarBinding, Sheen, StrandSpec, Style, Timed, TransitionKind,
-    TransitionLayer, WavyMode, WavySpec,
+    default_project_style, BarrierLayer, BlackKeyFill, Border, ColorBinding, EmissionMode, Fill,
+    FlashColor, FlashMode, FlashSpec, Glow, GlowLayer, GodRaySpec, NoteLayer, OctaveLineSpec,
+    ParticleColor, ParticleSpec, Pulse, Ramp, RingSpec, ScalarBinding, Sheen, StrandSpec, Style,
+    Timed, TransitionKind, TransitionLayer, WavyMode, WavySpec,
 };
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub video_path: Option<PathBuf>,
     pub midi_path: Option<PathBuf>,
@@ -22,18 +22,11 @@ pub struct Project {
     pub sync_offset_seconds: f64,
     pub calibration: KeyboardCalibration,
     pub transform: VideoTransform,
-    pub barrier_style: BarrierStyle,
-    pub note_style: NoteStyle,
-    /// Canvas clear color for the legacy (no-imported-style) path — mirrors `Style::background`,
-    /// see its doc comment. Defaults to black.
-    #[serde(default)]
-    pub background_color: [u8; 3],
-    /// A full imported `.fmstyle.ron` look, if one has been imported (see `style::Style`); `None`
-    /// if no style has been imported. When present, this is the *effective* style the renderer
-    /// should use instead of one synthesized from `barrier_style`/`note_style` — see
-    /// `Style::from_legacy`.
-    #[serde(default)]
-    pub style: Option<Style>,
+    /// The project's visual look — notes, barrier, transitions, background, octave lines. Always
+    /// present and always live-editable (via the app's Style tab); `.fmstyle.ron` import/export
+    /// just moves a look to/from a shareable file, it isn't the only way to set one.
+    #[serde(default = "default_project_style")]
+    pub style: Style,
     /// Notes manually deleted from the keyboard tab's note editor (`ui::draw_note_editor`) —
     /// excluded from rendering/playback everywhere a `NoteLayer` is applied, without ever
     /// touching the source `.mid` file on disk.
@@ -145,64 +138,6 @@ pub struct CameraStretch {
     pub c_fractions: [f32; 8],
 }
 
-/// Style of the horizontal barrier where falling notes stop, drawn as a plain `egui` overlay
-/// (see `ui::draw_barrier_handle`) rather than a wgpu render pass — no shader needed.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct BarrierStyle {
-    pub color: [u8; 3],
-    pub thickness: f32,
-}
-
-impl Default for BarrierStyle {
-    fn default() -> Self {
-        Self {
-            color: [255, 255, 255],
-            thickness: 4.0,
-        }
-    }
-}
-
-/// Style of the falling notes themselves: a single base color (sharp/black-key notes get a
-/// darkened `dark` variant derived from it, one user-picked color instead of a fixed per-track
-/// palette), a roundedness fraction (0.0 = square corners, 1.0 = the vendored shader's original
-/// default corner radius), and `fall_speed`, the rate (pixels/second) notes travel toward the
-/// barrier. `fall_speed` also scales a note's on-screen length, since `render::notes`'s shader
-/// (vendored from, and still matching, Neothesia's own) sizes each note quad as
-/// `duration_seconds * speed` — there is no separate "length" control.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct NoteStyle {
-    pub color: [u8; 3],
-    pub roundedness: f32,
-    pub fall_speed: f32,
-    /// How black-key notes are colored relative to `color` — mirrors `style::BlackKeyFill` minus
-    /// gradient support (this is the legacy "quick control", not the full `.fmstyle.ron` schema).
-    #[serde(default)]
-    pub black_key_color: BlackKeyColorMode,
-}
-
-impl Default for NoteStyle {
-    fn default() -> Self {
-        Self {
-            color: [93, 188, 255],
-            roundedness: 1.0,
-            // Matches Neothesia's own vendored default (`default_animation_speed` in
-            // neothesia-core).
-            fall_speed: 400.0,
-            black_key_color: BlackKeyColorMode::default(),
-        }
-    }
-}
-
-/// Legacy "quick control" mirror of `style::BlackKeyFill`, minus gradient support (just a solid
-/// custom color) — `Style::from_legacy` converts this into the full `BlackKeyFill` enum.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
-pub enum BlackKeyColorMode {
-    #[default]
-    Auto,
-    Same,
-    Custom([u8; 3]),
-}
-
 /// Video transform applied before compositing: brightness scalar, a crop rectangle (fractions
 /// of the source frame, 0.0/1.0 = uncropped), a translate (pan) offset, a full-range rotation
 /// (`rotation_degrees`, -180..=180, e.g. to flip upside-down footage), and tilt (a small-angle
@@ -245,77 +180,35 @@ impl Default for VideoTransform {
 }
 
 impl Project {
-    /// The `NoteLayer` the renderer should actually draw: an imported `.fmstyle.ron`'s notes
-    /// layer (resolved at `t = 0.0` — no live mid-song style swapping yet, see `Timed::resolve`),
-    /// or one synthesized from the legacy `note_style`/`barrier_style` "quick controls" if no
-    /// style has been imported. Shared by `app` and `export` so both consume the same effective
-    /// look through one code path.
+    /// The `NoteLayer` the renderer should actually draw, resolved at `t = 0.0` (no live
+    /// mid-song style swapping yet, see `Timed::resolve`). Shared by `app` and `export` so both
+    /// consume the same effective look through one code path.
     pub fn effective_note_layer(&self) -> NoteLayer {
-        self.style
-            .clone()
-            .unwrap_or_else(|| {
-                Style::from_legacy(&self.note_style, &self.barrier_style, self.background_color)
-            })
-            .notes
-            .resolve(0.0)
-            .clone()
+        self.style.notes.resolve(0.0).clone()
     }
 
-    /// The `BarrierLayer` the renderer should actually draw — same "imported style wins,
-    /// otherwise synthesize from the legacy sliders" rule as `effective_note_layer`, just for the
-    /// barrier axis instead of the notes axis.
+    /// The `BarrierLayer` the renderer should actually draw — same idea as `effective_note_layer`,
+    /// for the barrier axis.
     pub fn effective_barrier_layer(&self) -> BarrierLayer {
-        self.style
-            .clone()
-            .unwrap_or_else(|| {
-                Style::from_legacy(&self.note_style, &self.barrier_style, self.background_color)
-            })
-            .barrier
-            .resolve(0.0)
-            .clone()
+        self.style.barrier.resolve(0.0).clone()
     }
 
-    /// Same "imported style wins, otherwise synthesize from the legacy sliders" rule as
+    /// The `TransitionLayer` the renderer should actually draw — same idea as
     /// `effective_note_layer`/`effective_barrier_layer`, for the barrier-hit transition axis.
-    /// `Style::from_legacy` always produces `TransitionKind::None`, so a project with no imported
-    /// style spawns no particles/flashes — matching the pre-Phase-E look exactly.
     pub fn effective_transition_layer(&self) -> TransitionLayer {
-        self.style
-            .clone()
-            .unwrap_or_else(|| {
-                Style::from_legacy(&self.note_style, &self.barrier_style, self.background_color)
-            })
-            .transition
-            .resolve(0.0)
-            .clone()
+        self.style.transition.resolve(0.0).clone()
     }
 
-    /// Same "imported style wins, otherwise synthesize from the legacy sliders" rule as
-    /// `effective_note_layer`/`effective_barrier_layer`/`effective_transition_layer`, for the
-    /// canvas background. Unlike those, there's no per-layer struct to resolve out of — a
-    /// `Style`'s `background` is a plain `ColorBinding`, not `Timed`, so this just resolves it to
-    /// a concrete color directly.
+    /// The canvas clear color. Unlike the other `effective_*` accessors there's no per-layer
+    /// struct to resolve out of — a `Style`'s `background` is a plain `ColorBinding`, not
+    /// `Timed`, so this just resolves it to a concrete color directly.
     pub fn effective_background_color(&self) -> [u8; 3] {
-        self.style
-            .clone()
-            .unwrap_or_else(|| {
-                Style::from_legacy(&self.note_style, &self.barrier_style, self.background_color)
-            })
-            .background
-            .resolve_constant()
+        self.style.background.resolve_constant()
     }
 
-    /// Same "imported style wins, otherwise synthesize from the legacy sliders" rule as
-    /// `effective_note_layer`/etc., for the octave-boundary reference lines. Unlike the other
-    /// axes there's no legacy slider for this at all — `Style::from_legacy` always produces
-    /// `None`, so a project with no imported style draws no octave lines.
+    /// The octave-boundary reference lines to draw, if any.
     pub fn effective_octave_lines(&self) -> Option<OctaveLineSpec> {
-        self.style
-            .clone()
-            .unwrap_or_else(|| {
-                Style::from_legacy(&self.note_style, &self.barrier_style, self.background_color)
-            })
-            .octave_lines
+        self.style.octave_lines
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -335,19 +228,58 @@ impl Project {
 mod tests {
     use super::*;
 
-    /// A `.fmproj.ron` file with no `style` key at all should load as `None` rather than
-    /// failing to parse.
+    fn sample_project() -> Project {
+        Project {
+            video_path: None,
+            midi_path: None,
+            sync_offset_seconds: 0.0,
+            calibration: KeyboardCalibration::default(),
+            transform: VideoTransform::default(),
+            style: default_project_style(),
+            skipped_notes: Vec::new(),
+            duration_edits: Vec::new(),
+            added_notes: Vec::new(),
+        }
+    }
+
+    /// Removes a top-level `field: (...)` entry (including its trailing comma) from a compact
+    /// (non-pretty) RON struct body, tracking paren depth so a nested-struct field value like
+    /// `style: (...)` is removed as a whole rather than just its first line.
+    fn strip_ron_field(text: &str, field: &str) -> String {
+        let key_start = text
+            .find(&format!("{field}:"))
+            .expect("field present in serialized RON");
+        let paren_start = text[key_start..].find('(').unwrap() + key_start;
+        let mut depth = 0i32;
+        let mut paren_end = paren_start;
+        for (i, ch) in text[paren_start..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        paren_end = paren_start + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut end = paren_end;
+        if text[end..].starts_with(',') {
+            end += 1;
+        }
+        format!("{}{}", &text[..key_start], &text[end..])
+    }
+
+    /// A `.fmproj.ron` file with no `style` key at all should load using `default_project_style()`
+    /// rather than failing to parse.
     #[test]
-    fn project_without_style_field_loads_with_none() {
-        let text =
-            ron::ser::to_string_pretty(&Project::default(), ron::ser::PrettyConfig::new()).unwrap();
-        let without_style_field: String = text
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("style"))
-            .collect::<Vec<_>>()
-            .join("\n");
+    fn project_without_style_field_loads_with_default_style() {
+        let text = ron::ser::to_string(&sample_project()).unwrap();
+        let without_style_field = strip_ron_field(&text, "style");
 
         let parsed: Project = ron::from_str(&without_style_field).unwrap();
-        assert_eq!(parsed.style, None);
+        assert_eq!(parsed.style, default_project_style());
     }
 }

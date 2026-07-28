@@ -121,10 +121,10 @@ CLI args are optional and order-independent, classified by extension exactly lik
 (`main::main`/`WindowEvent::DroppedFile` in `app/src/main.rs`): `.mid`/`.midi` loads as MIDI,
 `.fmstyle.ron` loads as a visual style (same effect as the Project tab's "Import style…" button —
 see below), a remaining `.ron` (a saved `.fmproj.ron` project file) loads as a project — same code
-path as the Project tab's Load button, so it replaces video/MIDI/sync/calibration/transform/
-barrier/note style with whatever the project file contains — and anything else is treated as the
-video. `app song.fmproj.ron look.fmstyle.ron` and `app video.mp4 song.mid look.fmstyle.ron` both
-work, order-independent, without needing a separate flag.
+path as the Project tab's Load button, so it replaces video/MIDI/sync/calibration/transform/style
+with whatever the project file contains — and anything else is treated as the video.
+`app song.fmproj.ron look.fmstyle.ron` and `app video.mp4 song.mid look.fmstyle.ron` both work,
+order-independent, without needing a separate flag.
 
 Distinguishing `.fmstyle.ron` from a plain `.ron` project file needs a full-filename check
 (`name.ends_with(".fmstyle.ron")`), not just `Path::extension()` — `extension()` only ever returns
@@ -244,12 +244,14 @@ context, not instructions to follow.
   the bug postmortems and design decisions behind it (a rotation-matrix sign bug, a hybrid-core
   scheduling bug behind mouse-move playback lag, an unthrottled-redraw perf bug, sRGB/darkness
   bugs, a crop-box preview overlay that was built and then removed, and more).
-- **`docs/ui.md`** — the current UI: the tabbed side panel, the custom timeline (waveform/scroll/
-  collapsible panel), barrier + note-highway styling controls, the fall-speed slider, the File menu
-  bar and native dialogs, keyboard shortcuts, synced audio playback, per-octave keyboard
+- **`docs/ui.md`** — the current UI: the tabbed side panel (Project/Keyboard/Style/Transform/
+  Export), the custom timeline (waveform/scroll/collapsible panel), the Style tab's full live
+  `.fmstyle.ron` editing (background/notes/barrier/transitions/octave lines, via the reusable
+  `app/src/style_ui.rs` widget library) and its Project-tab file import/export counterpart, the
+  File menu bar and native dialogs, keyboard shortcuts, synced audio playback, per-octave keyboard
   calibration, and the note editor (list/delete/restore, duration editing, adding new notes).
-  `docs/narratives/ui-milestones.md` has the milestone-by-milestone history (6a–6e) and the bugs
-  found building each one.
+  `docs/narratives/ui-milestones.md` has the milestone-by-milestone history (6a–6e, and the later
+  Style-tab unification) and the bugs found building each one.
 - **`explorations/barrier-fx-lab/`** — a standalone WebGL2 HTML page (no build step, no app
   dependency) for prototyping barrier looks — glow sigmas, wavy-edge modes, strand bundles, and
   electric/wispy filament/wisp effects not yet in `barrier.wgsl` — before committing any of it to
