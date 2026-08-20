@@ -34,33 +34,48 @@ struct Vertex {
 // pixel-identical no-op for every instance that doesn't use them.
 // `project::FlashSpec::turbulence` follows the same convention: an unset `TurbulenceSpec` leaves
 // its packed slots (`core_radius.zw`, `layer_amp.w` -- see this struct's own doc comment on why
-// they're packed there rather than a dedicated field/location) zeroed, and `strength_px <= 0.0` is
+// they're packed there rather than a dedicated field) zeroed, and `strength_px <= 0.0` is
 // `domain_warp`'s own off switch.
-// wgpu's vertex-attribute-location limit is 16 (indices 0..15 across *all* buffers bound to one
-// pipeline, including `Vertex`'s own @location(0)) -- this `Instance` struct is already at exactly
-// that limit, so `core_radius`/`layer_amp`/`layer_sigma` below are each widened from vec2/vec3 to
-// vec4 to steal their otherwise-unused trailing component(s) instead of costing extra locations --
-// `layer_sigma.w` in particular carries `FlameCoronaSpec::flicker_independence`, the thirteenth
-// flame-corona field that doesn't fit in `flame_a`/`b`/`c`'s twelve slots. `vs_main` unpacks these
-// into `VertexOutput`'s own (unconstrained -- inter-stage varyings have a much higher limit)
-// `core_radius`/`layer_amp`/`layer_sigma`/`turbulence`/`flicker_independence` fields.
+//
+// Per-instance data lives in a storage buffer (`instances` below), read by `instance_index` in
+// `vs_main`, rather than fed through vertex-buffer attributes -- wgpu caps a pipeline at 16
+// vertex-attribute locations (`Vertex`'s own @location(0) counts too), and this struct's field
+// count had already grown past that limit once (see `docs/narratives/architecture.md`'s flash-core
+// saturation entry and the git history of this file for the attribute-stealing tricks that bought
+// time before this move). A storage buffer has no such cap, so field count can grow freely from
+// here.
+//
+// Every field below is still a plain `vec4<f32>`, though, including ones that are conceptually
+// smaller (`center`/`quad_radius`/`alpha`, grouped/padded into vec4 slots) -- not to save space
+// (irrelevant now) but because WGSL's storage-buffer struct layout rules give `vec4<f32>` both
+// 16-byte alignment and 16-byte size, so consecutive vec4 fields always pack back-to-back with zero
+// implicit padding. Mixing in a `vec2`/`f32`/`vec3` field would silently introduce a padding gap
+// that `render::effects::EffectInstance`'s tightly-packed `#[repr(C)]` Rust struct wouldn't have,
+// corrupting every field read after it -- WGSL forbids lowering a type's alignment below its
+// natural minimum (so gaps like this can't be attributed away), and neither `bytemuck` nor wgpu's
+// bind-group validation checks field-level agreement between the two sides, so a mismatch here
+// would silently read garbled data on the GPU instead of failing to build or run.
 struct Instance {
-    @location(1) center: vec2<f32>,      // pixel-space center
-    @location(2) core_radius: vec4<f32>, // xy = configured half-extent (ellipse-aware); z = turbulence strength_px; w = turbulence scale_px
-    @location(3) quad_radius: vec2<f32>, // core_radius.xy + margin for glow instances, == core_radius.xy for puffs
-    @location(4) alpha: f32,             // 0..1, already carries lifetime/decay fade
-    @location(5) color_stop_0: vec3<f32>,
-    @location(6) color_stop_1: vec3<f32>,
-    @location(7) color_stop_2: vec3<f32>,
-    @location(8) color_stop_3: vec3<f32>,
-    @location(9) color_stop_4: vec3<f32>,
-    @location(10) layer_amp: vec4<f32>,   // xyz = additive corona layer amplitudes, brightness pre-multiplied; w = turbulence speed
-    @location(11) layer_sigma: vec4<f32>, // xyz = additive corona layer sigmas (px); w = flame corona flicker_independence
-    @location(12) flame_a: vec4<f32>,     // x = lobes, y = reach_variance, z = silhouette_speed, w = base_reach_px
-    @location(13) flame_b: vec4<f32>,     // x = streak_freq, y = streak_scale_px, z = streakiness, w = core_frac
-    @location(14) flame_c: vec4<f32>,     // x = tip_softness_px, y = intensity, z = flicker_speed, w = flicker_intensity
-    @location(15) ring_chromatic: vec4<f32>, // x = ring_radius_px, y = ring_width_px, z = ring_intensity, w = chromatic_aberration
+    center_quad_radius: vec4<f32>, // xy = pixel-space center; zw = quad half-extent (core_radius.xy + margin for glow instances, == core_radius.xy for puffs)
+    core_radius: vec4<f32>,        // xy = configured half-extent (ellipse-aware); z = turbulence strength_px; w = turbulence scale_px
+    alpha: vec4<f32>,              // x = 0..1, already carries lifetime/decay fade; yzw unused
+    color_stop_0: vec4<f32>,       // rgb; w unused
+    color_stop_1: vec4<f32>,
+    color_stop_2: vec4<f32>,
+    color_stop_3: vec4<f32>,
+    color_stop_4: vec4<f32>,
+    layer_amp: vec4<f32>,   // xyz = additive corona layer amplitudes, brightness pre-multiplied; w = turbulence speed
+    layer_sigma: vec4<f32>, // xyz = additive corona layer sigmas (px); w = flame corona flicker_independence
+    flame_a: vec4<f32>,     // x = lobes, y = reach_variance, z = silhouette_speed, w = base_reach_px
+    flame_b: vec4<f32>,     // x = streak_freq, y = streak_scale_px, z = streakiness, w = core_frac
+    flame_c: vec4<f32>,     // x = tip_softness_px, y = intensity, z = flicker_speed, w = flicker_intensity
+    ring_chromatic: vec4<f32>, // x = ring_radius_px, y = ring_width_px, z = ring_intensity, w = chromatic_aberration
 }
+
+// One storage buffer per pipeline (additive/alpha) -- `EffectsRenderer` binds each pipeline's own
+// instance buffer here at group 1 before drawing it, see `effects.rs`'s `render`.
+@group(1) @binding(0)
+var<storage, read> instances: array<Instance>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -83,21 +98,25 @@ struct VertexOutput {
 }
 
 @vertex
-fn vs_main(vertex: Vertex, instance: Instance) -> VertexOutput {
+fn vs_main(vertex: Vertex, @builtin(instance_index) instance_index: u32) -> VertexOutput {
+    let instance = instances[instance_index];
+    let center = instance.center_quad_radius.xy;
+    let quad_radius = instance.center_quad_radius.zw;
+
     let local = vertex.position * 2.0 - vec2<f32>(1.0, 1.0);
-    let offset = local * instance.quad_radius;
-    let pixel = instance.center + offset;
+    let offset = local * quad_radius;
+    let pixel = center + offset;
 
     var out: VertexOutput;
     out.position = view_uniform.transform * vec4<f32>(pixel, 0.0, 1.0);
     out.offset = offset;
     out.core_radius = instance.core_radius.xy;
-    out.alpha = instance.alpha;
-    out.color_stop_0 = instance.color_stop_0;
-    out.color_stop_1 = instance.color_stop_1;
-    out.color_stop_2 = instance.color_stop_2;
-    out.color_stop_3 = instance.color_stop_3;
-    out.color_stop_4 = instance.color_stop_4;
+    out.alpha = instance.alpha.x;
+    out.color_stop_0 = instance.color_stop_0.xyz;
+    out.color_stop_1 = instance.color_stop_1.xyz;
+    out.color_stop_2 = instance.color_stop_2.xyz;
+    out.color_stop_3 = instance.color_stop_3.xyz;
+    out.color_stop_4 = instance.color_stop_4.xyz;
     out.layer_amp = instance.layer_amp.xyz;
     out.layer_sigma = instance.layer_sigma.xyz;
     // `core_radius.zw` = turbulence (strength_px, scale_px), `layer_amp.w` = turbulence speed --

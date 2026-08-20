@@ -205,7 +205,17 @@ routinely reaching several times `1.0` well before the boundary, so `fs_glow` ma
 `color * strength_rgb * alpha` through `1.0 - exp(-x)` before returning it — a per-draw tonemap
 compressing toward `1.0` instead of relying on the 8-bit UNORM target's hardware clamp, which would
 otherwise flatten that whole bright interior into a hard-edged solid disc (see
-`docs/narratives/architecture.md`). Transition effects (particle pools) are
+`docs/narratives/architecture.md`). Unlike the note-highway/barrier pipelines (still plain
+per-instance vertex-buffer attributes), `effects.rs`'s per-instance data (`EffectInstance`) is read
+from a storage buffer (`effects.wgsl`'s `instances`, bound at group 1, indexed by
+`@builtin(instance_index)` in `vs_main`) rather than vertex attributes — the only vertex buffer left
+on this pipeline is the shared unit quad's own `position` at location 0. This sidesteps wgpu's
+16-vertex-attribute-location cap entirely (the vertex-attribute version had already grown up against
+it — see `docs/narratives/architecture.md`), at the cost of every `EffectInstance`/`effects.wgsl`
+`Instance` field needing to stay a plain `vec4<f32>` (WGSL's storage-buffer struct layout gives
+`vec4<f32>` matching 16-byte alignment and size, so consecutive fields pack with no implicit padding
+gap the tightly-packed `#[repr(C)]` Rust side wouldn't otherwise have — see `EffectInstance`'s own
+doc comment). Transition effects (particle pools) are
 stateful across redraws — position depends on
 elapsed time, velocity, gravity, spawn time, and RNG state — so the update loop tracks the previous
 transport time, advances the pool by the delta, spawns bursts for note arrivals crossed since the

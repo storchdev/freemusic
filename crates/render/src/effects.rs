@@ -80,22 +80,35 @@ impl Default for ViewUniform {
 /// (`ZERO_FLAME_CORONA`/`ZERO_RING_CHROMATIC` below), which `fs_glow` treats as "effect off"
 /// (`intensity <= 0.0`, `ring_intensity <= 0.0`, `chromatic_amount <= 0.0`), reproducing a plain
 /// elliptical corona exactly. `project::TurbulenceSpec` (same "zeroed is off" convention) has no
-/// dedicated field — wgpu caps a pipeline at 16 vertex attribute locations and this struct was
-/// already at that limit, so its three floats are packed into `core_radius.zw` (strength_px,
-/// scale_px) and `layer_amp.w` (speed) instead, widening those two fields from vec2/vec3 to vec4;
-/// `flame_corona`'s own thirteenth field (`flicker_independence`, beyond the twelve that fit in
-/// `flame_a`/`b`/`c`) is packed the same way into `layer_sigma.w`, widening it from vec3 to vec4 —
+/// dedicated field — its three floats are packed into `core_radius.zw` (strength_px, scale_px) and
+/// `layer_amp.w` (speed) instead; `flame_corona`'s own thirteenth field (`flicker_independence`,
+/// beyond the twelve that fit in `flame_a`/`b`/`c`) is packed into `layer_sigma.w` the same way —
 /// see `effects.wgsl`'s `Instance` struct doc comment for the shader-side unpacking.
+///
+/// This struct is read GPU-side from a storage buffer (`effects.wgsl`'s `instances`), not vertex
+/// attributes, so there's no location-count limit to pack against — but every field is still a
+/// plain `[f32; 4]` (grouping `center`/`quad_radius`/`alpha` into vec4-sized slots too), because
+/// WGSL's storage-buffer layout rules give `vec4<f32>` both 16-byte alignment and 16-byte size:
+/// consecutive vec4 fields always pack back-to-back with zero implicit padding, so this struct's
+/// tightly-packed `#[repr(C)]` Rust layout is guaranteed to match `effects.wgsl`'s `Instance` byte
+/// for byte. Mixing in a smaller field (`[f32; 2]`/`f32`/`[f32; 3]`) would still be tightly packed
+/// on the Rust side, but WGSL would insert an alignment gap before the next field that this side
+/// doesn't have — silently reading garbled data on the GPU instead of failing to build or run,
+/// since neither `bytemuck` nor wgpu's bind-group validation checks field-level agreement between
+/// the two sides. See `effects.wgsl`'s `Instance` doc comment for the shader-side rationale.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct EffectInstance {
-    center: [f32; 2],
+    /// xy = pixel-space center; zw = quad half-extent (`core_radius.xy` + margin for glow
+    /// instances, == `core_radius.xy` for puffs).
+    center_quad_radius: [f32; 4],
     /// xy = configured half-extent (ellipse-aware); z/w = turbulence `strength_px`/`scale_px`
     /// (`0.0`/`0.0` for particles and any flash with `turbulence: None`).
     core_radius: [f32; 4],
-    quad_radius: [f32; 2],
-    alpha: f32,
-    color_stops: [[f32; 3]; FLASH_GRADIENT_STOPS],
+    /// x = 0..1, already carries lifetime/decay fade; yzw unused.
+    alpha: [f32; 4],
+    /// rgb per stop; each stop's w is unused.
+    color_stops: [[f32; 4]; FLASH_GRADIENT_STOPS],
     /// x/y/z = layer[0..3].amplitude, pre-multiplied by the spec's `brightness` at spawn time
     /// (a plain multiply, not a `hot_color` mix — additive saturation whitens for free). w =
     /// turbulence `speed`.
@@ -119,45 +132,20 @@ const ZERO_RING_CHROMATIC: [f32; 4] = [0.0; 4];
 /// `rebuild_instances` fans it out into `EffectInstance`'s packed `core_radius.zw`/`layer_amp.w`.
 const ZERO_TURBULENCE: [f32; 4] = [0.0; 4];
 
-// `color_stops` below is hand-unrolled to `FLASH_GRADIENT_STOPS == 5` explicit locations (5..=9) —
-// `wgpu::vertex_attr_array!` takes a literal list of `location => format` entries, not a
-// const-generic count, so it can't loop over `FLASH_GRADIENT_STOPS` itself. This assertion is the
-// tripwire: bump it (and the two hardcoded ranges just below/in `effects.wgsl`) if that constant
-// ever changes.
+/// Pads an opaque rgb color into `EffectInstance::color_stops`' `[f32; 4]` slot shape (w unused).
+fn pad_color_stops(stops: [[f32; 3]; FLASH_GRADIENT_STOPS]) -> [[f32; 4]; FLASH_GRADIENT_STOPS] {
+    stops.map(|[r, g, b]| [r, g, b, 0.0])
+}
+
+// `EffectInstance::color_stops` is a const-generic `[_; FLASH_GRADIENT_STOPS]` array on this side,
+// but `effects.wgsl`'s `Instance`/`VertexOutput` structs and `sample_stops` still hand-unroll it to
+// `FLASH_GRADIENT_STOPS == 5` explicit named fields (`color_stop_0..color_stop_4`) — WGSL structs
+// have no const-generic field count either. This assertion is the tripwire: bump it (and the
+// hardcoded fields/branches in `effects.wgsl`) if that constant ever changes.
 const _: () = assert!(
     FLASH_GRADIENT_STOPS == 5,
-    "update the hand-unrolled attribute list below"
+    "update the hand-unrolled fields in effects.wgsl"
 );
-
-impl EffectInstance {
-    fn attributes() -> [wgpu::VertexAttribute; 15] {
-        wgpu::vertex_attr_array![
-            1 => Float32x2,  // center
-            2 => Float32x4,  // core_radius (xy = radius, zw = turbulence strength_px/scale_px)
-            3 => Float32x2,  // quad_radius
-            4 => Float32,    // alpha
-            5 => Float32x3,  // color_stops[0]
-            6 => Float32x3,  // color_stops[1]
-            7 => Float32x3,  // color_stops[2]
-            8 => Float32x3,  // color_stops[3]
-            9 => Float32x3,  // color_stops[4]
-            10 => Float32x4, // layer_amp (xyz = amplitudes, w = turbulence speed)
-            11 => Float32x4, // layer_sigma (xyz = sigmas, w = flame corona flicker_independence)
-            12 => Float32x4, // flame_a
-            13 => Float32x4, // flame_b
-            14 => Float32x4, // flame_c
-            15 => Float32x4, // ring_chromatic
-        ]
-    }
-
-    fn layout(attributes: &[wgpu::VertexAttribute]) -> wgpu::VertexBufferLayout<'_> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<EffectInstance>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes,
-        }
-    }
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -485,13 +473,19 @@ pub struct EffectsRenderer {
 
     view_buffer: wgpu::Buffer,
     view_bind_group: wgpu::BindGroup,
+    /// Bind group *layout* for the per-instance storage buffer bound at group 1 -- kept around
+    /// (rather than only used once in `new`) because `upload` must rebuild `additive_bind_group`/
+    /// `alpha_bind_group` from it whenever a buffer is reallocated for more capacity.
+    instance_bind_group_layout: wgpu::BindGroupLayout,
 
     additive_instances: Vec<EffectInstance>,
     additive_buffer: wgpu::Buffer,
+    additive_bind_group: wgpu::BindGroup,
     additive_capacity: usize,
 
     alpha_instances: Vec<EffectInstance>,
     alpha_buffer: wgpu::Buffer,
+    alpha_bind_group: wgpu::BindGroup,
     alpha_capacity: usize,
 
     particles: Vec<Particle>,
@@ -544,9 +538,32 @@ impl EffectsRenderer {
             }],
         });
 
+        // Per-instance data (`EffectInstance`) lives in a storage buffer read by `instance_index`
+        // in `vs_main`, rather than vertex-buffer attributes -- see `effects.wgsl`'s `Instance` doc
+        // comment for why. `read_only: true` since `vs_main` never writes it; `VERTEX` alone
+        // suffices since `fs_glow` only ever sees the already-resolved `VertexOutput`, never reads
+        // this buffer directly.
+        let instance_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("effects_instance_bind_group_layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("effects_pipeline_layout"),
-            bind_group_layouts: &[Some(&view_bind_group_layout)],
+            bind_group_layouts: &[
+                Some(&view_bind_group_layout),
+                Some(&instance_bind_group_layout),
+            ],
             immediate_size: 0,
         });
 
@@ -559,9 +576,6 @@ impl EffectsRenderer {
                 format: wgpu::VertexFormat::Float32x2,
             }],
         };
-        let instance_attributes = EffectInstance::attributes();
-        let instance_layout = EffectInstance::layout(&instance_attributes);
-
         // Screen blend (`src + dst - src*dst`, via `src_factor: OneMinusDst, dst_factor: One`) for
         // flashes and additive-mode particles (sparks, glints — light stacking on light, `fs_glow`'s
         // additive-layered-sum formula): this saturates smoothly toward white instead of plain
@@ -606,7 +620,7 @@ impl EffectsRenderer {
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[quad_vertex_layout.clone(), instance_layout.clone()],
+                    buffers: std::slice::from_ref(&quad_vertex_layout),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -666,6 +680,10 @@ impl EffectsRenderer {
 
         let additive_buffer = Self::create_instance_buffer(device, Self::INITIAL_INSTANCE_CAPACITY);
         let alpha_buffer = Self::create_instance_buffer(device, Self::INITIAL_INSTANCE_CAPACITY);
+        let additive_bind_group =
+            Self::create_instance_bind_group(device, &instance_bind_group_layout, &additive_buffer);
+        let alpha_bind_group =
+            Self::create_instance_bind_group(device, &instance_bind_group_layout, &alpha_buffer);
 
         Self {
             additive_pipeline,
@@ -675,11 +693,14 @@ impl EffectsRenderer {
             quad_index_count: INDICES.len() as u32,
             view_buffer,
             view_bind_group,
+            instance_bind_group_layout,
             additive_instances: Vec::new(),
             additive_buffer,
+            additive_bind_group,
             additive_capacity: Self::INITIAL_INSTANCE_CAPACITY,
             alpha_instances: Vec::new(),
             alpha_buffer,
+            alpha_bind_group,
             alpha_capacity: Self::INITIAL_INSTANCE_CAPACITY,
             particles: Vec::new(),
             flashes: Vec::new(),
@@ -693,8 +714,26 @@ impl EffectsRenderer {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("effects_instance_buffer"),
             size: (std::mem::size_of::<EffectInstance>() * capacity.max(1)) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
+        })
+    }
+
+    /// Rebinds an instance storage buffer to group 1 -- must be re-called (`upload` does this)
+    /// whenever `create_instance_buffer` allocates a new `wgpu::Buffer` (capacity growth), since a
+    /// bind group captures a specific buffer, not a place a buffer might later be swapped into.
+    fn create_instance_bind_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        buffer: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("effects_instance_bind_group"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
         })
     }
 
@@ -1176,7 +1215,12 @@ impl EffectsRenderer {
                 }
             };
             self.additive_instances.push(EffectInstance {
-                center: flash.pos,
+                center_quad_radius: [
+                    flash.pos[0],
+                    flash.pos[1],
+                    core_radius[0] + flash.margin_px,
+                    core_radius[1] + flash.margin_px,
+                ],
                 // zw = turbulence strength_px/scale_px — see `EffectInstance`'s own doc comment
                 // for why they're packed into this field's spare components.
                 core_radius: [
@@ -1185,12 +1229,8 @@ impl EffectsRenderer {
                     flash.turbulence[0],
                     flash.turbulence[1],
                 ],
-                quad_radius: [
-                    core_radius[0] + flash.margin_px,
-                    core_radius[1] + flash.margin_px,
-                ],
-                alpha: t,
-                color_stops,
+                alpha: [t, 0.0, 0.0, 0.0],
+                color_stops: pad_color_stops(color_stops),
                 // w = turbulence speed.
                 layer_amp: [
                     flash.layer_amp[0],
@@ -1222,14 +1262,15 @@ impl EffectsRenderer {
             let t = (particle.life_seconds / particle.lifetime_seconds).clamp(0.0, 1.0);
             let core_radius = [particle.size_px, particle.size_px];
             target.push(EffectInstance {
-                center: particle.pos,
-                core_radius: [core_radius[0], core_radius[1], 0.0, 0.0],
-                quad_radius: [
+                center_quad_radius: [
+                    particle.pos[0],
+                    particle.pos[1],
                     core_radius[0] + particle.margin_px,
                     core_radius[1] + particle.margin_px,
                 ],
-                alpha: t,
-                color_stops: [particle.color; FLASH_GRADIENT_STOPS],
+                core_radius: [core_radius[0], core_radius[1], 0.0, 0.0],
+                alpha: [t, 0.0, 0.0, 0.0],
+                color_stops: pad_color_stops([particle.color; FLASH_GRADIENT_STOPS]),
                 layer_amp: [
                     particle.layer_amp[0],
                     particle.layer_amp[1],
@@ -1254,6 +1295,11 @@ impl EffectsRenderer {
         if self.additive_instances.len() > self.additive_capacity {
             self.additive_capacity = self.additive_instances.len();
             self.additive_buffer = Self::create_instance_buffer(device, self.additive_capacity);
+            self.additive_bind_group = Self::create_instance_bind_group(
+                device,
+                &self.instance_bind_group_layout,
+                &self.additive_buffer,
+            );
         }
         queue.write_buffer(
             &self.additive_buffer,
@@ -1264,6 +1310,11 @@ impl EffectsRenderer {
         if self.alpha_instances.len() > self.alpha_capacity {
             self.alpha_capacity = self.alpha_instances.len();
             self.alpha_buffer = Self::create_instance_buffer(device, self.alpha_capacity);
+            self.alpha_bind_group = Self::create_instance_bind_group(
+                device,
+                &self.instance_bind_group_layout,
+                &self.alpha_buffer,
+            );
         }
         queue.write_buffer(
             &self.alpha_buffer,
@@ -1286,8 +1337,8 @@ impl EffectsRenderer {
         if !self.additive_instances.is_empty() {
             render_pass.set_pipeline(&self.additive_pipeline);
             render_pass.set_bind_group(0, &self.view_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.additive_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.quad_vertex_buffer.slice(..));
-            render_pass.set_vertex_buffer(1, self.additive_buffer.slice(..));
             render_pass
                 .set_index_buffer(self.quad_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(
@@ -1300,8 +1351,8 @@ impl EffectsRenderer {
         if !self.alpha_instances.is_empty() {
             render_pass.set_pipeline(&self.alpha_pipeline);
             render_pass.set_bind_group(0, &self.view_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.alpha_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.quad_vertex_buffer.slice(..));
-            render_pass.set_vertex_buffer(1, self.alpha_buffer.slice(..));
             render_pass
                 .set_index_buffer(self.quad_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(

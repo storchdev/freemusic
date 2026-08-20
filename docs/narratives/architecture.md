@@ -359,6 +359,44 @@ negative to blow up this way, since its `edge_dist` is measured from a thin bar 
 occluded by the opaque core pass drawn on top, not from a filled ellipse with a genuinely negative
 interior.
 
+## Effects instancing moved from vertex-buffer attributes to a storage buffer
+
+The immediately preceding entry's fix (packing `FlameCoronaSpec::flicker_independence` into
+`layer_sigma.w`) landed with `effects.wgsl`'s `Instance` struct already sitting at wgpu's hard cap
+of 16 vertex-attribute locations (`@location(0)..@location(15)`, counting `Vertex`'s own
+`@location(0)`) — every `vec4<f32>` field already had all four components spoken for, so the struct
+had no room left to grow without another packing trick, and the file's own doc comments said so
+explicitly.
+
+Asked directly whether that ceiling would become a problem, then asked to just remove it rather than
+revisit the question later: `EffectInstance`'s per-instance data now lives in a storage buffer
+(`effects.wgsl`'s `instances: array<Instance>`, bound at group 1) read by `@builtin(instance_index)`
+in `vs_main`, instead of being fed through a second vertex buffer's worth of `@location` attributes.
+The quad's own `position` vertex buffer (`@location(0)`, per-vertex, `step_mode: Vertex`) is
+unaffected — only the *instance* data moved. This removes the location cap for this pipeline
+entirely; future `EffectInstance`/`Instance` fields can be added without any packing tricks.
+
+The one real hazard in this move: WGSL computes storage-buffer struct member offsets from its own
+alignment rules (`vec2<f32>` aligns to 8, `vec3<f32>` aligns to 16 but sizes to 12, `vec4<f32>`
+aligns to and sizes to 16), which do *not* match how Rust's `#[repr(C)]` packs the same field types
+(tightly, with no implicit gaps, since every `[f32; N]` field has Rust-side alignment 4 regardless of
+`N`). Porting the struct's field types over as-is (`center: vec2<f32>` followed by
+`core_radius: vec4<f32>`, etc.) would have left the WGSL side inserting alignment padding the Rust
+side doesn't have — a silent per-field byte-offset mismatch neither `bytemuck` nor wgpu's bind-group
+validation checks, so it would have shown up as garbled/nonsensical rendering rather than a build or
+validation error. Avoided by widening every field to a full `vec4<f32>` on both sides — including
+ones that are conceptually smaller (`center`+`quad_radius` merged into one `center_quad_radius` vec4,
+`alpha` and each `color_stop_N` given a vec4 slot with the spare component(s) unused) — since
+`vec4<f32>`'s alignment equals its size, consecutive vec4 fields always pack back-to-back with zero
+gap on both sides by construction, rather than by manually computed and easily-wrong offsets.
+
+`effects.wgsl`'s `color_stop_0`..`color_stop_4` (and `sample_stops`) stayed hand-unrolled to
+`FLASH_GRADIENT_STOPS == 5` named fields rather than becoming a WGSL array — the existing
+`FLASH_GRADIENT_STOPS == 5` compile-time assertion in `effects.rs` (previously guarding a
+`wgpu::vertex_attr_array!` call that could not loop over a const-generic count) was kept for the same
+reason, just re-pointed at the WGSL side, which still can't loop over a const-generic struct field
+count either.
+
 ## Note activity list / duration-floor bug
 
 The Keyboard tab's active-note list originally used the raw MIDI note end to decide what counted as
