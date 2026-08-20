@@ -68,12 +68,25 @@ Ideas being considered for future work, roughly grouped:
 - Experiment with more barrier settings
 - Experiment with more wispy/bubbly particles
 - Reflectivity settings, for a metal-bar look
-- Custom shaders
+- Custom shaders, including an animated/procedural shader background (not just a static texture)
+  that notes see through via the same alpha mechanism as the static-background item above
+- An x-position (screen-space) note color/scalar gradient mirroring the existing canvas-Y-position
+  `Fill::CanvasGradient` — today's whole-keyboard binding (`ColorBinding`/`ScalarBinding::ByPitch`)
+  interpolates by raw MIDI pitch number, not by a note's actual rendered x position
+- A "heat conducting up a metal rod" glow for held notes: while a note is actively crossing the
+  barrier, extra glow/brightness starts at the barrier line and fades out over a fixed reach
+  distance going up into the still-unplayed part of the note, like a blowtorch held under one end
+  of a bar — distinct from `Fill::CanvasGradient` (a fixed top-to-barrier color blend applying to
+  every note regardless of whether it's currently playing); most visible on long/held notes, since
+  short ones are consumed too fast for the falloff to read as a gradient
 
 **UI**
 - Better slider input/dragging mechanics
 - More export options
 - Broader `.fmstyle.ron` feature support in the UI
+- A palette-cycling abstraction over the already-per-pitch-class-settable `ByPitchClass` styles:
+  specify N colors/styles and have them auto-cycle across the 12 keys, so a small color theme
+  (e.g. red/white/blue) doesn't require hand-setting all 12 slots
 
 **End-to-end**
 - Multiple styles within the same timeline (would require reworking the timeline UI and the
