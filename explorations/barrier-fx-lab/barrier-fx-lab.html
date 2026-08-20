@@ -359,7 +359,7 @@
   <div id="rail-header">
     <p class="eyebrow">freemusic &middot; shader exploration</p>
     <h1>Barrier FX Lab</h1>
-    <p class="subtitle">Standalone playground for the note-highway barrier: the existing wavy-edge + 3-layer corona model, plus new electric/wispy options not in the app yet. Also now includes the barrier-hit flash (today's exact round-blob model) plus experimental rays/halo-ring controls, for prototyping a "sun in camera" starburst look.</p>
+    <p class="subtitle">Standalone playground for the note-highway barrier: the existing wavy-edge + 3-layer corona model. Also includes the barrier-hit flash (today's shipped bloom/halo/chromatic-aberration model) plus an experimental 360° flame corona not yet in the app, for prototyping an aurora/solar-corona look.</p>
     <div class="presets" id="presets"></div>
     <div class="action-row">
       <button id="pulse-btn" type="button">Trigger pulse</button>
@@ -442,17 +442,8 @@ const SCHEMA = [
   { key: "strandGlow", group: "wave", type: "range", label: "Strand glow", min: 0, max: 3, step: 0.02, default: 1.3 },
   { key: "strandFlicker", group: "wave", type: "range", label: "Strand flicker speed", min: 0, max: 5, step: 0.02, default: 1.8 },
 
-  { key: "filamentIntensity", group: "filament", type: "range", label: "Intensity", min: 0, max: 2, step: 0.02, default: 0.7 },
-  { key: "filamentSpeed", group: "filament", type: "range", label: "Slide speed", min: -3, max: 3, step: 0.02, default: 0.9 },
-  { key: "filamentScale", group: "filament", type: "range", label: "Streak width", min: 8, max: 150, step: 1, unit: "px", default: 42 },
-
-  { key: "wispDensity", group: "wisps", type: "range", label: "Density", min: 0, max: 1, step: 0.01, default: 0.55 },
-  { key: "wispHeight", group: "wisps", type: "range", label: "Height", min: 0, max: 160, step: 1, unit: "px", default: 46 },
-  { key: "wispFlicker", group: "wisps", type: "range", label: "Flicker speed", min: 0, max: 5, step: 0.02, default: 1.4 },
-  { key: "wispSway", group: "wisps", type: "range", label: "Sway", min: 0, max: 1, step: 0.01, default: 0.5 },
-  { key: "wispIntensity", group: "wisps", type: "range", label: "Intensity", min: 0, max: 2, step: 0.02, default: 0.9 },
-
   { key: "flashEnabled", group: "flash", type: "checkbox", label: "Flash enabled", default: false },
+  { key: "coreLegacyPlateau", group: "flash", type: "checkbox", label: "Legacy flat core (pre-fix, for A/B)", default: false },
   { key: "flashColor", group: "flash", type: "color", label: "Flash color", default: "#ffffff" },
   { key: "flashXFrac", group: "flash", type: "range", label: "Position X", min: 0, max: 1, step: 0.01, default: 0.5 },
   { key: "flashYOffset", group: "flash", type: "range", label: "Position Y offset", min: -200, max: 200, step: 1, unit: "px", default: 0 },
@@ -473,19 +464,20 @@ const SCHEMA = [
   { key: "ringWidth", group: "halo", type: "range", label: "Halo ring width", min: 1, max: 60, step: 1, unit: "px", default: 14 },
   { key: "ringIntensity", group: "halo", type: "range", label: "Halo ring intensity", min: 0, max: 1.5, step: 0.02, default: 0.25 },
 
-  { key: "godRaysEnabled", group: "godrays", type: "checkbox", label: "God rays enabled", default: true },
-  { key: "godRayCount", group: "godrays", type: "range", label: "Beam count", min: 2, max: 24, step: 1, default: 6 },
-  { key: "godRayLength", group: "godrays", type: "range", label: "Beam length", min: 5, max: 900, step: 1, unit: "px", default: 420 },
-  { key: "godRayLengthJitter", group: "godrays", type: "range", label: "Length jitter", min: 0, max: 1, step: 0.01, default: 0.5 },
-  { key: "godRaySoftness", group: "godrays", type: "range", label: "Angular softness", min: 0.5, max: 20, step: 0.1, default: 3.0 },
-  { key: "godRayRotationOffset", group: "godrays", type: "range", label: "Rotation offset", min: 0, max: 360, step: 1, unit: "deg", default: 0 },
-  { key: "godRayRotationSpeed", group: "godrays", type: "range", label: "Rotation speed", min: -60, max: 60, step: 1, unit: "deg/s", default: 0 },
-  { key: "godRayPulseSpeed", group: "godrays", type: "range", label: "Pulse speed (in/out)", min: 0, max: 5, step: 0.02, default: 1.0 },
-  { key: "godRayPulseAmount", group: "godrays", type: "range", label: "Pulse amount (in/out)", min: 0, max: 1, step: 0.01, default: 0.6 },
-  { key: "godRayStreakiness", group: "godrays", type: "range", label: "Streakiness", min: 0, max: 1, step: 0.01, default: 0.6 },
-  { key: "godRayFlickerSpeed", group: "godrays", type: "range", label: "Flicker speed", min: 0, max: 5, step: 0.02, default: 1.2 },
-  { key: "godRayFlickerIntensity", group: "godrays", type: "range", label: "Flicker intensity", min: 0, max: 1, step: 0.01, default: 0.55 },
-  { key: "godRayIntensity", group: "godrays", type: "range", label: "Intensity", min: 0, max: 3, step: 0.02, default: 1.4 },
+  { key: "flameEnabled", group: "flame", type: "checkbox", label: "Flame corona enabled", default: false },
+  { key: "flameLobes", group: "flame", type: "range", label: "Tongue count (angular freq)", min: 1, max: 16, step: 0.5, default: 6 },
+  { key: "flameReachVariance", group: "flame", type: "range", label: "Tongue height variance", min: 0, max: 1, step: 0.01, default: 0.6 },
+  { key: "flameSilhouetteSpeed", group: "flame", type: "range", label: "Silhouette morph speed", min: 0, max: 2, step: 0.01, default: 0.25 },
+  { key: "flameBaseReach", group: "flame", type: "range", label: "Base reach", min: 5, max: 300, step: 1, unit: "px", default: 90 },
+  { key: "flameStreakFreq", group: "flame", type: "range", label: "Streak angular freq", min: 1, max: 40, step: 0.5, default: 10 },
+  { key: "flameStreakScale", group: "flame", type: "range", label: "Streak radial scale", min: 2, max: 100, step: 1, unit: "px", default: 20 },
+  { key: "flameStreakiness", group: "flame", type: "range", label: "Streak contrast", min: 0, max: 1, step: 0.01, default: 0.7 },
+  { key: "flameCoreFrac", group: "flame", type: "range", label: "Solid core fraction", min: 0, max: 1, step: 0.01, default: 0.15 },
+  { key: "flameTipSoftness", group: "flame", type: "range", label: "Tip fray softness", min: 1, max: 80, step: 1, unit: "px", default: 20 },
+  { key: "flameIntensity", group: "flame", type: "range", label: "Intensity", min: 0, max: 3, step: 0.02, default: 1.0 },
+  { key: "flameFlickerSpeed", group: "flame", type: "range", label: "Flicker speed", min: 0, max: 12, step: 0.02, default: 1.5 },
+  { key: "flameFlickerIntensity", group: "flame", type: "range", label: "Flicker intensity", min: 0, max: 3, step: 0.01, default: 0.35 },
+  { key: "flameFlickerIndependence", group: "flame", type: "range", label: "Flicker independence", min: 0, max: 1, step: 0.01, default: 0 },
 
   { key: "chromaticEnabled", group: "chromatic", type: "checkbox", label: "Chromatic aberration enabled", default: true },
   { key: "chromaticAmount", group: "chromatic", type: "range", label: "Amount", min: 0, max: 0.25, step: 0.005, default: 0.05 },
@@ -500,11 +492,9 @@ const GROUPS = [
   { id: "core", title: "Core bar" },
   { id: "glow", title: "Corona (glow)" },
   { id: "wave", title: "Wavy edge" },
-  { id: "filament", title: "Electric — sliding filament" },
-  { id: "wisps", title: "Electric — wisps" },
   { id: "flash", title: "Flash — bloom / glow (core, today's app)" },
   { id: "halo", title: "Flash — halo ring" },
-  { id: "godrays", title: "Flash — god rays (volumetric)" },
+  { id: "flame", title: "Flash — flame corona (aurora-style, 360°)" },
   { id: "chromatic", title: "Flash — chromatic aberration" },
   { id: "scene", title: "Scene" },
 ];
@@ -517,8 +507,6 @@ const PRESETS = {
     layerAmp1: 2.6, layerSigma1: 5, layerAmp2: 1.1, layerSigma2: 16, layerAmp3: 0.38, layerSigma3: 48,
     wavyEnabled: true, wavyMode: "1", waveAmp: 7, waveLen: 55, waveSpeed: 3.5, slideSpeed: 40,
     strandCount: 6, strandSpread: 16, strandJitter: 0.8, strandThickness: 1.3, strandHaloAmp: 1.0, strandHaloSigma: 6, strandGlow: 1.5, strandFlicker: 2.0,
-    filamentIntensity: 0.7, filamentSpeed: 0.9, filamentScale: 42,
-    wispDensity: 0.55, wispHeight: 46, wispFlicker: 1.4, wispSway: 0.5, wispIntensity: 0.9,
     flashEnabled: false,
     barrierYFrac: 0.34, keyWidth: 34, vignette: 0.35, exposure: 1.0,
   },
@@ -529,8 +517,6 @@ const PRESETS = {
     layerAmp1: 2.2, layerSigma1: 4, layerAmp2: 1.3, layerSigma2: 18, layerAmp3: 0.5, layerSigma3: 55,
     wavyEnabled: true, wavyMode: "1", waveAmp: 5, waveLen: 40, waveSpeed: 6.5, slideSpeed: 90,
     strandCount: 7, strandSpread: 20, strandJitter: 0.9, strandThickness: 1.0, strandHaloAmp: 1.2, strandHaloSigma: 5, strandGlow: 1.6, strandFlicker: 3.2,
-    filamentIntensity: 1.1, filamentSpeed: 1.8, filamentScale: 26,
-    wispDensity: 0.7, wispHeight: 60, wispFlicker: 2.4, wispSway: 0.8, wispIntensity: 1.2,
     flashEnabled: false,
     barrierYFrac: 0.34, keyWidth: 34, vignette: 0.4, exposure: 1.05,
   },
@@ -541,8 +527,6 @@ const PRESETS = {
     layerAmp1: 3.0, layerSigma1: 6, layerAmp2: 1.4, layerSigma2: 20, layerAmp3: 0.5, layerSigma3: 60,
     wavyEnabled: true, wavyMode: "2", waveAmp: 12, waveLen: 120, waveSpeed: 1.4, slideSpeed: 15,
     strandCount: 4, strandSpread: 22, strandJitter: 0.6, strandThickness: 2.0, strandHaloAmp: 0.7, strandHaloSigma: 9, strandGlow: 1.1, strandFlicker: 1.0,
-    filamentIntensity: 0.4, filamentSpeed: 0.4, filamentScale: 60,
-    wispDensity: 0.4, wispHeight: 80, wispFlicker: 0.9, wispSway: 0.35, wispIntensity: 1.1,
     flashEnabled: false,
     barrierYFrac: 0.36, keyWidth: 36, vignette: 0.3, exposure: 1.1,
   },
@@ -553,8 +537,6 @@ const PRESETS = {
     layerAmp1: 2.6, layerSigma1: 5, layerAmp2: 1.1, layerSigma2: 16, layerAmp3: 0.38, layerSigma3: 48,
     wavyEnabled: false, wavyMode: "0", waveAmp: 0, waveLen: 55, waveSpeed: 0, slideSpeed: 0,
     strandCount: 1, strandSpread: 0, strandJitter: 0, strandThickness: 1.4, strandHaloAmp: 0, strandHaloSigma: 5, strandGlow: 0, strandFlicker: 1,
-    filamentIntensity: 0, filamentSpeed: 0, filamentScale: 42,
-    wispDensity: 0.5, wispHeight: 0, wispFlicker: 1, wispSway: 0.5, wispIntensity: 0,
     flashEnabled: false,
     barrierYFrac: 0.34, keyWidth: 34, vignette: 0.3, exposure: 1.0,
   },
@@ -565,42 +547,39 @@ const PRESETS = {
     layerAmp1: 2.6, layerSigma1: 5, layerAmp2: 1.1, layerSigma2: 16, layerAmp3: 0.38, layerSigma3: 48,
     wavyEnabled: false, wavyMode: "0", waveAmp: 0, waveLen: 55, waveSpeed: 0, slideSpeed: 0,
     strandCount: 1, strandSpread: 0, strandJitter: 0, strandThickness: 1.4, strandHaloAmp: 0, strandHaloSigma: 5, strandGlow: 0, strandFlicker: 1,
-    filamentIntensity: 0, filamentSpeed: 0, filamentScale: 42,
-    wispDensity: 0.5, wispHeight: 0, wispFlicker: 1, wispSway: 0.5, wispIntensity: 0,
     flashEnabled: true, flashColor: "#ffffff", flashXFrac: 0.5, flashYOffset: 0,
     flashRadiusX: 70, flashRadiusY: 40, flashBrightness: 1.0, flashDecay: 0.2,
     flashLayerAmp1: 2.6, flashLayerSigma1: 2.0, flashLayerAmp2: 1.1, flashLayerSigma2: 5.0, flashLayerAmp3: 0.38, flashLayerSigma3: 10.0,
     flashFlickerSpeed: 0, flashFlickerIntensity: 0,
     ringRadius: 90, ringWidth: 14, ringIntensity: 0,
-    godRaysEnabled: false, godRayCount: 6, godRayLength: 20, godRayLengthJitter: 0.5, godRaySoftness: 3.0,
-    godRayRotationOffset: 0, godRayRotationSpeed: 0, godRayPulseSpeed: 1.0, godRayPulseAmount: 0.6,
-    godRayStreakiness: 0.6,
-    godRayFlickerSpeed: 1.2, godRayFlickerIntensity: 0.55, godRayIntensity: 1.4,
+    flameEnabled: false,
     chromaticEnabled: false, chromaticAmount: 0.05,
     barrierYFrac: 0.34, keyWidth: 34, vignette: 0.3, exposure: 1.0,
   },
-  // Exact settings dialed in by hand (via Export settings) for the "photograph of the sun from
-  // Earth" target look -- see the god-rays/halo/chromatic-aberration groups' own comments for what
-  // each surviving slider does.
-  "Flash: photoreal sunburst": {
+  // A continuous flame corona wrapping the full 360 degrees around the light center, closer to an
+  // aurora curtain or solar-corona photograph than a beam-based starburst -- see
+  // flameCoronaStrength's own comment. Dialed in by hand (via Export settings); the streaks are a
+  // static woven texture (no outward flow) and the whole corona pulses via flameFlickerSpeed/
+  // flameFlickerIntensity instead, like a real light source guttering rather than material
+  // streaming outward.
+  "Flash: aurora corona": {
     coreColor: "#fff6e0", glowColor: "#fff6e0", showBar: true, thickness: 4,
     brightnessBase: 1, brightnessPeak: 1.5, pulseDecay: 0.3,
     glowIntensity: 0.5, glowSizeScale: 1,
     layerAmp1: 2.6, layerSigma1: 5, layerAmp2: 1.1, layerSigma2: 16, layerAmp3: 0.38, layerSigma3: 48,
     wavyEnabled: false, wavyMode: "0", waveAmp: 0, waveLen: 55, waveSpeed: 0, slideSpeed: 0,
     strandCount: 1, strandSpread: 0, strandJitter: 0, strandThickness: 1.4, strandHaloAmp: 0, strandHaloSigma: 5, strandGlow: 0, strandFlicker: 1,
-    filamentIntensity: 0, filamentSpeed: 0, filamentScale: 42,
-    wispDensity: 0.5, wispHeight: 0, wispFlicker: 1, wispSway: 0.5, wispIntensity: 0,
     flashEnabled: true, flashColor: "#fff6e0", flashXFrac: 0.5, flashYOffset: 200,
-    flashRadiusX: 11, flashRadiusY: 11, flashBrightness: 1.12, flashDecay: 0.05,
+    flashRadiusX: 14, flashRadiusY: 14, flashBrightness: 1.12, flashDecay: 0.05,
     flashLayerAmp1: 2.05, flashLayerSigma1: 5.5, flashLayerAmp2: 1.75, flashLayerSigma2: 17, flashLayerAmp3: 0.6, flashLayerSigma3: 21.5,
     flashFlickerSpeed: 0, flashFlickerIntensity: 0,
-    ringRadius: 67, ringWidth: 24, ringIntensity: 0.1,
-    godRaysEnabled: true, godRayCount: 24, godRayLength: 72, godRayLengthJitter: 0, godRaySoftness: 1.7,
-    godRayRotationOffset: 4, godRayRotationSpeed: 0, godRayPulseSpeed: 0, godRayPulseAmount: 0,
-    godRayStreakiness: 1,
-    godRayFlickerSpeed: 4.16, godRayFlickerIntensity: 1, godRayIntensity: 0.38,
-    chromaticEnabled: true, chromaticAmount: 0.07,
+    ringRadius: 96, ringWidth: 24, ringIntensity: 0.04,
+    flameEnabled: true, flameLobes: 5, flameReachVariance: 0.5, flameSilhouetteSpeed: 0,
+    flameBaseReach: 28, flameStreakFreq: 1, flameStreakScale: 38,
+    flameStreakiness: 0.33, flameCoreFrac: 0, flameTipSoftness: 35, flameIntensity: 1.32,
+    flameFlickerSpeed: 3.42, flameFlickerIntensity: 0.36, flameFlickerIndependence: 1,
+    chromaticEnabled: true, chromaticAmount: 0.035,
+    coreLegacyPlateau: false,
     barrierYFrac: 0.34, keyWidth: 34, vignette: 0.45, exposure: 1.1,
   },
 };
@@ -875,8 +854,7 @@ document.addEventListener("keydown", (e) => {
 
 // ---------------------------------------------------------------------------
 // WebGL2 setup: a single fullscreen-triangle fragment shader renders the
-// entire scene (background, procedural piano keys, barrier core, corona,
-// sliding filament, wisps).
+// entire scene (background, procedural piano keys, barrier core, corona, barrier-hit flash).
 // ---------------------------------------------------------------------------
 const canvas = document.getElementById("gl");
 const gl = canvas.getContext("webgl2", { antialias: true, alpha: false });
@@ -927,16 +905,6 @@ uniform float uStrandHaloSigma;
 uniform float uStrandGlow;
 uniform float uStrandFlicker;
 
-uniform float uFilamentIntensity;
-uniform float uFilamentSpeed;
-uniform float uFilamentScale;
-
-uniform float uWispDensity;
-uniform float uWispHeight;
-uniform float uWispFlicker;
-uniform float uWispSway;
-uniform float uWispIntensity;
-
 uniform float uBarrierYFrac;
 uniform float uKeyWidth;
 uniform float uVignette;
@@ -959,19 +927,22 @@ uniform float uRingRadius;
 uniform float uRingWidth;
 uniform float uRingIntensity;
 
-uniform float uGodRaysEnabled;
-uniform float uGodRayCount;
-uniform float uGodRayLength;
-uniform float uGodRayLengthJitter;
-uniform float uGodRaySoftness;
-uniform float uGodRayRotationOffset;
-uniform float uGodRayRotationSpeed;
-uniform float uGodRayPulseSpeed;
-uniform float uGodRayPulseAmount;
-uniform float uGodRayStreakiness;
-uniform float uGodRayFlickerSpeed;
-uniform float uGodRayFlickerIntensity;
-uniform float uGodRayIntensity;
+uniform float uCoreLegacyPlateau;
+
+uniform float uFlameEnabled;
+uniform float uFlameLobes;
+uniform float uFlameReachVariance;
+uniform float uFlameSilhouetteSpeed;
+uniform float uFlameBaseReach;
+uniform float uFlameStreakFreq;
+uniform float uFlameStreakScale;
+uniform float uFlameStreakiness;
+uniform float uFlameCoreFrac;
+uniform float uFlameTipSoftness;
+uniform float uFlameIntensity;
+uniform float uFlameFlickerSpeed;
+uniform float uFlameFlickerIntensity;
+uniform float uFlameFlickerIndependence;
 
 uniform float uChromaticEnabled;
 uniform float uChromaticAmount;
@@ -1040,7 +1011,7 @@ struct EdgeShape { float coreAlpha; float edgeDist; float h; float topEdge; floa
 
 // Ported from barrier.wgsl's edge_shape, but for WebGL's y-up fragCoord convention
 // (larger y = higher on screen) instead of wgsl's y-down @builtin(position): "top"
-// (where wisps rise from) is the +y side of the bar here, not the -y side.
+// (where the wavy edge/strands rise from) is the +y side of the bar here, not the -y side.
 EdgeShape edgeShape(float fragY, float fragX, float barrierY) {
   float halfT = uThickness * 0.5;
   float wave = wavyOffset(fragX);
@@ -1111,86 +1082,114 @@ vec3 pianoKeys(float fragX, float fragY, float keysTop) {
 
 // Today's real flash (render::effects::spawn_flash / effects.wgsl's fs_glow): a fixed elliptical
 // additive corona, alpha == uFlashPulse (1 at spawn, decaying to 0 over decay_seconds, computed
-// JS-side). No angular/directional component at all -- this is exactly why today's flash reads as
-// a round blob (our-flash.png) rather than the reference's radiating-rays "sun in camera" look
-// (flash-example.png). Everything below (volumetric god rays, halo ring, chromatic aberration) is
-// an experimental addition on top of this core, not yet ported into the real renderer.
+// JS-side). Bloom/glow, the halo ring, and chromatic aberration below are all today's shipped
+// look (project::FlashSpec's ring/chromatic_aberration); the flame corona further down is
+// the one piece still lab-only, not yet ported into the real renderer.
 //
-// The three functions below return plain scalar strength (no color folded in), so
-// flashContribution can re-sample the whole stack once per color channel at a slightly
-// different radius for chromatic aberration -- see that function's doc comment.
+// These functions return plain scalar strength (no color folded in), so flashContribution can
+// re-sample the whole stack once per color channel at a slightly different radius for chromatic
+// aberration -- see that function's doc comment.
 
-// Bloom / glow: the original 3-layer tight/mid/wide additive corona -- today's real flash exactly.
+// Bloom / glow: the original 3-layer tight/mid/wide additive corona -- today's real flash, after
+// the flat-plateau fix (edge_dist_px is a signed distance from the core_radius boundary, negative
+// inside it, so the same exponential that shapes the outer halo continues inward and peaks at the
+// center instead of clamping to a flat disc). uCoreLegacyPlateau flips back to the old clamped
+// formula for A/B comparison -- see effects.wgsl's core_strength for the shipped version this
+// mirrors.
 float flashCoreStrength(vec2 offset) {
-  vec2 norm = offset / vec2(max(uFlashRadiusX, 0.01), max(uFlashRadiusY, 0.01));
-  float edgeDist = max(length(norm) - 1.0, 0.0) * min(uFlashRadiusX, uFlashRadiusY);
+  vec2 rNorm = vec2(max(uFlashRadiusX, 0.01), max(uFlashRadiusY, 0.01));
+  float norm = length(offset / rNorm);
+  float dist = length(offset);
+  float edgeDist;
+  if (uCoreLegacyPlateau > 0.5) {
+    edgeDist = max(norm - 1.0, 0.0) * min(uFlashRadiusX, uFlashRadiusY);
+  } else {
+    edgeDist = dist * (1.0 - 1.0 / max(norm, 0.0001));
+  }
   vec3 amp = uFlashLayerAmp * uFlashBrightness;
   return amp.x * exp(-edgeDist / max(uFlashLayerSigma.x, 0.01))
        + amp.y * exp(-edgeDist / max(uFlashLayerSigma.y, 0.01))
        + amp.z * exp(-edgeDist / max(uFlashLayerSigma.z, 0.01));
 }
 
-const float TWO_PI = 6.28318530718;
+// 4-octave fractal noise built on noise2 -- used by flameCoronaStrength below for both the
+// silhouette (how far the flame reaches at each angle) and the internal streak texture, so each
+// gets organic multi-scale detail rather than a single smooth sine/noise lobe.
+float fbm(vec2 p) {
+  float sum = 0.0;
+  float amp = 0.5;
+  for (int i = 0; i < 4; i++) {
+    sum += amp * noise2(p);
+    p *= 2.03;
+    amp *= 0.5;
+  }
+  return sum;
+}
 
-// The "photograph of the sun from Earth" look settled on a fixed shape for these three -- they're
-// no longer exposed as sliders, just baked in here. GOD_RAY_TAPER shapes the brightness gradient
-// along a beam's length (paired with the outerCut hard boundary below, which is what actually
-// confines "Beam length" regardless of this exponent -- see that variable's comment).
-// GOD_RAY_NOISE_SCALE sizes the streak texture sampled along each beam; drift (animating that
-// texture over time) turned out not to matter for this look, so it's fixed at 0 -- the only motion
-// left is the length pulse and brightness flicker below.
-const float GOD_RAY_TAPER = 0.65;
-const float GOD_RAY_NOISE_SCALE = 0.2;
+// A point on a circle of radius freq in noise-space, parametrized by the light's own unit
+// direction vector rather than by atan2's angle. Sweeping dir all the way around traces the
+// full circumference (2*PI*freq noise-space units), giving roughly the same bump density per
+// full turn as sampling noise at theta * freq would -- but because it's built from dir (== (x,
+// y) / r, itself just a continuous function of offset with no branch), there's no seam where
+// atan2 wraps from +PI to -PI: a theta * freq coordinate jumps by 2*PI*freq right there
+// regardless of freq, landing on an uncorrelated patch of the noise field and reading as a hard
+// discontinuity fixed at "pointing left" no matter how many tongues are configured. This is what
+// flameCoronaStrength samples instead.
+vec2 angularNoisePoint(vec2 dir, float freq) {
+  return dir * freq;
+}
 
-// Volumetric god rays: a handful of much *wider* and *longer* beams than a typical starburst (low
-// uGodRaySoftness exponent = broad angular cone), sitting on fixed evenly-spaced slots -- no
-// angular wander (that read as the beams wiggling side to side, not the intended look). Instead
-// each beam's own reach breathes in and out over time via noise on its length
-// (uGodRayPulseSpeed/uGodRayPulseAmount), like a solar corona ray visibly extending and
-// retracting, plus a whole-beam brightness flicker on top of the internal streak texture -- streak
-// noise alone only textures a beam that's always "on"; the flicker is what makes individual beams
-// gutter/reappear over time.
-float flashGodRayStrength(vec2 offset) {
+// Aurora/solar-corona "flame stacks" wrapping the full 360 degrees around the light center. The
+// raggedness *is* the shape, not an overlay: reach (how far the flame extends) is itself a
+// low-frequency FBM sampled over the light's own direction (via angularNoisePoint above) plus a
+// slowly-translating time offset -- uFlameLobes sets roughly how many tongues/peaks show up
+// around the circle, uFlameReachVariance how tall the peaks are relative to the valleys,
+// uFlameSilhouetteSpeed how fast the whole silhouette morphs. A second FBM textures the inside of
+// each tongue: it's a static weave of angle and radius (no time term), so it reads as fixed
+// internal grain rather than material flowing outward -- a uniform "streak flow speed" reads as
+// an unnatural steady divergence out of the light's center rather than something a real light
+// source does. Instead the corona's *brightness* pulses over time
+// (uFlameFlickerSpeed/uFlameFlickerIntensity), like a flame or plasma light guttering.
+// uFlameFlickerIndependence blends the flicker's sample point between a single fixed coordinate
+// (0 -- the whole corona brightens/dims in lockstep, one shared pulse) and the same
+// angularNoisePoint circle used by the silhouette/streak above (1 -- each tongue gets its own
+// noise-driven phase, so different parts of the corona gutter independently rather than the
+// whole light pulsing as one unit); intensity can push past 1.0 for a flicker that clips to fully
+// off at its troughs rather than only dimming. The falloff past reach is a soft exponential fray
+// (uFlameTipSoftness), not a hard cutoff -- real flame tips dissipate raggedly.
+float flameCoronaStrength(vec2 offset) {
   float r = length(offset);
-  float theta = atan(offset.y, offset.x);
-  float rot = radians(uGodRayRotationOffset + uTime * uGodRayRotationSpeed);
-  float thetaR = mod(theta - rot, TWO_PI);
-  float slot = thetaR / TWO_PI * uGodRayCount;
-  float idx = floor(slot);
-  float frac = fract(slot) - 0.5;
+  vec2 dir = offset / max(r, 0.0001);
 
-  float seed = hash21(vec2(idx * 31.7, 11.3));
+  vec2 silhouetteP = angularNoisePoint(dir, uFlameLobes);
+  float t = uTime * uFlameSilhouetteSpeed;
+  float silhouetteN = fbm(silhouetteP + vec2(t * 0.6, t));
+  float reach = max(uFlameBaseReach * (1.0 + uFlameReachVariance * silhouetteN), 1.0);
 
-  // "Go in and out": each beam's own length is modulated by its own noise-driven pulse (not a
-  // fixed value), so the beam visibly grows and shrinks rather than staying a static wedge --
-  // seed offsets each beam's phase so they don't all breathe in lockstep.
-  float pulseN = noise2(vec2(seed * 23.0 + 4.0, uTime * uGodRayPulseSpeed + seed * 7.0));
-  pulseN = clamp(pulseN * 0.5 + 0.5, 0.0, 1.0);
-  float lenPulse = mix(1.0 - uGodRayPulseAmount, 1.0, pulseN);
-
-  float len = uGodRayLength * (1.0 - uGodRayLengthJitter * 0.5 + uGodRayLengthJitter * seed) * lenPulse;
-
-  float angFall = pow(max(cos(frac * 3.14159265), 0.0), max(uGodRaySoftness, 0.1));
-  // radFall alone shapes the brightness gradient along the beam, but for GOD_RAY_TAPER < 1.0
-  // exp(-pow(x, taper)) has a fat power-law tail that never really reaches zero -- shrinking len
-  // mostly dimmed the whole beam rather than shortening it, since even the tail out at several
-  // multiples of len stayed non-negligible. outerCut below is a hard, explicit boundary tied
-  // directly to len (independent of taper's shape) so "Beam length" (and its pulse) actually
-  // confines where the ray is visible; radFall still controls how it fades within that bound.
-  float radFall = exp(-pow(r / max(len, 1.0), GOD_RAY_TAPER));
-  float outerCut = 1.0 - smoothstep(len * 0.7, len * 1.15, r);
-
-  float streakN = noise2(vec2(idx * 5.0 + seed * 9.0, r * GOD_RAY_NOISE_SCALE * 0.02));
+  // Woven, time-static streak texture: an angular FBM feeds into a radial one as its second
+  // coordinate, coupling the two axes while staying continuous in dir (no atan2 involved).
+  float angN = fbm(angularNoisePoint(dir, uFlameStreakFreq));
+  float streakN = fbm(vec2(r / max(uFlameStreakScale, 1.0), angN * 3.0));
   streakN = clamp(streakN * 0.5 + 0.5, 0.0, 1.0);
-  float streak = mix(1.0 - uGodRayStreakiness, 1.0, streakN);
+  float streak = mix(1.0 - uFlameStreakiness, 1.0, streakN);
 
-  float flick = noise2(vec2(idx * 4.1 + 6.0, uTime * uGodRayFlickerSpeed + seed * 19.0));
-  flick = pow(clamp(flick * 0.5 + 0.5, 0.0, 1.0), 2.2);
-  float beamFlick = 1.0 - uGodRayFlickerIntensity + uGodRayFlickerIntensity * flick;
+  float body = 1.0 - smoothstep(reach * uFlameCoreFrac, reach, r);
+  float tipFade = exp(-max(r - reach, 0.0) / max(uFlameTipSoftness, 0.5));
+  float shape = max(body, tipFade);
 
   float innerCut = smoothstep(0.0, min(uFlashRadiusX, uFlashRadiusY) * 0.4, r);
 
-  return angFall * radFall * streak * innerCut * outerCut * beamFlick * uGodRayIntensity;
+  float flicker = 1.0;
+  if (uFlameFlickerIntensity > 0.0) {
+    vec2 flickerGlobal = vec2(71.0, uTime * uFlameFlickerSpeed + 13.0);
+    vec2 flickerLocal = angularNoisePoint(dir, uFlameLobes) + vec2(uTime * uFlameFlickerSpeed * 0.8, uTime * uFlameFlickerSpeed * 1.3 + 5.0);
+    vec2 flickerPoint = mix(flickerGlobal, flickerLocal, clamp(uFlameFlickerIndependence, 0.0, 1.0));
+    float fn = noise2(flickerPoint);
+    float ff = pow(clamp(fn * 0.5 + 0.5, 0.0, 1.0), 1.4);
+    flicker = max(1.0 - uFlameFlickerIntensity + uFlameFlickerIntensity * ff, 0.0);
+  }
+
+  return shape * streak * flicker * innerCut * uFlameIntensity;
 }
 
 // Faint colored ring at a fixed radius -- a common lens-flare "diffraction halo" accent.
@@ -1203,7 +1202,7 @@ float flashRingStrength(vec2 offset) {
 // shared by every channel sample flashContribution takes below.
 float flashTotalStrength(vec2 offset) {
   float s = flashCoreStrength(offset);
-  if (uGodRaysEnabled > 0.5) s += flashGodRayStrength(offset);
+  if (uFlameEnabled > 0.5) s += flameCoronaStrength(offset);
   if (uRingIntensity > 0.0) s += flashRingStrength(offset);
   return s;
 }
@@ -1227,7 +1226,7 @@ vec3 flashContribution(vec2 frag) {
   // stack with offset scaled by a slightly different factor -- exactly like a lens's radial
   // distortion varying by wavelength, the error is ~0 near the flash center and grows with
   // distance from it, so the fringe shows up right where it would photographically: at the outer
-  // edge of the bloom/rays/god-rays, not as a uniform tint over the whole light.
+  // edge of the bloom/flame corona, not as a uniform tint over the whole light.
   vec3 strengthRgb;
   if (uChromaticEnabled > 0.5 && uChromaticAmount > 0.0) {
     float ca = uChromaticAmount;
@@ -1251,12 +1250,7 @@ void main() {
   EdgeShape shape = edgeShape(frag.y, frag.x, barrierY);
   float brightness = mix(uBrightnessBase, uBrightnessPeak, clamp(uPulse, 0.0, 1.0));
 
-  // sliding electric filament: traveling bright streaks along the bar, both as
-  // extra core hot-spots and as a localized additive bump near the edge.
-  float filN = noise2(vec2(frag.x / max(uFilamentScale, 1.0) - uTime * uFilamentSpeed, 0.3));
-  float filStreak = pow(clamp(filN * 0.5 + 0.5, 0.0, 1.0), 4.0);
-
-  vec3 coreHot = hotColor(uCoreColor, brightness + filStreak * uFilamentIntensity * 0.6);
+  vec3 coreHot = hotColor(uCoreColor, brightness);
 
   float d = shape.edgeDist;
   vec3 sigma = max(uLayerSigma * uGlowSizeScale, vec3(0.01));
@@ -1265,30 +1259,6 @@ void main() {
 
   float occlusion = uShowBar > 0.5 ? shape.coreAlpha : 0.0;
   vec3 light = uGlowColor * strength * brightness * (1.0 - occlusion);
-
-  float filGlow = filStreak * uFilamentIntensity * exp(-d / 8.0);
-  light += uGlowColor * filGlow * brightness * (1.0 - occlusion);
-
-  // wisps: thin flickering tendrils rising from the top edge, swaying with height
-  float colWidth = mix(50.0, 6.0, clamp(uWispDensity, 0.0, 1.0));
-  vec3 tendril = vec3(0.0);
-  float col0 = floor(frag.x / colWidth);
-  for (int k = -1; k <= 1; k++) {
-    float ci = col0 + float(k);
-    float seed = hash21(vec2(ci * 12.9898, 3.7));
-    float heightI = uWispHeight * (0.35 + 0.65 * seed);
-    float flick = noise2(vec2(ci * 3.1 + 11.0, uTime * uWispFlicker + seed * 20.0));
-    flick = pow(clamp(flick * 0.5 + 0.5, 0.0, 1.0), 1.5);
-    float sway = noise2(vec2(ci * 2.3 + 5.0, uTime * 0.5 + seed * 7.0)) * uWispSway * colWidth * 0.5;
-    float hn = clamp(shape.h / max(heightI, 1.0), 0.0, 1.6);
-    float xCenter = (ci + 0.5) * colWidth + sway * hn;
-    float widthPx = mix(3.0, 0.6, clamp(hn, 0.0, 1.0));
-    float distX = frag.x - xCenter;
-    float streak = exp(-pow(distX / max(widthPx, 0.3), 2.0));
-    float heightFalloff = exp(-shape.h / max(heightI * 0.55, 1.0)) * step(shape.h, heightI * 1.6);
-    tendril += vec3(1.0) * streak * heightFalloff * flick;
-  }
-  light += uGlowColor * tendril * uWispIntensity * brightness;
 
   // strand bundle: the SeeMusic top edge isn't one smooth wavy line -- it's several thin
   // filaments fraying off it independently. Each strand re-samples the same stochastic
@@ -1367,17 +1337,16 @@ const UNIFORM_NAMES = [
   "uLayerAmp", "uLayerSigma", "uWavyEnabled", "uWavyMode", "uWaveAmp", "uWaveLen",
   "uWaveSpeed", "uSlideSpeed", "uStrandCount", "uStrandSpread", "uStrandJitter", "uStrandThickness",
   "uStrandHaloAmp", "uStrandHaloSigma", "uStrandGlow", "uStrandFlicker",
-  "uFilamentIntensity", "uFilamentSpeed", "uFilamentScale",
-  "uWispDensity", "uWispHeight", "uWispFlicker", "uWispSway", "uWispIntensity",
   "uBarrierYFrac", "uKeyWidth", "uVignette", "uExposure",
   "uFlashEnabled", "uFlashColor", "uFlashXFrac", "uFlashYOffset", "uFlashRadiusX", "uFlashRadiusY",
   "uFlashBrightness", "uFlashPulse", "uFlashLayerAmp", "uFlashLayerSigma",
   "uFlashFlickerSpeed", "uFlashFlickerIntensity",
   "uRingRadius", "uRingWidth", "uRingIntensity",
-  "uGodRaysEnabled", "uGodRayCount", "uGodRayLength", "uGodRayLengthJitter", "uGodRaySoftness",
-  "uGodRayRotationOffset", "uGodRayRotationSpeed", "uGodRayPulseSpeed", "uGodRayPulseAmount",
-  "uGodRayStreakiness",
-  "uGodRayFlickerSpeed", "uGodRayFlickerIntensity", "uGodRayIntensity",
+  "uCoreLegacyPlateau",
+  "uFlameEnabled", "uFlameLobes", "uFlameReachVariance", "uFlameSilhouetteSpeed", "uFlameBaseReach",
+  "uFlameStreakFreq", "uFlameStreakScale", "uFlameStreakiness",
+  "uFlameCoreFrac", "uFlameTipSoftness", "uFlameIntensity",
+  "uFlameFlickerSpeed", "uFlameFlickerIntensity", "uFlameFlickerIndependence",
   "uChromaticEnabled", "uChromaticAmount",
 ];
 const loc = {};
@@ -1464,16 +1433,6 @@ function frame() {
   gl.uniform1f(loc.uStrandGlow, params.strandGlow);
   gl.uniform1f(loc.uStrandFlicker, params.strandFlicker);
 
-  gl.uniform1f(loc.uFilamentIntensity, params.filamentIntensity);
-  gl.uniform1f(loc.uFilamentSpeed, params.filamentSpeed);
-  gl.uniform1f(loc.uFilamentScale, params.filamentScale);
-
-  gl.uniform1f(loc.uWispDensity, params.wispDensity);
-  gl.uniform1f(loc.uWispHeight, params.wispHeight);
-  gl.uniform1f(loc.uWispFlicker, params.wispFlicker);
-  gl.uniform1f(loc.uWispSway, params.wispSway);
-  gl.uniform1f(loc.uWispIntensity, params.wispIntensity);
-
   gl.uniform1f(loc.uBarrierYFrac, params.barrierYFrac);
   gl.uniform1f(loc.uKeyWidth, params.keyWidth);
   gl.uniform1f(loc.uVignette, params.vignette);
@@ -1497,19 +1456,22 @@ function frame() {
   gl.uniform1f(loc.uRingWidth, params.ringWidth);
   gl.uniform1f(loc.uRingIntensity, params.ringIntensity);
 
-  gl.uniform1f(loc.uGodRaysEnabled, params.godRaysEnabled ? 1 : 0);
-  gl.uniform1f(loc.uGodRayCount, params.godRayCount);
-  gl.uniform1f(loc.uGodRayLength, params.godRayLength);
-  gl.uniform1f(loc.uGodRayLengthJitter, params.godRayLengthJitter);
-  gl.uniform1f(loc.uGodRaySoftness, params.godRaySoftness);
-  gl.uniform1f(loc.uGodRayRotationOffset, params.godRayRotationOffset);
-  gl.uniform1f(loc.uGodRayRotationSpeed, params.godRayRotationSpeed);
-  gl.uniform1f(loc.uGodRayPulseSpeed, params.godRayPulseSpeed);
-  gl.uniform1f(loc.uGodRayPulseAmount, params.godRayPulseAmount);
-  gl.uniform1f(loc.uGodRayStreakiness, params.godRayStreakiness);
-  gl.uniform1f(loc.uGodRayFlickerSpeed, params.godRayFlickerSpeed);
-  gl.uniform1f(loc.uGodRayFlickerIntensity, params.godRayFlickerIntensity);
-  gl.uniform1f(loc.uGodRayIntensity, params.godRayIntensity);
+  gl.uniform1f(loc.uCoreLegacyPlateau, params.coreLegacyPlateau ? 1 : 0);
+
+  gl.uniform1f(loc.uFlameEnabled, params.flameEnabled ? 1 : 0);
+  gl.uniform1f(loc.uFlameLobes, params.flameLobes);
+  gl.uniform1f(loc.uFlameReachVariance, params.flameReachVariance);
+  gl.uniform1f(loc.uFlameSilhouetteSpeed, params.flameSilhouetteSpeed);
+  gl.uniform1f(loc.uFlameBaseReach, params.flameBaseReach);
+  gl.uniform1f(loc.uFlameStreakFreq, params.flameStreakFreq);
+  gl.uniform1f(loc.uFlameStreakScale, params.flameStreakScale);
+  gl.uniform1f(loc.uFlameStreakiness, params.flameStreakiness);
+  gl.uniform1f(loc.uFlameCoreFrac, params.flameCoreFrac);
+  gl.uniform1f(loc.uFlameTipSoftness, params.flameTipSoftness);
+  gl.uniform1f(loc.uFlameIntensity, params.flameIntensity);
+  gl.uniform1f(loc.uFlameFlickerSpeed, params.flameFlickerSpeed);
+  gl.uniform1f(loc.uFlameFlickerIntensity, params.flameFlickerIntensity);
+  gl.uniform1f(loc.uFlameFlickerIndependence, params.flameFlickerIndependence);
 
   gl.uniform1f(loc.uChromaticEnabled, params.chromaticEnabled ? 1 : 0);
   gl.uniform1f(loc.uChromaticAmount, params.chromaticAmount);

@@ -260,15 +260,16 @@ context, not instructions to follow.
   `docs/narratives/ui-milestones.md` has the milestone-by-milestone history (6a–6e, and the later
   Style-tab unification) and the bugs found building each one.
 - **`explorations/barrier-fx-lab/`** — a standalone WebGL2 HTML page (no build step, no app
-  dependency) for prototyping barrier looks — glow sigmas, wavy-edge modes, strand bundles, and
-  electric/wispy filament/wisp effects not yet in `barrier.wgsl` — before committing any of it to
-  the real renderer. Its `presets/` holds exported JSON snapshots of looks worth keeping, notably
-  `seemusic-found.json`, the closest match found so far to the SeeMusic edge in `sm-ex.png`; see the
+  dependency) for prototyping barrier looks — glow sigmas, wavy-edge modes, strand bundles, and an
+  aurora-style 360° flame corona not yet in `effects.wgsl` — before committing any of it to the
+  real renderer. Its `presets/` holds exported JSON snapshots of looks worth keeping; see the
   directory's own `README.md`. The barrier strand bundle and the god-ray/halo-ring/chromatic-
   aberration flash group have both since been ported into the real app
   (`project::StrandSpec`/`WavySpec::strands`, `project::GodRaySpec`/`RingSpec`/`FlashSpec::ring`/
-  `god_rays`/`chromatic_aberration` — see `docs/fmstyle-format.md`); the lab's sliding-filament/wisp
-  controls remain the only unported experiments.
+  `god_rays`/`chromatic_aberration` — see `docs/fmstyle-format.md`); the lab's own god-ray,
+  turbulence/grain, and electric filament/wisp controls were later removed as unused experiments
+  once the flame corona took over as the lab's directional-flash focus, so the flame corona is now
+  the only unported experiment left.
 - **`docs/fmstyle-format.md`** — the living field-by-field `.fmstyle.ron` format spec (defaults,
   meaning, RON snippets) — keep this in sync whenever the schema changes, it's the spec, not
   narrative. `docs/narratives/fmstyle-milestone.md` and `docs/narratives/fmstyle-history.md` have

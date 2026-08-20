@@ -1049,6 +1049,54 @@ pub struct RingSpec {
     pub intensity: f32,
 }
 
+/// Domain-warp "roughness" applied to a flash's entire light stack (corona + god rays + ring)
+/// before any of it is evaluated — aimed at the grainy, turbulent look of a real photograph of a
+/// bright light source (film grain, atmospheric scintillation), as opposed to the perfectly smooth
+/// analytic falloffs `core_strength`/`god_ray_strength`/`ring_strength` produce on their own. Each
+/// fragment's sample point is displaced by a 2D value-noise field (`effects.wgsl`'s `domain_warp`,
+/// the same `hash21`/`noise2` construction `GodRaySpec`'s beam streak/flicker and
+/// `barrier.wgsl`'s strand flicker already use) before the ordinary corona/ray/ring math runs, so
+/// the light's shape itself becomes ragged and irregular rather than a perfect ellipse/circle,
+/// evolving continuously over time rather than sitting static. `None` on `FlashSpec::turbulence`
+/// (default) is an exact no-op: the light stack renders exactly as it did before this field
+/// existed.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TurbulenceSpec {
+    /// How far (canvas px) the domain warp can displace a sample point. `0.0` is an exact no-op;
+    /// larger values read as rougher/more jagged, but too large relative to `scale_px` starts
+    /// visibly tearing the light apart into disconnected blobs rather than roughening its edge.
+    #[serde(default = "default_turbulence_strength_px")]
+    pub strength_px: f32,
+    /// Feature size (canvas px) of the noise field driving the warp — smaller reads as fine grain,
+    /// larger as broad, slow-rolling distortion.
+    #[serde(default = "default_turbulence_scale_px")]
+    pub scale_px: f32,
+    /// How fast the noise field evolves over transport time. `0.0` freezes the warp to a single
+    /// (still spatially rough, just static) pattern.
+    #[serde(default = "default_turbulence_speed")]
+    pub speed: f32,
+}
+
+impl Default for TurbulenceSpec {
+    fn default() -> Self {
+        Self {
+            strength_px: default_turbulence_strength_px(),
+            scale_px: default_turbulence_scale_px(),
+            speed: default_turbulence_speed(),
+        }
+    }
+}
+
+fn default_turbulence_strength_px() -> f32 {
+    6.0
+}
+fn default_turbulence_scale_px() -> f32 {
+    18.0
+}
+fn default_turbulence_speed() -> f32 {
+    1.5
+}
+
 /// Faint vertical reference lines marking each octave's C boundary in the note highway (the left
 /// edge of C1 through C8 — every multiple of 12 within the standard 88-key range), aligned to the
 /// same calibrated (and, if set, camera-stretched) key layout the falling notes themselves use —
@@ -1130,6 +1178,10 @@ pub struct FlashSpec {
     /// separate the channels into distinct colored ghosts rather than a subtle fringe.
     #[serde(default)]
     pub chromatic_aberration: f32,
+    /// Grainy/turbulent roughness applied to the whole light stack — see `TurbulenceSpec`'s own
+    /// doc comment. `None` (default) is a no-op.
+    #[serde(default)]
+    pub turbulence: Option<TurbulenceSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -1485,6 +1537,7 @@ mod tests {
                     god_rays: None,
                     ring: None,
                     chromatic_aberration: 0.0,
+                    turbulence: None,
                 }),
             }),
             background: default_background_color(),
@@ -1534,6 +1587,7 @@ mod tests {
                     god_rays: None,
                     ring: None,
                     chromatic_aberration: 0.0,
+                    turbulence: None,
                 }),
             }),
             background: default_background_color(),
@@ -1701,6 +1755,7 @@ mod tests {
                 god_rays: None,
                 ring: None,
                 chromatic_aberration: 0.0,
+                turbulence: None,
             };
             let text = ron::ser::to_string_pretty(&spec, ron::ser::PrettyConfig::new()).unwrap();
             let parsed: FlashSpec = ron::from_str(&text).unwrap();
@@ -1754,10 +1809,58 @@ mod tests {
                 intensity: 0.1,
             }),
             chromatic_aberration: 0.07,
+            turbulence: None,
         };
         let text = ron::ser::to_string_pretty(&spec, ron::ser::PrettyConfig::new()).unwrap();
         let parsed: FlashSpec = ron::from_str(&text).unwrap();
         assert_eq!(spec, parsed);
+    }
+
+    /// A `.fmstyle.ron` file missing the `turbulence` key on `FlashSpec` should load it as `None`
+    /// — the flash renders exactly as it did before this field existed, same "old file still
+    /// parses" contract as `flash_without_god_ray_fields_loads_with_no_op_defaults` above.
+    #[test]
+    fn flash_without_turbulence_field_loads_as_none() {
+        let text = "(radius_x_px: Constant(20.0), radius_y_px: Constant(20.0), decay_seconds: Constant(0.2))";
+        let spec: FlashSpec = ron::from_str(text).unwrap();
+        assert_eq!(spec.turbulence, None);
+    }
+
+    /// `FlashSpec::turbulence` round-trips through RON.
+    #[test]
+    fn flash_turbulence_round_trips() {
+        let spec = FlashSpec {
+            radius_x_px: ScalarBinding::Constant(11.0),
+            radius_y_px: ScalarBinding::Constant(11.0),
+            color: FlashColor::Solid(ColorBinding::Constant([255, 246, 224])),
+            decay_seconds: ScalarBinding::Constant(0.05),
+            mode: FlashMode::Instant,
+            brightness: ScalarBinding::Constant(1.12),
+            layers: default_glow_layers(),
+            flicker_speed: ScalarBinding::Constant(0.0),
+            flicker_intensity: ScalarBinding::Constant(0.0),
+            god_rays: None,
+            ring: None,
+            chromatic_aberration: 0.0,
+            turbulence: Some(TurbulenceSpec {
+                strength_px: 8.0,
+                scale_px: 22.0,
+                speed: 2.5,
+            }),
+        };
+        let text = ron::ser::to_string_pretty(&spec, ron::ser::PrettyConfig::new()).unwrap();
+        let parsed: FlashSpec = ron::from_str(&text).unwrap();
+        assert_eq!(spec, parsed);
+    }
+
+    /// A `TurbulenceSpec` missing some of its own fields loads the rest with the documented
+    /// defaults, same "partial fields still parse" contract as `GodRaySpec`'s own fields.
+    #[test]
+    fn turbulence_spec_partial_fields_load_with_defaults() {
+        let turbulence: TurbulenceSpec = ron::from_str("(strength_px: 9.0)").unwrap();
+        assert_eq!(turbulence.strength_px, 9.0);
+        assert_eq!(turbulence.scale_px, default_turbulence_scale_px());
+        assert_eq!(turbulence.speed, default_turbulence_speed());
     }
 
     /// A `.fmstyle.ron` file missing the `flicker_speed`/`flicker_intensity` keys on `FlashSpec`

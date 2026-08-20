@@ -8,7 +8,7 @@ use project::{
     BarrierLayer, BlackKeyFill, ColorBinding, EmissionMode, Fill, FlashColor, FlashMode, FlashSpec,
     Glow, GlowLayer, GodRaySpec, NoteLayer, OctaveLineSpec, ParticleColor, ParticleSpec, Pulse,
     Ramp, RingSpec, ScalarBinding, Sheen, StrandSpec, Timed, TransitionKind, TransitionLayer,
-    WavyMode, WavySpec,
+    TurbulenceSpec, WavyMode, WavySpec,
 };
 
 use crate::ui::{darken_color, validated_slider};
@@ -751,6 +751,7 @@ fn default_flash_spec() -> FlashSpec {
         god_rays: None,
         ring: None,
         chromatic_aberration: 0.0,
+        turbulence: None,
     }
 }
 
@@ -877,6 +878,21 @@ pub(crate) fn edit_ring_spec(ui: &mut Ui, spec: &mut RingSpec) {
     });
 }
 
+pub(crate) fn edit_turbulence_spec(ui: &mut Ui, spec: &mut TurbulenceSpec) {
+    ui.horizontal(|ui| {
+        ui.label("Strength (px):");
+        validated_slider(ui, &mut spec.strength_px, 0.0..=40.0, None);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Scale (px):");
+        validated_slider(ui, &mut spec.scale_px, 1.0..=120.0, None);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Speed:");
+        validated_slider(ui, &mut spec.speed, 0.0..=10.0, None);
+    });
+}
+
 pub(crate) fn edit_flash_spec(ui: &mut Ui, spec: &mut FlashSpec) {
     edit_scalar_binding(
         ui,
@@ -960,6 +976,13 @@ pub(crate) fn edit_flash_spec(ui: &mut Ui, spec: &mut FlashSpec) {
         ui.label("Chromatic aberration:");
         validated_slider(ui, &mut spec.chromatic_aberration, 0.0..=0.15, None);
     });
+    optional_section(
+        ui,
+        "Turbulence",
+        &mut spec.turbulence,
+        TurbulenceSpec::default,
+        edit_turbulence_spec,
+    );
 }
 
 const TRANSITION_KIND_VARIANTS: [&str; 4] = ["None", "Particles", "Flash", "Particles + Flash"];

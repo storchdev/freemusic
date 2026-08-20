@@ -7,7 +7,7 @@ use wgpu::util::DeviceExt;
 
 use project::{
     ColorBinding, EmissionMode, FlashColor, FlashMode, FlashSpec, GodRaySpec, ParticleColor,
-    ParticleSpec, RingSpec, TransitionKind, TransitionLayer,
+    ParticleSpec, RingSpec, TransitionKind, TransitionLayer, TurbulenceSpec,
 };
 
 use super::notes::NoteInterval;
@@ -79,18 +79,25 @@ impl Default for ViewUniform {
 /// `spawn_flash` ever fills these with non-zero data; every particle instance leaves them zeroed
 /// (`ZERO_GOD_RAYS`/`ZERO_RING_CHROMATIC` below), which `fs_glow` treats as "effect off" (`count <
 /// 0.5`, `ring_intensity <= 0.0`, `chromatic_amount <= 0.0`), reproducing the pre-Phase-V corona
-/// exactly.
+/// exactly. `project::TurbulenceSpec` (added later, same "zeroed is off" convention) has no
+/// dedicated field — wgpu caps a pipeline at 16 vertex attribute locations and this struct was
+/// already at that limit, so its three floats are packed into `core_radius.zw` (strength_px,
+/// scale_px) and `layer_amp.w` (speed) instead, widening those two fields from vec2/vec3 to vec4 —
+/// see `effects.wgsl`'s `Instance` struct doc comment for the shader-side unpacking.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct EffectInstance {
     center: [f32; 2],
-    core_radius: [f32; 2],
+    /// xy = configured half-extent (ellipse-aware); z/w = turbulence `strength_px`/`scale_px`
+    /// (`0.0`/`0.0` for particles and any flash with `turbulence: None`).
+    core_radius: [f32; 4],
     quad_radius: [f32; 2],
     alpha: f32,
     color_stops: [[f32; 3]; FLASH_GRADIENT_STOPS],
     /// x/y/z = layer[0..3].amplitude, pre-multiplied by the spec's `brightness` at spawn time
-    /// (a plain multiply, not a `hot_color` mix — additive saturation whitens for free).
-    layer_amp: [f32; 3],
+    /// (a plain multiply, not a `hot_color` mix — additive saturation whitens for free). w =
+    /// turbulence `speed`.
+    layer_amp: [f32; 4],
     layer_sigma: [f32; 3],
     godray_a: [f32; 4],
     godray_b: [f32; 4],
@@ -103,6 +110,11 @@ struct EffectInstance {
 /// `EffectInstance`'s own doc comment).
 const ZERO_GOD_RAYS: ([f32; 4], [f32; 4], [f32; 4]) = ([0.0; 4], [0.0; 4], [0.0; 4]);
 const ZERO_RING_CHROMATIC: [f32; 4] = [0.0; 4];
+/// `Flash::turbulence`'s own zero value (`resolve_turbulence_params`'s "no turbulence" case) — a
+/// separate constant from `EffectInstance`'s own packed representation, since `Flash` keeps
+/// turbulence as its own CPU-side `[f32; 4]` (`strength_px`/`scale_px`/`speed`/unused) and only
+/// `rebuild_instances` fans it out into `EffectInstance`'s packed `core_radius.zw`/`layer_amp.w`.
+const ZERO_TURBULENCE: [f32; 4] = [0.0; 4];
 
 // `color_stops` below is hand-unrolled to `FLASH_GRADIENT_STOPS == 5` explicit locations (5..=9) —
 // `wgpu::vertex_attr_array!` takes a literal list of `location => format` entries, not a
@@ -118,7 +130,7 @@ impl EffectInstance {
     fn attributes() -> [wgpu::VertexAttribute; 15] {
         wgpu::vertex_attr_array![
             1 => Float32x2,  // center
-            2 => Float32x2,  // core_radius
+            2 => Float32x4,  // core_radius (xy = radius, zw = turbulence strength_px/scale_px)
             3 => Float32x2,  // quad_radius
             4 => Float32,    // alpha
             5 => Float32x3,  // color_stops[0]
@@ -126,7 +138,7 @@ impl EffectInstance {
             7 => Float32x3,  // color_stops[2]
             8 => Float32x3,  // color_stops[3]
             9 => Float32x3,  // color_stops[4]
-            10 => Float32x3, // layer_amp
+            10 => Float32x4, // layer_amp (xyz = amplitudes, w = turbulence speed)
             11 => Float32x3, // layer_sigma
             12 => Float32x4, // godray_a
             13 => Float32x4, // godray_b
@@ -282,6 +294,19 @@ struct Flash {
     godray_b: [f32; 4],
     godray_c: [f32; 4],
     ring_chromatic: [f32; 4],
+    /// `FlashSpec::turbulence`, resolved once at spawn time — `ZERO_TURBULENCE` for a flash with
+    /// none set.
+    turbulence: [f32; 4],
+}
+
+/// `EffectInstance::turbulence` from a `project::TurbulenceSpec`, or `ZERO_TURBULENCE` if the
+/// flash has none — `strength_px <= 0.0` is `effects.wgsl`'s `domain_warp` off switch, same
+/// "zero is the no-op" convention as `resolve_ring_chromatic_params`.
+fn resolve_turbulence_params(spec: Option<&TurbulenceSpec>) -> [f32; 4] {
+    match spec {
+        Some(t) => [t.strength_px.max(0.0), t.scale_px, t.speed, 0.0],
+        None => ZERO_TURBULENCE,
+    }
 }
 
 /// `EffectInstance::godray_a`/`b`/`c` from a `project::GodRaySpec`, or `ZERO_GOD_RAYS` if the
@@ -1063,11 +1088,14 @@ impl EffectsRenderer {
         let (godray_a, godray_b, godray_c) = resolve_god_ray_params(spec.god_rays.as_ref());
         let ring_chromatic =
             resolve_ring_chromatic_params(spec.ring.as_ref(), spec.chromatic_aberration);
+        let turbulence = resolve_turbulence_params(spec.turbulence.as_ref());
         // The quad must reach as far as the farthest-visible effect, not just the corona layers —
         // a god ray's own length (`godray_a[1]`, before the `* 1.5` jitter headroom and `* 1.15`
         // outer-cut falloff in `effects.wgsl`'s `god_ray_strength`) or the ring's outer edge
         // (`ring_chromatic[0] + ring_chromatic[1]`) can both reach well past the base corona,
-        // otherwise the quad edge would visibly clip the rays/ring.
+        // otherwise the quad edge would visibly clip the rays/ring. `turbulence[0]` (strength_px)
+        // can displace any of those sample points by up to that many px in either direction, so it
+        // needs doubling (both directions) and adding on top rather than just `max`-ed in.
         let corona_margin_px = spec
             .layers
             .iter()
@@ -1075,7 +1103,8 @@ impl EffectsRenderer {
             * GLOW_CUTOFF_SIGMAS;
         let god_ray_margin_px = godray_a[1] * 2.0;
         let ring_margin_px = ring_chromatic[0] + ring_chromatic[1];
-        let margin_px = corona_margin_px.max(god_ray_margin_px).max(ring_margin_px);
+        let margin_px =
+            corona_margin_px.max(god_ray_margin_px).max(ring_margin_px) + turbulence[0] * 2.0;
         self.flashes.push(Flash {
             pos: [x_px, y_px],
             decay_start_seconds,
@@ -1093,6 +1122,7 @@ impl EffectsRenderer {
             godray_b,
             godray_c,
             ring_chromatic,
+            turbulence,
         });
     }
 
@@ -1135,14 +1165,27 @@ impl EffectsRenderer {
             };
             self.additive_instances.push(EffectInstance {
                 center: flash.pos,
-                core_radius,
+                // zw = turbulence strength_px/scale_px — see `EffectInstance`'s own doc comment
+                // for why they're packed into this field's spare components.
+                core_radius: [
+                    core_radius[0],
+                    core_radius[1],
+                    flash.turbulence[0],
+                    flash.turbulence[1],
+                ],
                 quad_radius: [
                     core_radius[0] + flash.margin_px,
                     core_radius[1] + flash.margin_px,
                 ],
                 alpha: t,
                 color_stops,
-                layer_amp: flash.layer_amp,
+                // w = turbulence speed.
+                layer_amp: [
+                    flash.layer_amp[0],
+                    flash.layer_amp[1],
+                    flash.layer_amp[2],
+                    flash.turbulence[2],
+                ],
                 layer_sigma: flash.layer_sigma,
                 godray_a: flash.godray_a,
                 godray_b: flash.godray_b,
@@ -1161,14 +1204,19 @@ impl EffectsRenderer {
             let core_radius = [particle.size_px, particle.size_px];
             target.push(EffectInstance {
                 center: particle.pos,
-                core_radius,
+                core_radius: [core_radius[0], core_radius[1], 0.0, 0.0],
                 quad_radius: [
                     core_radius[0] + particle.margin_px,
                     core_radius[1] + particle.margin_px,
                 ],
                 alpha: t,
                 color_stops: [particle.color; FLASH_GRADIENT_STOPS],
-                layer_amp: particle.layer_amp,
+                layer_amp: [
+                    particle.layer_amp[0],
+                    particle.layer_amp[1],
+                    particle.layer_amp[2],
+                    0.0,
+                ],
                 layer_sigma: particle.layer_sigma,
                 godray_a: ZERO_GOD_RAYS.0,
                 godray_b: ZERO_GOD_RAYS.1,

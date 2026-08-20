@@ -31,17 +31,27 @@ struct Vertex {
 // with `god_rays`/`ring: None`, `chromatic_aberration: 0.0`) simply carry these zeroed
 // (`godray_a.x == 0.0` count and `ring_chromatic.z`/`.w == 0.0` both gate their own effect off in
 // `fs_glow`), so this is a pixel-identical no-op for every instance that predates this phase.
+// `project::FlashSpec::turbulence` (added later) follows the same convention: an unset
+// `TurbulenceSpec` leaves its packed slots (`core_radius.zw`, `layer_amp.w` -- see this struct's
+// own doc comment on why they're packed there rather than a dedicated field/location) zeroed, and
+// `strength_px <= 0.0` is `domain_warp`'s own off switch.
+// wgpu's vertex-attribute-location limit is 16 (indices 0..15 across *all* buffers bound to one
+// pipeline, including `Vertex`'s own @location(0)) -- this `Instance` struct was already at exactly
+// that limit before turbulence needed somewhere to live, so `core_radius`/`layer_amp` below are
+// widened from vec2/vec3 to vec4 to steal their otherwise-unused trailing component(s) instead of
+// costing a 17th location. `vs_main` unpacks these into `VertexOutput`'s own (unconstrained --
+// inter-stage varyings have a much higher limit) `core_radius`/`layer_amp`/`turbulence` fields.
 struct Instance {
     @location(1) center: vec2<f32>,      // pixel-space center
-    @location(2) core_radius: vec2<f32>, // configured half-extent, per axis (ellipse-aware)
-    @location(3) quad_radius: vec2<f32>, // core_radius + margin for glow instances, == core_radius for puffs
+    @location(2) core_radius: vec4<f32>, // xy = configured half-extent (ellipse-aware); z = turbulence strength_px; w = turbulence scale_px
+    @location(3) quad_radius: vec2<f32>, // core_radius.xy + margin for glow instances, == core_radius.xy for puffs
     @location(4) alpha: f32,             // 0..1, already carries lifetime/decay fade
     @location(5) color_stop_0: vec3<f32>,
     @location(6) color_stop_1: vec3<f32>,
     @location(7) color_stop_2: vec3<f32>,
     @location(8) color_stop_3: vec3<f32>,
     @location(9) color_stop_4: vec3<f32>,
-    @location(10) layer_amp: vec3<f32>,   // additive corona layer amplitudes, brightness pre-multiplied
+    @location(10) layer_amp: vec4<f32>,   // xyz = additive corona layer amplitudes, brightness pre-multiplied; w = turbulence speed
     @location(11) layer_sigma: vec3<f32>, // additive corona layer sigmas (px)
     @location(12) godray_a: vec4<f32>,    // x = count, y = length_px, z = length_jitter, w = softness
     @location(13) godray_b: vec4<f32>,    // x = rotation_offset_deg, y = rotation_speed_deg_per_sec, z = pulse_speed, w = pulse_amount
@@ -65,6 +75,7 @@ struct VertexOutput {
     @location(11) godray_b: vec4<f32>,
     @location(12) godray_c: vec4<f32>,
     @location(13) ring_chromatic: vec4<f32>,
+    @location(14) turbulence: vec4<f32>,
 }
 
 @vertex
@@ -76,15 +87,18 @@ fn vs_main(vertex: Vertex, instance: Instance) -> VertexOutput {
     var out: VertexOutput;
     out.position = view_uniform.transform * vec4<f32>(pixel, 0.0, 1.0);
     out.offset = offset;
-    out.core_radius = instance.core_radius;
+    out.core_radius = instance.core_radius.xy;
     out.alpha = instance.alpha;
     out.color_stop_0 = instance.color_stop_0;
     out.color_stop_1 = instance.color_stop_1;
     out.color_stop_2 = instance.color_stop_2;
     out.color_stop_3 = instance.color_stop_3;
     out.color_stop_4 = instance.color_stop_4;
-    out.layer_amp = instance.layer_amp;
+    out.layer_amp = instance.layer_amp.xyz;
     out.layer_sigma = instance.layer_sigma;
+    // `core_radius.zw` = turbulence (strength_px, scale_px), `layer_amp.w` = turbulence speed --
+    // see `Instance`'s own doc comment for why these live packed here instead of a dedicated field.
+    out.turbulence = vec4<f32>(instance.core_radius.z, instance.core_radius.w, instance.layer_amp.w, 0.0);
     out.godray_a = instance.godray_a;
     out.godray_b = instance.godray_b;
     out.godray_c = instance.godray_c;
@@ -133,26 +147,35 @@ fn fs_puff(in: VertexOutput) -> @location(0) vec4<f32> {
 
 // Additive corona (Phase M): sums three exponential falloff terms
 // (`amplitude * exp(-edge_dist_px / sigma_px)`) into a single light value — see `barrier.wgsl`'s
-// `fs_glow` for the full rationale. `edge_dist_px` is an ellipse-aware distance in pixels outside
-// the instance's `core_radius` (0 inside it). No separate opaque core is drawn here (unlike
-// barrier/notes) — additive light never needs to occlude anything, so a bright center is just
-// where the tight/near-field layer dominates, not a distinct pipeline.
+// `fs_glow` for the full rationale. `edge_dist_px` is an ellipse-aware *signed* distance in pixels
+// from the instance's `core_radius` boundary (negative inside it, positive outside). No separate
+// opaque core is drawn here (unlike barrier/notes) — additive light never needs to occlude
+// anything, so a bright center is just where the tight/near-field layer dominates, not a distinct
+// pipeline.
+//
+// Unconditionally signed rather than clamped to 0 inside the boundary (an earlier version did
+// `select(0.0, edge_dist_px, norm > 1.0)`): clamping made every pixel inside `core_radius` sum to
+// the exact same flat plateau (the three layer amplitudes with zero falloff applied), so the
+// corona read as a hard-edged solid disc with a visible slope discontinuity right at the
+// boundary -- a real point light has no such plateau, its brightness rises continuously all the
+// way to the center. Removing the clamp lets the same exponential curve that shapes the outer
+// halo continue inward, peaking at the center instead of flattening out.
 fn core_strength(offset: vec2<f32>, core_radius: vec2<f32>, layer_amp: vec3<f32>, layer_sigma: vec3<f32>) -> f32 {
     let norm = length(offset / core_radius);
     // `offset / norm` is the point where the ray from the center through `offset` crosses the
     // ellipse boundary (exact on both axes, a close approximation elsewhere), so
-    // `length(offset) - length(offset) / norm` is the real pixel distance from that boundary to
-    // `offset`. Rescaling `(norm - 1.0)` by `min(core_radius.x, core_radius.y)` (the old formula)
-    // badly underestimates this away from the minor axis for an elongated ellipse (e.g. a flash's
-    // wide, flat corona) -- the falloff then decays far slower in real pixels than `sigma_px`
-    // intends and outruns the quad margin sized from it (`spawn_flash`'s `margin_px`), producing a
-    // hard rectangular clip at the quad edge instead of a soft fade to zero.
+    // `length(offset) - length(offset) / norm` is the real signed pixel distance from that
+    // boundary to `offset` (negative when `offset` sits inside the ellipse, since `1.0 / norm` is
+    // then > 1). Rescaling `(norm - 1.0)` by `min(core_radius.x, core_radius.y)` (an even older
+    // formula) badly underestimates this away from the minor axis for an elongated ellipse (e.g. a
+    // flash's wide, flat corona) -- the falloff then decays far slower in real pixels than
+    // `sigma_px` intends and outruns the quad margin sized from it (`spawn_flash`'s `margin_px`),
+    // producing a hard rectangular clip at the quad edge instead of a soft fade to zero.
     let dist = length(offset);
-    // `select`'s two value arguments are both evaluated unconditionally (unlike a ternary/`if`),
-    // so `1.0 / norm` needs `max(norm, 0.0001)` to stay finite at `offset == vec2(0.0)` (`norm ==
-    // 0.0`) even though that branch is discarded -- otherwise it's a NaN that never gets used but
-    // would still need to not exist.
-    let edge_dist_px = select(0.0, dist * (1.0 - 1.0 / max(norm, 0.0001)), norm > 1.0);
+    // `max(norm, 0.0001)` keeps `1.0 / norm` finite at `offset == vec2(0.0)` (`norm == 0.0`) --
+    // `dist` is also exactly 0 there, so the product stays a well-defined 0 rather than a NaN from
+    // `0 * inf`.
+    let edge_dist_px = dist * (1.0 - 1.0 / max(norm, 0.0001));
 
     var strength = 0.0;
     strength += layer_amp.x * exp(-edge_dist_px / max(layer_sigma.x, 0.01));
@@ -270,12 +293,31 @@ fn ring_strength(offset: vec2<f32>, ring_radius: f32, ring_width: f32, ring_inte
     return exp(-d / max(ring_width, 0.1)) * ring_intensity;
 }
 
+// `project::TurbulenceSpec`: displaces the sample point through a 2D value-noise field
+// before any of the corona/god-ray/ring math runs, so the whole light stack's shape reads as
+// grainy/turbulent (a real photograph of a bright light) rather than perfectly smooth analytic
+// falloffs. `strength_px <= 0.0` (the zeroed-instance default) is the off switch -- returns
+// `offset` unchanged. Two independent noise samples (`nx`/`ny`, offset from each other in both
+// space and time via arbitrary constants) drive the x/y displacement so the warp isn't a single
+// scalar pushing every point the same direction.
+fn domain_warp(offset: vec2<f32>, strength_px: f32, scale_px: f32, speed: f32, time_seconds: f32) -> vec2<f32> {
+    if (strength_px <= 0.0) {
+        return offset;
+    }
+    let p = offset / max(scale_px, 1.0);
+    let t = time_seconds * speed;
+    let nx = noise2(p + vec2<f32>(t, -t * 0.7));
+    let ny = noise2(p + vec2<f32>(t * 0.6 + 17.0, t * 0.9 + 5.0));
+    return offset + vec2<f32>(nx, ny) * strength_px;
+}
+
 // The combined (colorless) light strength at `offset` -- shared by every channel sample
 // `fs_glow` takes below when chromatic aberration is enabled.
 fn total_strength(in: VertexOutput, offset: vec2<f32>, time_seconds: f32) -> f32 {
-    var s = core_strength(offset, in.core_radius, in.layer_amp, in.layer_sigma);
-    s += god_ray_strength(offset, in.core_radius, in.godray_a, in.godray_b, in.godray_c, time_seconds);
-    s += ring_strength(offset, in.ring_chromatic.x, in.ring_chromatic.y, in.ring_chromatic.z);
+    let warped = domain_warp(offset, in.turbulence.x, in.turbulence.y, in.turbulence.z, time_seconds);
+    var s = core_strength(warped, in.core_radius, in.layer_amp, in.layer_sigma);
+    s += god_ray_strength(warped, in.core_radius, in.godray_a, in.godray_b, in.godray_c, time_seconds);
+    s += ring_strength(warped, in.ring_chromatic.x, in.ring_chromatic.y, in.ring_chromatic.z);
     return s;
 }
 

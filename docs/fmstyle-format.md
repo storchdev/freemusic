@@ -531,6 +531,7 @@ from exactly one source:
 | `god_rays` | `Option<GodRaySpec>` | Default `None`. Volumetric "sun rays" radiating from the flash's center — see [`GodRaySpec`](#godrayspec) below. |
 | `ring` | `Option<RingSpec>` | Default `None`. A faint diffraction-halo ring around the flash's center — see [`RingSpec`](#ringspec) below. |
 | `chromatic_aberration` | `f32` | Default `0.0` (no-op). Lens-dispersion-style color fringing — see below. |
+| `turbulence` | `Option<TurbulenceSpec>` | Default `None`. Grainy/turbulent roughness applied to the whole light stack (corona + god rays + ring) — see [`TurbulenceSpec`](#turbulencespec) below. |
 
 A flash always renders additively. It is fully "on" at spawn/at the start of its hold (see
 `mode`), fading to 0 over `decay_seconds`.
@@ -619,6 +620,29 @@ uniform wash over the whole flash. `0.0` is an exact no-op: a single unsplit str
 a non-zero value (which samples the whole light stack three times). Typical useful values are small,
 e.g. `0.03`-`0.1` — larger values visibly separate the channels into distinct colored ghosts rather
 than a subtle fringe.
+
+### `TurbulenceSpec`
+
+Grainy/turbulent roughness applied to a flash's entire light stack (corona + god rays + ring)
+before any of it is evaluated — aimed at the irregular, scintillating look of a real photograph of
+a bright light source, as opposed to the perfectly smooth analytic falloffs `core_strength`/
+`god_ray_strength`/`ring_strength` produce on their own. `FlashSpec::turbulence: None` (default)
+renders the light stack exactly as it did before this field existed.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `strength_px` | `f32` | `6.0` | How far (canvas px) the domain warp can displace a sample point. `0.0` is an exact no-op; too large relative to `scale_px` starts tearing the light apart into disconnected blobs rather than roughening its edge. |
+| `scale_px` | `f32` | `18.0` | Feature size (canvas px) of the noise field driving the warp — smaller reads as fine grain, larger as broad, slow-rolling distortion. |
+| `speed` | `f32` | `1.5` | How fast the noise field evolves over transport time. `0.0` freezes the warp to a single (still spatially rough, just static) pattern. |
+
+Mechanically (`render::effects`'s `domain_warp`/`effects.wgsl`'s WGSL port of the same formula):
+each fragment's sample point is displaced by two independent 2D value-noise samples (the same
+`hash21`/`noise2` construction `GodRaySpec`'s beam streak/flicker and `barrier.wgsl`'s strand
+flicker already use) before `core_strength`/`god_ray_strength`/`ring_strength` run, so the light's
+shape itself becomes ragged rather than a perfect ellipse/circle, and continues evolving over time
+rather than sitting static. `strength_px`/`scale_px`/`speed` are plain `f32` (not `ScalarBinding`),
+same precedent as `GodRaySpec`'s own fields — a style-wide look, not something that typically
+varies per triggering note.
 
 ### `FlashColor`
 
@@ -775,7 +799,11 @@ Where it lives per effect:
   bake `layers[i].amplitude * brightness` into a GPU instance before upload (a plain multiply, not
   a `hot_color` mix — there's no separate opaque core to whiten here), then run the identical
   additive layered-sum formula in `effects.wgsl`'s `fs_glow`. Non-additive "puff" particles are
-  unaffected — `layers` is simply not read on that path.
+  unaffected — `layers` is simply not read on that path. Unlike the note/barrier glow above (which
+  only ever evaluates outside an opaque silhouette), `effects.wgsl`'s `core_strength` uses a
+  *signed* `distance` — negative inside `radius_x_px`/`radius_y_px`/`size_px` — so the layered sum
+  keeps rising continuously all the way to the flash/particle's own center instead of flattening
+  out to a constant plateau there; a real point light has no flat interior.
 
 ## Known schema-only/no-op fields
 

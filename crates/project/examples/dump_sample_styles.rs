@@ -8,7 +8,7 @@ use project::{
     BarrierLayer, BlackKeyFill, ColorBinding, Fill, FlashColor, FlashMode, FlashSpec, Glow,
     GlowLayer, GodRaySpec, NoteLayer, OctaveLineSpec, ParticleColor, ParticleSpec, Pulse, Ramp,
     RingSpec, ScalarBinding, Sheen, StrandSpec, Style, Timed, TransitionKind, TransitionLayer,
-    WavyMode, WavySpec,
+    TurbulenceSpec, WavyMode, WavySpec,
 };
 
 fn glow_layers(tight: f32, mid: f32, wide: f32) -> [GlowLayer; 3] {
@@ -289,6 +289,7 @@ fn main() {
                 god_rays: None,
                 ring: None,
                 chromatic_aberration: 0.0,
+                turbulence: None,
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -315,6 +316,7 @@ fn main() {
                 god_rays: None,
                 ring: None,
                 chromatic_aberration: 0.0,
+                turbulence: None,
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -371,6 +373,7 @@ fn main() {
                 god_rays: None,
                 ring: None,
                 chromatic_aberration: 0.0,
+                turbulence: None,
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -416,6 +419,7 @@ fn main() {
                 god_rays: None,
                 ring: None,
                 chromatic_aberration: 0.0,
+                turbulence: None,
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -432,7 +436,9 @@ fn main() {
     // edge of the light. `flashYOffset: 200` in the lab preset has no equivalent here (a flash
     // always spawns at the triggering note's barrier position — same "lab-scene-only field" caveat
     // `barrier_strands`'s own comment calls out for `barrierYFrac`/`keyWidth`/`vignette`/
-    // `exposure`); every other field below is a direct 1:1 field-name translation.
+    // `exposure`); every other field below is a direct 1:1 field-name translation, plus `turbulence`
+    // (not part of the lab preset — added later to break up the corona/god-ray/ring math's
+    // perfectly smooth analytic falloff into a grainier, more turbulent light shape).
     let photoreal_sunburst = Style {
         version: 1,
         notes: Timed::Static(NoteLayer::default()),
@@ -483,6 +489,11 @@ fn main() {
                     intensity: 0.05,
                 }),
                 chromatic_aberration: 0.07,
+                turbulence: Some(TurbulenceSpec {
+                    strength_px: 6.0,
+                    scale_px: 18.0,
+                    speed: 1.5,
+                }),
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -623,6 +634,7 @@ fn main() {
                 god_rays: None,
                 ring: None,
                 chromatic_aberration: 0.0,
+                turbulence: None,
                 layers: [
                     GlowLayer {
                         amplitude: 1.4,
@@ -785,6 +797,7 @@ fn main() {
                 god_rays: None,
                 ring: None,
                 chromatic_aberration: 0.0,
+                turbulence: None,
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),

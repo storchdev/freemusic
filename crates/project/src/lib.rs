@@ -10,7 +10,7 @@ pub use style::{
     default_project_style, BarrierLayer, BlackKeyFill, Border, ColorBinding, EmissionMode, Fill,
     FlashColor, FlashMode, FlashSpec, Glow, GlowLayer, GodRaySpec, NoteLayer, OctaveLineSpec,
     ParticleColor, ParticleSpec, Pulse, Ramp, RingSpec, ScalarBinding, Sheen, StrandSpec, Style,
-    Timed, TransitionKind, TransitionLayer, WavyMode, WavySpec,
+    Timed, TransitionKind, TransitionLayer, TurbulenceSpec, WavyMode, WavySpec,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

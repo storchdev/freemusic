@@ -74,6 +74,96 @@ It read as the beams wiggling rather than radiating from a fixed sun, so it was 
 current design's `rotation_speed_deg_per_sec` (a rigid whole-pattern spin) is a deliberately
 different and subtler motion kept as an escape hatch, not a reintroduction of wander.
 
+## Flash corona: the flat-plateau bug, and adding turbulence
+
+A user comparing a rendered flash against a real photograph (a Rousseau reference frame with a
+volumetric light burst) reported two things: the corona's bright center read as a "solid" disc
+with a jarring hard edge even at a tiny radius (`radius_x_px`/`radius_y_px: 3.0`), and the whole
+light — both the corona and the god rays — looked too smooth/glassy compared to the rough,
+grainy texture of a real photographed light source.
+
+The first turned out to be a real bug in `effects.wgsl`'s `core_strength` (shared by flash and
+additive-particle coronas): the ellipse-aware falloff distance was `select(0.0, edge_dist_px, norm
+> 1.0)` — clamped to exactly `0.0` for every pixel *inside* `core_radius`, so the three glow layers
+summed to one flat constant across the entire interior (for `photoreal-sunburst.fmstyle.ron`'s
+flash, `~2.7`, comfortably clipping to solid white on an `Rgba8Unorm` target) regardless of how
+close to the center a pixel actually was. Only outside the ellipse did the exponential falloff
+apply at all, producing a visible slope discontinuity right at the boundary — a flat disc glued to
+a soft halo, not a continuous light source. The fix removes the clamp entirely: `edge_dist_px` is
+now a genuinely *signed* distance (negative inside the ellipse), so the same exponential curve that
+shapes the outer halo continues inward and peaks at the center instead of flattening out. This
+changes the *rendered look* of every existing flash/additive-particle style without touching the
+`.fmstyle.ron` schema at all — a pure shader-logic fix, not a format change. (An even earlier
+`(norm - 1.0) * min(core_radius.x, core_radius.y)` formula predates this fix and has its own
+comment in `core_strength` explaining why it underestimated distance for elongated ellipses; that
+issue is orthogonal to the plateau bug and the current formula still avoids it.)
+
+The second (roughness) genuinely needed new configuration, since nothing in the schema drove any
+kind of spatial noise across the corona/god-ray shape itself — `GodRaySpec`'s existing streak/
+flicker noise only varies *along* a beam's length, not the light's overall silhouette. The design
+question was where to put the new knob: per-effect (separate turbulence controls on the core corona
+vs. `GodRaySpec`) or one field applied uniformly to the whole light stack. Asked directly, the user
+picked the single shared field — `FlashSpec::turbulence: Option<TurbulenceSpec>` — reasoning that a
+real photographed light doesn't have independently-turbulent "corona" and "god ray" components, it's
+one light source. Mechanically this is a domain warp: `effects.wgsl`'s `domain_warp` displaces the
+fragment's sample point through a 2D value-noise field (the same `hash21`/`noise2` construction
+already used elsewhere) before `core_strength`/`god_ray_strength`/`ring_strength` all run, applied
+once in `total_strength` so every consumer of the light stack (including each chromatic-aberration
+channel sample) sees the same warped shape.
+
+The first attempt gave `turbulence` its own dedicated `@location(16)` vertex attribute on
+`effects.wgsl`'s `Instance` struct, mirroring how `godray_a`/`b`/`c`/`ring_chromatic` were added in
+Phase V. That crashed at pipeline creation (`wgpu error: ... vertex attribute location 16 must be
+less than limit 16`) the first time the user actually ran the app — wgpu caps a pipeline at 16
+vertex attribute locations *total*, counting `Vertex`'s own `@location(0)` alongside every
+`Instance` field, and this pipeline's existing fields (`center` through `ring_chromatic`) already
+used exactly locations 0-15 before turbulence needed anywhere to go. `cargo build`/`clippy` can't
+catch this — like the black-key gradient bug above, invalid WGSL/pipeline state is only validated
+when the app actually creates the render pipeline at startup, which is also why the "never run the
+app yourself" rule in `CLAUDE.md` means this class of bug can only be caught by asking the user to
+run it. The fix packs `turbulence`'s three floats into already-declared fields' otherwise-unused
+trailing components instead of adding a 17th location: `core_radius` widened from `vec2` to `vec4`
+(`.zw` = `strength_px`/`scale_px`) and `layer_amp` widened from `vec3` to `vec4` (`.w` = `speed`).
+This only touches the vertex-buffer-supplied `Instance` struct (the thing wgpu's 16-location limit
+actually constrains) — `VertexOutput` (the vertex-to-fragment interstage struct) has a much higher
+component budget and was never at risk, so it kept its own separate `core_radius: vec2`/
+`layer_amp: vec3`/`turbulence: vec4` fields unchanged, with `vs_main` doing the unpack/repack in
+between.
+
+## Lab cleanup: god rays/turbulence/electric wisps removed, flame corona fixed
+
+By the time the aurora-corona flame-stack experiment (`flameCoronaStrength` in
+`barrier-fx-lab.html`) had settled into a look the user liked, three other lab-only groups had
+become dead weight: god rays and turbulence/grain were superseded by the flame corona as the
+lab's directional-flash focus (and god rays/ring/chromatic-aberration were already shipped in the
+real app per the previous section — the lab copies were purely reference at that point), and the
+electric sliding-filament/wisp groups were unused, never-ported experiments predating the flash
+work entirely. All three were deleted outright from the lab — schema entries, GLSL uniforms and
+functions, `PRESETS` entries, and the three "photoreal sunburst" A/B presets that existed
+specifically to compare turbulence modes on god rays (with nothing left to compare once both were
+gone). `coreLegacyPlateau` (the flat-plateau-fix A/B toggle, unrelated to turbulence but previously
+grouped with it) moved into the "flash" group rather than being deleted, since it's still a useful
+A/B against the shipped `core_strength` fix.
+
+Two bugs were found in the flame corona itself along the way, both from feeding raw `atan2` angle
+into `noise2`/`fbm`. First: `fbm(vec2(theta * uFlameLobes, ...))` has a hard seam at `theta = ±PI`
+(pointing left) regardless of `uFlameLobes` — `atan2` jumps by `2*PI` right there, so the noise
+coordinate lands on an uncorrelated patch of the field no matter how the lobe count is tuned, since
+tuning it only changes the *size* of the jump, never removes it. The fix samples noise from a point
+on a circle parametrized by the light's own unit direction vector instead
+(`angularNoisePoint(dir, freq) = dir * freq`, where `dir = offset / r`): since `dir` is just
+`(x, y) / r`, a continuous function of position with no branch, sweeping it all the way around has
+no discontinuity anywhere, while still tracing the same circumference (and so roughly the same bump
+density) the old `theta * freq` coordinate spanned. Second: the streak texture's `r / scale -
+time * speed` term made the internal texture visibly flow *outward* from the light's center over
+time, which read as material streaming out rather than a light source's brightness varying — the
+user's own description was "the outward divergence doesn't look natural." The fix drops the time
+term from the streak sampling entirely (now a time-static weave of the same seamless angular
+coordinate against radius) and adds a separate whole-corona brightness pulse instead
+(`uFlameFlickerSpeed`/`uFlameFlickerIntensity`, same noise-driven flicker shape already used by
+`flashContribution`/`flashGodRayStrength`'s equivalents before those were removed), so the corona
+now gutters like a real light source rather than flowing.
+
 ## Breaking-change log
 
 This is the canonical historical record of every schema-breaking phase; `docs/fmstyle-format.md`
