@@ -5,10 +5,10 @@
 
 use egui::Ui;
 use project::{
-    BarrierLayer, BlackKeyFill, ColorBinding, EmissionMode, Fill, FlashColor, FlashMode, FlashSpec,
-    Glow, GlowLayer, GodRaySpec, NoteLayer, OctaveLineSpec, ParticleColor, ParticleSpec, Pulse,
-    Ramp, RingSpec, ScalarBinding, Sheen, StrandSpec, Timed, TransitionKind, TransitionLayer,
-    TurbulenceSpec, WavyMode, WavySpec,
+    BarrierLayer, BlackKeyFill, ColorBinding, EmissionMode, Fill, FlameCoronaSpec, FlashColor,
+    FlashMode, FlashSpec, Glow, GlowLayer, NoteLayer, OctaveLineSpec, ParticleColor, ParticleSpec,
+    Pulse, Ramp, RingSpec, ScalarBinding, Sheen, StrandSpec, Timed, TransitionKind,
+    TransitionLayer, TurbulenceSpec, WavyMode, WavySpec,
 };
 
 use crate::ui::{darken_color, validated_slider};
@@ -19,7 +19,7 @@ const PITCH_CLASS_LABELS: [&str; 12] = [
 
 /// Shows a checkbox toggling `opt` between `None` and `Some(default())`, drawing `body` (indented)
 /// only while `Some`. The enable/disable pattern used everywhere a layer field is optional
-/// (`sheen`/`glow`/`pulse`/`wavy`/`strands`/`god_rays`/`ring`/`octave_lines`/etc.).
+/// (`sheen`/`glow`/`pulse`/`wavy`/`strands`/`flame_corona`/`ring`/`octave_lines`/etc.).
 pub(crate) fn optional_section<T>(
     ui: &mut Ui,
     label: &str,
@@ -748,7 +748,7 @@ fn default_flash_spec() -> FlashSpec {
         ],
         flicker_speed: ScalarBinding::Constant(0.0),
         flicker_intensity: ScalarBinding::Constant(0.0),
-        god_rays: None,
+        flame_corona: None,
         ring: None,
         chromatic_aberration: 0.0,
         turbulence: None,
@@ -807,59 +807,58 @@ pub(crate) fn edit_flash_color(ui: &mut Ui, id: &str, color: &mut FlashColor) {
     }
 }
 
-pub(crate) fn edit_god_ray_spec(ui: &mut Ui, spec: &mut GodRaySpec) {
+pub(crate) fn edit_flame_corona_spec(ui: &mut Ui, spec: &mut FlameCoronaSpec) {
     ui.horizontal(|ui| {
-        ui.label("Count:");
-        ui.add(egui::DragValue::new(&mut spec.count).range(1..=128));
+        ui.label("Tongue count (lobes):");
+        validated_slider(ui, &mut spec.lobes, 1.0..=16.0, None);
     });
     ui.horizontal(|ui| {
-        ui.label("Length (px):");
-        validated_slider(ui, &mut spec.length_px, 0.0..=300.0, None);
+        ui.label("Reach variance:");
+        validated_slider(ui, &mut spec.reach_variance, 0.0..=1.0, None);
     });
     ui.horizontal(|ui| {
-        ui.label("Length jitter:");
-        validated_slider(ui, &mut spec.length_jitter, 0.0..=1.0, None);
+        ui.label("Silhouette morph speed:");
+        validated_slider(ui, &mut spec.silhouette_speed, 0.0..=2.0, None);
     });
     ui.horizontal(|ui| {
-        ui.label("Softness:");
-        validated_slider(ui, &mut spec.softness, 0.1..=8.0, None);
+        ui.label("Base reach (px):");
+        validated_slider(ui, &mut spec.base_reach_px, 0.0..=300.0, None);
     });
     ui.horizontal(|ui| {
-        ui.label("Rotation offset (deg):");
-        validated_slider(ui, &mut spec.rotation_offset_deg, -180.0..=180.0, None);
+        ui.label("Streak angular freq:");
+        validated_slider(ui, &mut spec.streak_freq, 0.0..=40.0, None);
     });
     ui.horizontal(|ui| {
-        ui.label("Rotation speed (deg/s):");
-        validated_slider(
-            ui,
-            &mut spec.rotation_speed_deg_per_sec,
-            -180.0..=180.0,
-            None,
-        );
+        ui.label("Streak radial scale (px):");
+        validated_slider(ui, &mut spec.streak_scale_px, 1.0..=100.0, None);
     });
     ui.horizontal(|ui| {
-        ui.label("Pulse speed:");
-        validated_slider(ui, &mut spec.pulse_speed, 0.0..=10.0, None);
-    });
-    ui.horizontal(|ui| {
-        ui.label("Pulse amount:");
-        validated_slider(ui, &mut spec.pulse_amount, 0.0..=1.0, None);
-    });
-    ui.horizontal(|ui| {
-        ui.label("Streakiness:");
+        ui.label("Streak contrast:");
         validated_slider(ui, &mut spec.streakiness, 0.0..=1.0, None);
     });
     ui.horizontal(|ui| {
-        ui.label("Flicker speed:");
-        validated_slider(ui, &mut spec.flicker_speed, 0.0..=10.0, None);
+        ui.label("Solid core fraction:");
+        validated_slider(ui, &mut spec.core_frac, 0.0..=1.0, None);
     });
     ui.horizontal(|ui| {
-        ui.label("Flicker intensity:");
-        validated_slider(ui, &mut spec.flicker_intensity, 0.0..=1.0, None);
+        ui.label("Tip fray softness (px):");
+        validated_slider(ui, &mut spec.tip_softness_px, 1.0..=80.0, None);
     });
     ui.horizontal(|ui| {
         ui.label("Intensity:");
         validated_slider(ui, &mut spec.intensity, 0.0..=3.0, None);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Flicker speed:");
+        validated_slider(ui, &mut spec.flicker_speed, 0.0..=12.0, None);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Flicker intensity:");
+        validated_slider(ui, &mut spec.flicker_intensity, 0.0..=3.0, None);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Flicker independence:");
+        validated_slider(ui, &mut spec.flicker_independence, 0.0..=1.0, None);
     });
 }
 
@@ -956,10 +955,10 @@ pub(crate) fn edit_flash_spec(ui: &mut Ui, spec: &mut FlashSpec) {
     ui.separator();
     optional_section(
         ui,
-        "God rays",
-        &mut spec.god_rays,
-        GodRaySpec::default,
-        edit_god_ray_spec,
+        "Flame corona",
+        &mut spec.flame_corona,
+        FlameCoronaSpec::default,
+        edit_flame_corona_spec,
     );
     optional_section(
         ui,

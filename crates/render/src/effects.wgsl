@@ -11,9 +11,10 @@
 
 struct ViewUniform {
     transform: mat4x4<f32>,
-    // x = transport time (seconds), used only by the god-ray pulse/flicker/rotation noise below —
-    // yzw unused, packed into a vec4 rather than a bare trailing f32 to match this codebase's
-    // uniform-buffer convention (see barrier.wgsl's `Uniforms`) and avoid any manual tail padding.
+    // x = transport time (seconds), used only by the flame-corona silhouette/streak/flicker noise
+    // below — yzw unused, packed into a vec4 rather than a bare trailing f32 to match this
+    // codebase's uniform-buffer convention (see barrier.wgsl's `Uniforms`) and avoid any manual
+    // tail padding.
     time: vec4<f32>,
 }
 
@@ -24,23 +25,25 @@ struct Vertex {
     @location(0) position: vec2<f32>, // unit quad, 0..1
 }
 
-// Phase V: `godray_a`/`godray_b`/`godray_c`/`ring_chromatic` add the "photograph of the sun from
-// Earth" flash extras (volumetric god rays, a diffraction ring, chromatic aberration) ported from
-// `explorations/barrier-fx-lab` — see `project::GodRaySpec`/`RingSpec`/`FlashSpec::
-// chromatic_aberration` for what each packed field means. Puff/particle instances (and any flash
-// with `god_rays`/`ring: None`, `chromatic_aberration: 0.0`) simply carry these zeroed
-// (`godray_a.x == 0.0` count and `ring_chromatic.z`/`.w == 0.0` both gate their own effect off in
-// `fs_glow`), so this is a pixel-identical no-op for every instance that predates this phase.
-// `project::FlashSpec::turbulence` (added later) follows the same convention: an unset
-// `TurbulenceSpec` leaves its packed slots (`core_radius.zw`, `layer_amp.w` -- see this struct's
-// own doc comment on why they're packed there rather than a dedicated field/location) zeroed, and
-// `strength_px <= 0.0` is `domain_warp`'s own off switch.
+// `flame_a`/`flame_b`/`flame_c`/`ring_chromatic` carry the flash extras (a 360-degree flame
+// corona, a diffraction ring, chromatic aberration) ported from `explorations/barrier-fx-lab` --
+// see `project::FlameCoronaSpec`/`RingSpec`/`FlashSpec::chromatic_aberration` for what each packed
+// field means. Puff/particle instances (and any flash with `flame_corona`/`ring: None`,
+// `chromatic_aberration: 0.0`) simply carry these zeroed (`flame_c.y == 0.0` intensity and
+// `ring_chromatic.z`/`.w == 0.0` both gate their own effect off in `fs_glow`), so this is a
+// pixel-identical no-op for every instance that doesn't use them.
+// `project::FlashSpec::turbulence` follows the same convention: an unset `TurbulenceSpec` leaves
+// its packed slots (`core_radius.zw`, `layer_amp.w` -- see this struct's own doc comment on why
+// they're packed there rather than a dedicated field/location) zeroed, and `strength_px <= 0.0` is
+// `domain_warp`'s own off switch.
 // wgpu's vertex-attribute-location limit is 16 (indices 0..15 across *all* buffers bound to one
-// pipeline, including `Vertex`'s own @location(0)) -- this `Instance` struct was already at exactly
-// that limit before turbulence needed somewhere to live, so `core_radius`/`layer_amp` below are
-// widened from vec2/vec3 to vec4 to steal their otherwise-unused trailing component(s) instead of
-// costing a 17th location. `vs_main` unpacks these into `VertexOutput`'s own (unconstrained --
-// inter-stage varyings have a much higher limit) `core_radius`/`layer_amp`/`turbulence` fields.
+// pipeline, including `Vertex`'s own @location(0)) -- this `Instance` struct is already at exactly
+// that limit, so `core_radius`/`layer_amp`/`layer_sigma` below are each widened from vec2/vec3 to
+// vec4 to steal their otherwise-unused trailing component(s) instead of costing extra locations --
+// `layer_sigma.w` in particular carries `FlameCoronaSpec::flicker_independence`, the thirteenth
+// flame-corona field that doesn't fit in `flame_a`/`b`/`c`'s twelve slots. `vs_main` unpacks these
+// into `VertexOutput`'s own (unconstrained -- inter-stage varyings have a much higher limit)
+// `core_radius`/`layer_amp`/`layer_sigma`/`turbulence`/`flicker_independence` fields.
 struct Instance {
     @location(1) center: vec2<f32>,      // pixel-space center
     @location(2) core_radius: vec4<f32>, // xy = configured half-extent (ellipse-aware); z = turbulence strength_px; w = turbulence scale_px
@@ -52,10 +55,10 @@ struct Instance {
     @location(8) color_stop_3: vec3<f32>,
     @location(9) color_stop_4: vec3<f32>,
     @location(10) layer_amp: vec4<f32>,   // xyz = additive corona layer amplitudes, brightness pre-multiplied; w = turbulence speed
-    @location(11) layer_sigma: vec3<f32>, // additive corona layer sigmas (px)
-    @location(12) godray_a: vec4<f32>,    // x = count, y = length_px, z = length_jitter, w = softness
-    @location(13) godray_b: vec4<f32>,    // x = rotation_offset_deg, y = rotation_speed_deg_per_sec, z = pulse_speed, w = pulse_amount
-    @location(14) godray_c: vec4<f32>,    // x = streakiness, y = flicker_speed, z = flicker_intensity, w = intensity
+    @location(11) layer_sigma: vec4<f32>, // xyz = additive corona layer sigmas (px); w = flame corona flicker_independence
+    @location(12) flame_a: vec4<f32>,     // x = lobes, y = reach_variance, z = silhouette_speed, w = base_reach_px
+    @location(13) flame_b: vec4<f32>,     // x = streak_freq, y = streak_scale_px, z = streakiness, w = core_frac
+    @location(14) flame_c: vec4<f32>,     // x = tip_softness_px, y = intensity, z = flicker_speed, w = flicker_intensity
     @location(15) ring_chromatic: vec4<f32>, // x = ring_radius_px, y = ring_width_px, z = ring_intensity, w = chromatic_aberration
 }
 
@@ -71,11 +74,12 @@ struct VertexOutput {
     @location(7) color_stop_4: vec3<f32>,
     @location(8) layer_amp: vec3<f32>,
     @location(9) layer_sigma: vec3<f32>,
-    @location(10) godray_a: vec4<f32>,
-    @location(11) godray_b: vec4<f32>,
-    @location(12) godray_c: vec4<f32>,
+    @location(10) flame_a: vec4<f32>,
+    @location(11) flame_b: vec4<f32>,
+    @location(12) flame_c: vec4<f32>,
     @location(13) ring_chromatic: vec4<f32>,
     @location(14) turbulence: vec4<f32>,
+    @location(15) flicker_independence: f32,
 }
 
 @vertex
@@ -95,13 +99,14 @@ fn vs_main(vertex: Vertex, instance: Instance) -> VertexOutput {
     out.color_stop_3 = instance.color_stop_3;
     out.color_stop_4 = instance.color_stop_4;
     out.layer_amp = instance.layer_amp.xyz;
-    out.layer_sigma = instance.layer_sigma;
+    out.layer_sigma = instance.layer_sigma.xyz;
     // `core_radius.zw` = turbulence (strength_px, scale_px), `layer_amp.w` = turbulence speed --
     // see `Instance`'s own doc comment for why these live packed here instead of a dedicated field.
     out.turbulence = vec4<f32>(instance.core_radius.z, instance.core_radius.w, instance.layer_amp.w, 0.0);
-    out.godray_a = instance.godray_a;
-    out.godray_b = instance.godray_b;
-    out.godray_c = instance.godray_c;
+    out.flicker_independence = instance.layer_sigma.w;
+    out.flame_a = instance.flame_a;
+    out.flame_b = instance.flame_b;
+    out.flame_c = instance.flame_c;
     out.ring_chromatic = instance.ring_chromatic;
     return out;
 }
@@ -184,19 +189,13 @@ fn core_strength(offset: vec2<f32>, core_radius: vec2<f32>, layer_amp: vec3<f32>
     return strength;
 }
 
-// Phase V: god rays / halo ring / chromatic aberration, ported from
-// `explorations/barrier-fx-lab/barrier-fx-lab.html`'s "Flash — god rays"/"halo"/"chromatic
-// aberration" groups (`flashGodRayStrength`/`flashRingStrength`/`flashContribution`), aimed at a
-// "photograph of the sun from Earth" look rather than a round blob. Same value-noise construction
-// (`hash21`/`noise2`) as `barrier.wgsl`'s strand-bundle flicker.
-
-const TWO_PI: f32 = 6.28318530718;
-// "The target look settled on a fixed shape for these two -- they're not exposed as sliders, just
-// baked in here" (same rationale as the lab's own comment on these constants). GOD_RAY_TAPER
-// shapes the brightness gradient along a beam's length; GOD_RAY_NOISE_SCALE sizes the streak
-// texture sampled along each beam.
-const GOD_RAY_TAPER: f32 = 0.65;
-const GOD_RAY_NOISE_SCALE: f32 = 0.2;
+// Flame corona / halo ring / chromatic aberration, ported from
+// `explorations/barrier-fx-lab/barrier-fx-lab.html`'s "Flash — flame corona"/"halo"/"chromatic
+// aberration" groups (`flameCoronaStrength`/`flashRingStrength`/`flashContribution`), aimed at an
+// aurora-curtain/solar-corona-photograph look rather than a round blob (this replaced an earlier
+// beam-based "god ray" design entirely — see `docs/narratives/fmstyle-history.md`'s
+// breaking-change log). Same value-noise construction (`hash21`/`noise2`) as `barrier.wgsl`'s
+// strand-bundle flicker.
 
 fn hash21(p: vec2<f32>) -> f32 {
     var p3 = fract(vec3<f32>(p.x, p.y, p.x) * vec3<f32>(0.1031, 0.1030, 0.0973));
@@ -215,72 +214,99 @@ fn noise2(p: vec2<f32>) -> f32 {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 2.0 - 1.0;
 }
 
-// WGSL's `%` follows the dividend's sign (truncated division); the lab's GLSL `mod()` follows the
-// divisor's sign (floored division) — this matters here since `theta - rot` can be negative.
-fn floor_mod(x: f32, y: f32) -> f32 {
-    return x - y * floor(x / y);
+// 4-octave fractal noise built on `noise2` -- used by `flame_corona_strength` below for both the
+// silhouette (how far the flame reaches at each angle) and the internal streak texture, so each
+// gets organic multi-scale detail rather than a single smooth sine/noise lobe.
+fn fbm(p_in: vec2<f32>) -> f32 {
+    var p = p_in;
+    var sum = 0.0;
+    var amp = 0.5;
+    for (var i = 0; i < 4; i = i + 1) {
+        sum += amp * noise2(p);
+        p *= 2.03;
+        amp *= 0.5;
+    }
+    return sum;
 }
 
-// A handful of much *wider* and *longer* beams than a typical starburst (low `softness` exponent =
-// broad angular cone), sitting on `count` fixed, evenly-spaced angular slots — no angular wander
-// (that read as the beams wiggling side to side, not the intended look). Each beam's own reach
-// breathes in and out over time via noise (`pulse_speed`/`pulse_amount`), plus a whole-beam
-// brightness flicker on top of an internal streak texture. Unlike the strand bundle, this is a
-// direct per-pixel angle-to-slot computation, not a loop over `count` beams — `count` has no
-// practical upper cap. `params_a` = (count, length_px, length_jitter, softness), `params_b` =
-// (rotation_offset_deg, rotation_speed_deg_per_sec, pulse_speed, pulse_amount), `params_c` =
-// (streakiness, flicker_speed, flicker_intensity, intensity) — see `project::GodRaySpec`'s own
-// field docs for what each means. `count < 0.5` (the zeroed-instance default) is the off switch.
-fn god_ray_strength(offset: vec2<f32>, core_radius: vec2<f32>, params_a: vec4<f32>, params_b: vec4<f32>, params_c: vec4<f32>, time_seconds: f32) -> f32 {
-    let count = params_a.x;
-    if (count < 0.5) {
+// A point on a circle of radius `freq` in noise-space, parametrized by the light's own unit
+// direction vector (`dir = offset / r`) rather than by `atan2`'s angle. Sweeping `dir` all the way
+// around traces the full circumference (`2*PI*freq` noise-space units), giving roughly the same
+// bump density per full turn a raw `theta * freq` noise coordinate would -- but since `dir` is
+// just `offset / r`, a continuous function of position with no branch, there's no seam where
+// `atan2` wraps from +PI to -PI the way a `theta * freq` coordinate would (a hard discontinuity
+// fixed at "pointing left" no matter how the frequency is tuned).
+fn angular_noise_point(dir: vec2<f32>, freq: f32) -> vec2<f32> {
+    return dir * freq;
+}
+
+// Continuous flame corona wrapping the full 360 degrees around the light center. The raggedness
+// *is* the shape, not an overlay: `reach` (how far the flame extends at each angle) is itself a
+// low-frequency FBM sampled over the light's own direction (via `angular_noise_point` above) plus
+// a slowly-translating time offset -- `lobes` sets roughly how many tongues/peaks show up around
+// the circle, `reach_variance` how tall the peaks are relative to the valleys, `silhouette_speed`
+// how fast the whole silhouette morphs. A second FBM textures the inside of each tongue: it's a
+// static weave of angle and radius (no time term), so it reads as fixed internal grain rather than
+// material flowing outward -- a uniform outward flow reads as an unnatural steady divergence out
+// of the light's center rather than something a real light source does. Instead the corona's
+// *brightness* pulses over time (`flicker_speed`/`flicker_intensity`), like a flame or plasma
+// light guttering. `flicker_independence` blends the flicker's sample point between a single fixed
+// coordinate (`0.0` -- the whole corona brightens/dims in lockstep) and the same
+// `angular_noise_point` circle the silhouette/streak use (`1.0` -- each tongue gets its own
+// noise-driven phase, so different parts of the corona gutter independently). The falloff past
+// `reach` is a soft exponential fray (`tip_softness_px`), not a hard cutoff -- real flame tips
+// dissipate raggedly. `params_a` = (lobes, reach_variance, silhouette_speed, base_reach_px),
+// `params_b` = (streak_freq, streak_scale_px, streakiness, core_frac), `params_c` =
+// (tip_softness_px, intensity, flicker_speed, flicker_intensity) -- see `project::FlameCoronaSpec`'s
+// own field docs for what each means. `intensity <= 0.0` (in `params_c.y`, the zeroed-instance
+// default) is the off switch.
+fn flame_corona_strength(offset: vec2<f32>, core_radius: vec2<f32>, params_a: vec4<f32>, params_b: vec4<f32>, params_c: vec4<f32>, flicker_independence: f32, time_seconds: f32) -> f32 {
+    let intensity = params_c.y;
+    if (intensity <= 0.0) {
         return 0.0;
     }
-    let length_px = params_a.y;
-    let length_jitter = params_a.z;
-    let softness = params_a.w;
-    let rotation_offset_deg = params_b.x;
-    let rotation_speed = params_b.y;
-    let pulse_speed = params_b.z;
-    let pulse_amount = params_b.w;
-    let streakiness = params_c.x;
-    let flicker_speed = params_c.y;
-    let flicker_intensity = params_c.z;
-    let intensity = params_c.w;
+    let lobes = params_a.x;
+    let reach_variance = params_a.y;
+    let silhouette_speed = params_a.z;
+    let base_reach = params_a.w;
+    let streak_freq = params_b.x;
+    let streak_scale = params_b.y;
+    let streakiness = params_b.z;
+    let core_frac = params_b.w;
+    let tip_softness = params_c.x;
+    let flicker_speed = params_c.z;
+    let flicker_intensity = params_c.w;
 
     let r = length(offset);
-    let theta = atan2(offset.y, offset.x);
-    let rot = radians(rotation_offset_deg + time_seconds * rotation_speed);
-    let theta_r = floor_mod(theta - rot, TWO_PI);
-    let slot = theta_r / TWO_PI * count;
-    let idx = floor(slot);
-    let frac_slot = fract(slot) - 0.5;
+    let dir = offset / max(r, 0.0001);
 
-    let seed = hash21(vec2<f32>(idx * 31.7, 11.3));
+    let silhouette_p = angular_noise_point(dir, lobes);
+    let t = time_seconds * silhouette_speed;
+    let silhouette_n = fbm(silhouette_p + vec2<f32>(t * 0.6, t));
+    let reach = max(base_reach * (1.0 + reach_variance * silhouette_n), 1.0);
 
-    // Each beam's own length is modulated by its own noise-driven pulse (not a fixed value), so
-    // the beam visibly grows and shrinks rather than staying a static wedge -- `seed` offsets each
-    // beam's phase so they don't all breathe in lockstep.
-    let pulse_n = clamp(noise2(vec2<f32>(seed * 23.0 + 4.0, time_seconds * pulse_speed + seed * 7.0)) * 0.5 + 0.5, 0.0, 1.0);
-    let len_pulse = mix(1.0 - pulse_amount, 1.0, pulse_n);
-    let len = length_px * (1.0 - length_jitter * 0.5 + length_jitter * seed) * len_pulse;
-
-    let ang_fall = pow(max(cos(frac_slot * 3.14159265), 0.0), max(softness, 0.1));
-    // `rad_fall` alone shapes the brightness gradient along the beam, but for `GOD_RAY_TAPER < 1.0`
-    // its power-law tail never really reaches zero -- `outer_cut` is a hard boundary tied directly
-    // to `len` so beam length (and its pulse) actually confines where the ray is visible.
-    let rad_fall = exp(-pow(r / max(len, 1.0), GOD_RAY_TAPER));
-    let outer_cut = 1.0 - smoothstep(len * 0.7, len * 1.15, r);
-
-    let streak_n = clamp(noise2(vec2<f32>(idx * 5.0 + seed * 9.0, r * GOD_RAY_NOISE_SCALE * 0.02)) * 0.5 + 0.5, 0.0, 1.0);
+    // Woven, time-static streak texture: an angular FBM feeds into a radial one as its second
+    // coordinate, coupling the two axes while staying continuous in `dir` (no `atan2` involved).
+    let ang_n = fbm(angular_noise_point(dir, streak_freq));
+    let streak_n = clamp(fbm(vec2<f32>(r / max(streak_scale, 1.0), ang_n * 3.0)) * 0.5 + 0.5, 0.0, 1.0);
     let streak = mix(1.0 - streakiness, 1.0, streak_n);
 
-    let flick = pow(clamp(noise2(vec2<f32>(idx * 4.1 + 6.0, time_seconds * flicker_speed + seed * 19.0)) * 0.5 + 0.5, 0.0, 1.0), 2.2);
-    let beam_flick = 1.0 - flicker_intensity + flicker_intensity * flick;
+    let body = 1.0 - smoothstep(reach * core_frac, reach, r);
+    let tip_fade = exp(-max(r - reach, 0.0) / max(tip_softness, 0.5));
+    let shape = max(body, tip_fade);
 
     let inner_cut = smoothstep(0.0, min(core_radius.x, core_radius.y) * 0.4, r);
 
-    return ang_fall * rad_fall * streak * inner_cut * outer_cut * beam_flick * intensity;
+    var flicker = 1.0;
+    if (flicker_intensity > 0.0) {
+        let flicker_global = vec2<f32>(71.0, time_seconds * flicker_speed + 13.0);
+        let flicker_local = angular_noise_point(dir, lobes) + vec2<f32>(time_seconds * flicker_speed * 0.8, time_seconds * flicker_speed * 1.3 + 5.0);
+        let flicker_point = mix(flicker_global, flicker_local, clamp(flicker_independence, 0.0, 1.0));
+        let ff = pow(clamp(noise2(flicker_point) * 0.5 + 0.5, 0.0, 1.0), 1.4);
+        flicker = max(1.0 - flicker_intensity + flicker_intensity * ff, 0.0);
+    }
+
+    return shape * streak * flicker * inner_cut * intensity;
 }
 
 // Faint colored ring at a fixed radius -- a common lens-flare "diffraction halo" accent.
@@ -294,7 +320,7 @@ fn ring_strength(offset: vec2<f32>, ring_radius: f32, ring_width: f32, ring_inte
 }
 
 // `project::TurbulenceSpec`: displaces the sample point through a 2D value-noise field
-// before any of the corona/god-ray/ring math runs, so the whole light stack's shape reads as
+// before any of the corona/flame-corona/ring math runs, so the whole light stack's shape reads as
 // grainy/turbulent (a real photograph of a bright light) rather than perfectly smooth analytic
 // falloffs. `strength_px <= 0.0` (the zeroed-instance default) is the off switch -- returns
 // `offset` unchanged. Two independent noise samples (`nx`/`ny`, offset from each other in both
@@ -316,7 +342,7 @@ fn domain_warp(offset: vec2<f32>, strength_px: f32, scale_px: f32, speed: f32, t
 fn total_strength(in: VertexOutput, offset: vec2<f32>, time_seconds: f32) -> f32 {
     let warped = domain_warp(offset, in.turbulence.x, in.turbulence.y, in.turbulence.z, time_seconds);
     var s = core_strength(warped, in.core_radius, in.layer_amp, in.layer_sigma);
-    s += god_ray_strength(warped, in.core_radius, in.godray_a, in.godray_b, in.godray_c, time_seconds);
+    s += flame_corona_strength(warped, in.core_radius, in.flame_a, in.flame_b, in.flame_c, in.flicker_independence, time_seconds);
     s += ring_strength(warped, in.ring_chromatic.x, in.ring_chromatic.y, in.ring_chromatic.z);
     return s;
 }
@@ -345,6 +371,23 @@ fn fs_glow(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let color = sample_stops(in, horizontal_fraction(in));
-    let light = color * strength_rgb * clamp(in.alpha, 0.0, 1.0);
+    let raw_light = color * strength_rgb * clamp(in.alpha, 0.0, 1.0);
+    // `core_strength`'s exponential legitimately reaches values many times over 1.0 well within
+    // `core_radius` (its interior isn't clamped, per that function's own doc comment -- brightness
+    // rises continuously all the way to the center). This target is `Rgba8Unorm` with plain
+    // additive blending and no HDR intermediate, so writing that raw value straight out gets
+    // hard-clamped by the GPU on every channel that exceeds 1.0 -- across most of the core's
+    // interior at once, which reproduces the exact flat, hard-edged disc the signed-distance
+    // formula was written to avoid, just via the output format's clamp instead of the formula's.
+    // It also hides decay: shrinking `alpha` during a flash's `decay_seconds` has no visible effect
+    // until `raw_light` finally drops back under 1.0, so the core looks static and then vanishes
+    // instead of fading. `explorations/barrier-fx-lab/barrier-fx-lab.html`'s final compositing step
+    // (`outColor = 1.0 - exp(-outColor * uExposure)`, exposure defaulting to 1.0) hides the same
+    // saturation behind a scene-wide tonemap; there's no equivalent full-scene HDR pass here (each
+    // pass writes straight to the shared unorm target), so the same curve is applied locally to
+    // each additive draw instead -- softly compressing toward 1.0 rather than hard-clamping, so the
+    // core reads as a bright point rather than a flat disc and keeps visibly responding to `alpha`
+    // (and thus decay) across its whole range instead of only right at the very end.
+    let light = vec3<f32>(1.0, 1.0, 1.0) - exp(-raw_light);
     return vec4<f32>(light, 1.0);
 }

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 mod style;
 pub use style::{
     default_project_style, BarrierLayer, BlackKeyFill, Border, ColorBinding, EmissionMode, Fill,
-    FlashColor, FlashMode, FlashSpec, Glow, GlowLayer, GodRaySpec, NoteLayer, OctaveLineSpec,
+    FlameCoronaSpec, FlashColor, FlashMode, FlashSpec, Glow, GlowLayer, NoteLayer, OctaveLineSpec,
     ParticleColor, ParticleSpec, Pulse, Ramp, RingSpec, ScalarBinding, Sheen, StrandSpec, Style,
     Timed, TransitionKind, TransitionLayer, TurbulenceSpec, WavyMode, WavySpec,
 };

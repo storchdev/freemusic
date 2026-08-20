@@ -214,3 +214,17 @@ still loads (unrecognized fields are ignored, not errors), but silently drops to
 `default_project_style()`'s look instead of reconstructing the old sliders' values — hand-add an
 equivalent `style: (...)` block (see the `NoteLayer`/`BarrierLayer` sections above) to any such
 file to preserve its old look. No project files in the repository itself needed this migration.
+
+Also breaking, once `explorations/barrier-fx-lab`'s aurora-corona experiment (see the "Lab
+cleanup" section above) reached a look the user wanted shipped: `FlashSpec.god_rays:
+Option<GodRaySpec>` was deleted outright and replaced with `flame_corona:
+Option<FlameCoronaSpec>` — an unrelated shape (a continuous 360-degree flame corona, not discrete
+beams), not a field rename with compatible data. An old `.fmstyle.ron` with a `god_rays: Some((...
+))` block needs its flash's directional-light section rewritten by hand as `flame_corona: Some((
+...))` using `FlameCoronaSpec`'s field set (`docs/fmstyle-format.md`'s `FlameCoronaSpec` section);
+a bare `god_rays: None` becomes `flame_corona: None` with no other change. `RingSpec`/
+`TurbulenceSpec`/`chromatic_aberration` are unaffected — this was scoped to god rays only, per the
+user's explicit instruction not to worry about backward compatibility. `examples/styles/
+photoreal-sunburst.fmstyle.ron` (the one shipped sample exercising the old beam-based look) was
+deleted and replaced by `examples/styles/aurora-corona.fmstyle.ron`, a straight translation of the
+lab's own "Flash: aurora corona" preset.

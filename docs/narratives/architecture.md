@@ -322,6 +322,43 @@ opaque-core two-pass split that's now permanent (`docs/architecture.md`'s Render
 neither. See `docs/narratives/fmstyle-history.md` for the numeric detail of this redesign's three
 generations.
 
+## Flash core rendered as a solid disc instead of a bright point, and appeared not to decay
+
+Reported after the aurora-corona port (see `docs/narratives/fmstyle-history.md`'s breaking-change
+log): with the shipped `aurora-corona.fmstyle.ron` sample's settings (`radius_x_px`/`radius_y_px:
+14`, `layers` amplitudes `2.05`/`1.75`/`0.6`), the flash's core rendered as a flat, hard-edged solid
+disc filling the whole `core_radius` ellipse, and visibly stopped responding to `decay_seconds` for
+most of the flash's life, only fading right at the very end.
+
+`effects.wgsl`'s `core_strength` is deliberately unclamped in its interior (see that function's own
+doc comment — an earlier fix removed a literal flat-plateau clamp so brightness would rise
+continuously toward the center instead of stopping at a flat disc). But "continuously" doesn't mean
+"boundedly": `edge_dist_px` reaches `-radius` at the center, so `exp(-edge_dist_px / sigma)` grows
+to `exp(radius / sigma)` there — with this sample's radius/sigma ratio that's routinely 4-30x per
+layer, amplitudes included. `fs_glow` writes straight to `Rgba8Unorm` (the interactive preview's
+format, and `Bgra8Unorm` for export — see the blown-out-export section above) via plain additive
+blending, with no HDR intermediate target or tonemap pass anywhere in the pipeline. The GPU
+therefore hard-clamps every channel over `1.0` on write — which reproduces the *exact* flat, hard-
+edged disc the earlier plateau fix was written to eliminate, just via the output format's clamp
+instead of the formula's. It also explains the apparent non-decay: shrinking `alpha` over
+`decay_seconds` has no visible effect on a saturated pixel until `strength * alpha` finally drops
+back under `1.0`, so the core reads as static and then vanishes instead of fading.
+
+`explorations/barrier-fx-lab/barrier-fx-lab.html` never had this problem because its `main()` ends
+with a single scene-wide tonemap (`outColor = 1.0 - exp(-outColor * uExposure)`, `uExposure`
+defaulting to `1.0`) applied *after* every layer (background, barrier, flash) is summed, right
+before its own final `clamp(outColor, 0.0, 1.0)` — that step was never ported to the real app, which
+has no equivalent single "whole scene" value to tonemap (each pass writes straight into the shared
+target). Fixed by applying the same `1.0 - exp(-x)` curve locally, per-draw, inside `fs_glow` itself
+— it now maps the resolved `color * strength_rgb * alpha` through that curve before writing, so any
+single additive draw softly compresses toward `1.0` instead of hard-clamping (reads as a bright
+point, not a disc) and keeps visibly responding to `alpha` (and thus decay) across its whole range.
+This is scoped to `effects.wgsl`'s `fs_glow` (flash cores and additive particles) only —
+`barrier.wgsl`'s `fs_glow` has the same additive-onto-unorm shape but never dives deep enough
+negative to blow up this way, since its `edge_dist` is measured from a thin bar whose interior gets
+occluded by the opaque core pass drawn on top, not from a filled ellipse with a genuinely negative
+interior.
+
 ## Note activity list / duration-floor bug
 
 The Keyboard tab's active-note list originally used the raw MIDI note end to decide what counted as

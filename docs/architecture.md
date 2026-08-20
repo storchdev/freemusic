@@ -198,7 +198,14 @@ particles/flashes use the same corona math as the glow pass, and non-additive pu
 premultiplied-alpha path with a hard edge instead. All three glow-producing pipelines (barrier,
 notes, effects) use GPU screen blending (`src=OneMinusDst, dst=One, Add`) rather than
 linear-additive blending, so overlapping glows/flashes desaturate toward white instead of clipping
-to a flat white plateau on the 8-bit UNORM render target. Transition effects (particle pools) are
+to a flat white plateau on the 8-bit UNORM render target. That desaturation only works once each
+draw's own `src` is already near the `[0, 1]` range, though — `effects.wgsl`'s `core_strength` is
+intentionally unbounded toward the center of a flash/particle's `core_radius` (see its doc comment),
+routinely reaching several times `1.0` well before the boundary, so `fs_glow` maps its resolved
+`color * strength_rgb * alpha` through `1.0 - exp(-x)` before returning it — a per-draw tonemap
+compressing toward `1.0` instead of relying on the 8-bit UNORM target's hardware clamp, which would
+otherwise flatten that whole bright interior into a hard-edged solid disc (see
+`docs/narratives/architecture.md`). Transition effects (particle pools) are
 stateful across redraws — position depends on
 elapsed time, velocity, gravity, spawn time, and RNG state — so the update loop tracks the previous
 transport time, advances the pool by the delta, spawns bursts for note arrivals crossed since the

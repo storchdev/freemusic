@@ -5,10 +5,10 @@
 //! corresponding files if the schema ever changes.
 
 use project::{
-    BarrierLayer, BlackKeyFill, ColorBinding, Fill, FlashColor, FlashMode, FlashSpec, Glow,
-    GlowLayer, GodRaySpec, NoteLayer, OctaveLineSpec, ParticleColor, ParticleSpec, Pulse, Ramp,
-    RingSpec, ScalarBinding, Sheen, StrandSpec, Style, Timed, TransitionKind, TransitionLayer,
-    TurbulenceSpec, WavyMode, WavySpec,
+    BarrierLayer, BlackKeyFill, ColorBinding, Fill, FlameCoronaSpec, FlashColor, FlashMode,
+    FlashSpec, Glow, GlowLayer, NoteLayer, OctaveLineSpec, ParticleColor, ParticleSpec, Pulse,
+    Ramp, RingSpec, ScalarBinding, Sheen, StrandSpec, Style, Timed, TransitionKind,
+    TransitionLayer, WavyMode, WavySpec,
 };
 
 fn glow_layers(tight: f32, mid: f32, wide: f32) -> [GlowLayer; 3] {
@@ -286,7 +286,7 @@ fn main() {
                 layers: glow_layers(2.0, 5.0, 10.0),
                 flicker_speed: ScalarBinding::Constant(0.0),
                 flicker_intensity: ScalarBinding::Constant(0.0),
-                god_rays: None,
+                flame_corona: None,
                 ring: None,
                 chromatic_aberration: 0.0,
                 turbulence: None,
@@ -313,7 +313,7 @@ fn main() {
                 layers: glow_layers(2.0, 5.0, 10.0),
                 flicker_speed: ScalarBinding::Constant(0.0),
                 flicker_intensity: ScalarBinding::Constant(0.0),
-                god_rays: None,
+                flame_corona: None,
                 ring: None,
                 chromatic_aberration: 0.0,
                 turbulence: None,
@@ -370,7 +370,7 @@ fn main() {
                 layers: glow_layers(2.0, 10.0, 25.0),
                 flicker_speed: ScalarBinding::Constant(1.5),
                 flicker_intensity: ScalarBinding::Constant(0.25),
-                god_rays: None,
+                flame_corona: None,
                 ring: None,
                 chromatic_aberration: 0.0,
                 turbulence: None,
@@ -416,7 +416,7 @@ fn main() {
                 // (`spawn_flash`) — `1.0` is the deepest a flicker can dim, so this is the max
                 // meaningful value.
                 flicker_intensity: ScalarBinding::Constant(0.5),
-                god_rays: None,
+                flame_corona: None,
                 ring: None,
                 chromatic_aberration: 0.0,
                 turbulence: None,
@@ -426,20 +426,21 @@ fn main() {
         octave_lines: None,
     };
 
-    // `GodRaySpec`/`RingSpec`/`FlashSpec::chromatic_aberration` (Phase V) — a straight translation
-    // of `explorations/barrier-fx-lab`'s "Flash: photoreal sunburst" preset (its own "Export
-    // settings" JSON output), the dialed-in target look for a "photograph of the sun from Earth"
-    // flash: a tight near-point core, 24 wide volumetric rays fixed in place (no pulse/rotation —
-    // `pulse_speed`/`pulse_amount`/`rotation_speed_deg_per_sec: 0.0`) but flickering hard and fast
-    // per-beam (`flicker_speed: 4.16`, `flicker_intensity: 1.0`) so individual rays gutter and
-    // reappear, a faint diffraction ring, and a small chromatic-aberration fringe at the outer
+    // `FlameCoronaSpec`/`RingSpec`/`FlashSpec::chromatic_aberration` — a straight translation of
+    // `explorations/barrier-fx-lab`'s "Flash: aurora corona" preset (its own "Export settings"
+    // JSON output), the dialed-in target look for a continuous flame corona wrapping the flash's
+    // center: 5 broad tongues with a static (non-flowing) internal streak weave, no solid core
+    // (`core_frac: 0.0`), a soft 35px tip fray, and a fast, per-tongue-independent brightness
+    // flicker (`flicker_speed: 3.42`, `flicker_intensity: 0.36`, `flicker_independence: 1.0`) so
+    // different parts of the corona gutter on their own rather than the whole light pulsing as one
+    // unit, plus a faint diffraction ring and a small chromatic-aberration fringe at the outer
     // edge of the light. `flashYOffset: 200` in the lab preset has no equivalent here (a flash
     // always spawns at the triggering note's barrier position — same "lab-scene-only field" caveat
     // `barrier_strands`'s own comment calls out for `barrierYFrac`/`keyWidth`/`vignette`/
-    // `exposure`); every other field below is a direct 1:1 field-name translation, plus `turbulence`
-    // (not part of the lab preset — added later to break up the corona/god-ray/ring math's
-    // perfectly smooth analytic falloff into a grainier, more turbulent light shape).
-    let photoreal_sunburst = Style {
+    // `exposure`); every other field below is a direct 1:1 field-name translation. This replaced
+    // an earlier beam-based "god ray" sample entirely — see `docs/narratives/fmstyle-history.md`'s
+    // breaking-change log.
+    let aurora_corona = Style {
         version: 1,
         notes: Timed::Static(NoteLayer::default()),
         barrier: Timed::Static(visible_barrier()),
@@ -447,53 +448,50 @@ fn main() {
             kind: TransitionKind::Flash,
             particles: None,
             flash: Some(FlashSpec {
-                radius_x_px: ScalarBinding::Constant(3.0),
-                radius_y_px: ScalarBinding::Constant(3.0),
-                color: FlashColor::Solid(ColorBinding::Constant([255, 250, 250])),
-                decay_seconds: ScalarBinding::Constant(0.2),
+                radius_x_px: ScalarBinding::Constant(14.0),
+                radius_y_px: ScalarBinding::Constant(14.0),
+                color: FlashColor::Solid(ColorBinding::Constant([255, 246, 224])),
+                decay_seconds: ScalarBinding::Constant(0.10),
                 mode: FlashMode::Sustained,
-                brightness: ScalarBinding::Constant(0.5),
+                brightness: ScalarBinding::Constant(1.12),
                 layers: [
                     GlowLayer {
-                        amplitude: 1.0,
-                        sigma_px: 10.0,
+                        amplitude: 2.05,
+                        sigma_px: 5.5,
                     },
                     GlowLayer {
-                        amplitude: 1.0,
-                        sigma_px: 50.0,
+                        amplitude: 1.75,
+                        sigma_px: 17.0,
                     },
                     GlowLayer {
-                        amplitude: 0.7,
-                        sigma_px: 100.0,
+                        amplitude: 0.6,
+                        sigma_px: 21.5,
                     },
                 ],
                 flicker_speed: ScalarBinding::Constant(0.0),
                 flicker_intensity: ScalarBinding::Constant(0.0),
-                god_rays: Some(GodRaySpec {
-                    count: 32,
-                    length_px: 72.0,
-                    length_jitter: 0.0,
-                    softness: 1.5,
-                    rotation_offset_deg: 0.0,
-                    rotation_speed_deg_per_sec: 30.0,
-                    pulse_speed: 0.0,
-                    pulse_amount: 0.0,
-                    streakiness: 1.0,
-                    flicker_speed: 4.0,
-                    flicker_intensity: 1.0,
-                    intensity: 0.50,
+                flame_corona: Some(FlameCoronaSpec {
+                    lobes: 5.0,
+                    reach_variance: 0.5,
+                    silhouette_speed: 0.0,
+                    base_reach_px: 28.0,
+                    streak_freq: 1.0,
+                    streak_scale_px: 38.0,
+                    streakiness: 0.33,
+                    core_frac: 0.0,
+                    tip_softness_px: 25.0,
+                    intensity: 1.32,
+                    flicker_speed: 3.42,
+                    flicker_intensity: 0.36,
+                    flicker_independence: 1.0,
                 }),
                 ring: Some(RingSpec {
-                    radius_px: 100.0,
+                    radius_px: 72.0,
                     width_px: 24.0,
-                    intensity: 0.05,
+                    intensity: 0.02,
                 }),
-                chromatic_aberration: 0.07,
-                turbulence: Some(TurbulenceSpec {
-                    strength_px: 6.0,
-                    scale_px: 18.0,
-                    speed: 1.5,
-                }),
+                chromatic_aberration: 0.035,
+                turbulence: None,
             }),
         }),
         background: ColorBinding::Constant([0, 0, 0]),
@@ -631,7 +629,7 @@ fn main() {
                 brightness: ScalarBinding::Constant(1.5),
                 flicker_speed: ScalarBinding::Constant(0.0),
                 flicker_intensity: ScalarBinding::Constant(0.0),
-                god_rays: None,
+                flame_corona: None,
                 ring: None,
                 chromatic_aberration: 0.0,
                 turbulence: None,
@@ -794,7 +792,7 @@ fn main() {
                 layers: glow_layers(2.0, 5.0, 10.0),
                 flicker_speed: ScalarBinding::Constant(0.0),
                 flicker_intensity: ScalarBinding::Constant(0.0),
-                god_rays: None,
+                flame_corona: None,
                 ring: None,
                 chromatic_aberration: 0.0,
                 turbulence: None,
@@ -990,7 +988,7 @@ fn main() {
     print_style("ygradient-particles", &ygradient_particles);
     print_style("key-glow", &key_glow);
     print_style("flickering-flash", &flickering_flash);
-    print_style("photoreal-sunburst", &photoreal_sunburst);
+    print_style("aurora-corona", &aurora_corona);
     print_style("dark-background", &dark_background);
     print_style("showcase_blue_purple", &showcase_blue_purple);
     print_style("velocity-colored-notes", &velocity_colored_notes);

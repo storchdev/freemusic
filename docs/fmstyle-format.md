@@ -528,10 +528,10 @@ from exactly one source:
 | `layers` | `[GlowLayer; 3]` | Default tight/mid/wide, same as `Glow`. A flash is always additive, so this is always read (unlike `ParticleSpec::layers`, which non-additive particles ignore). |
 | `flicker_speed` | `ScalarBinding` | Default `Constant(0.0)` (no flicker). How fast the flash's brightness flickers over transport time — see below. |
 | `flicker_intensity` | `ScalarBinding` | Default `Constant(0.0)` (no flicker). How much the flicker dims the flash at its darkest point, `0.0`-`1.0`. |
-| `god_rays` | `Option<GodRaySpec>` | Default `None`. Volumetric "sun rays" radiating from the flash's center — see [`GodRaySpec`](#godrayspec) below. |
+| `flame_corona` | `Option<FlameCoronaSpec>` | Default `None`. A continuous flame corona wrapping the flash's center — see [`FlameCoronaSpec`](#flamecoronaspec) below. |
 | `ring` | `Option<RingSpec>` | Default `None`. A faint diffraction-halo ring around the flash's center — see [`RingSpec`](#ringspec) below. |
 | `chromatic_aberration` | `f32` | Default `0.0` (no-op). Lens-dispersion-style color fringing — see below. |
-| `turbulence` | `Option<TurbulenceSpec>` | Default `None`. Grainy/turbulent roughness applied to the whole light stack (corona + god rays + ring) — see [`TurbulenceSpec`](#turbulencespec) below. |
+| `turbulence` | `Option<TurbulenceSpec>` | Default `None`. Grainy/turbulent roughness applied to the whole light stack (corona + flame corona + ring) — see [`TurbulenceSpec`](#turbulencespec) below. |
 
 A flash always renders additively. It is fully "on" at spawn/at the start of its hold (see
 `mode`), fading to 0 over `decay_seconds`.
@@ -557,43 +557,48 @@ steady behavior. Most noticeable on `FlashMode::Sustained` (a long hold has time
 flicker); on `Instant` the flash usually decays before more than a fraction of a flicker cycle
 plays out.
 
-### `GodRaySpec`
+### `FlameCoronaSpec`
 
-Volumetric "sun rays" radiating outward from a flash's center, on top of its ordinary elliptical
-corona (`FlashSpec::layers`), aimed at a "photograph of the sun from Earth" look rather than a
-round blob. `FlashSpec::god_rays: None` (default) renders the flash with no rays, as an ordinary
-elliptical corona only.
+A continuous flame corona wrapping the full 360 degrees around a flash's center, on top of its
+ordinary elliptical corona (`FlashSpec::layers`), aimed at an aurora-curtain/solar-corona-
+photograph look rather than a round blob or a beam-based starburst. `FlashSpec::flame_corona:
+None` (default) renders the flash with no corona, an ordinary elliptical corona only. This
+replaced an earlier beam-based `GodRaySpec` design entirely — see
+`docs/narratives/fmstyle-history.md`'s breaking-change log.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `count` | `u32` | `32` | Number of angular beam slots around the flash's center. No practical upper cap — see below. |
-| `length_px` | `f32` | `72.0` | Beam reach in canvas px, before `length_jitter`/pulse shrink it. |
-| `length_jitter` | `f32` | `0.0` | Per-beam length variation (`0.0`-`1.0`), seeded per slot: `0.0` = every beam is exactly `length_px`; `1.0` = beams range anywhere from `0` to `length_px`. |
-| `softness` | `f32` | `1.5` | Angular falloff exponent: lower reads as wider/softer wedges, higher as narrower/sharper needles. |
-| `rotation_offset_deg` | `f32` | `0.0` | Fixed rotation of the whole beam pattern. |
-| `rotation_speed_deg_per_sec` | `f32` | `30.0` | Continuous rotation speed of the whole pattern. `0.0` is a no-op — see below for why this is a rigid whole-pattern spin, not per-beam wander. |
-| `pulse_speed` | `f32` | `0.0` | How fast each beam's own length breathes in and out via value noise. |
-| `pulse_amount` | `f32` | `0.0` | How far a beam's length can shrink at the pulse's trough, as a fraction of `length_px` (`0.0`-`1.0`). |
-| `streakiness` | `f32` | `1.0` | Internal streak-texture contrast along each beam's length (`0.0`-`1.0`). |
-| `flicker_speed` | `f32` | `4.0` | How fast each beam's whole-beam brightness flickers, independent of the streak texture — same value-noise mechanism as `FlashSpec::flicker_speed`, just per-beam. |
-| `flicker_intensity` | `f32` | `1.0` | How much the flicker dims a beam at its darkest point (`0.0` never dims, `1.0` can dim to fully dark). |
-| `intensity` | `f32` | `0.5` | Overall brightness multiplier on the whole god-ray contribution, independent of `FlashSpec::brightness` (which scales the corona's `layers`, not the rays). |
+| `lobes` | `f32` | `6.0` | Roughly how many tongues/peaks show up around the full circle. Fractional values are fine (this drives a noise-field sampling frequency, not a literal loop count). |
+| `reach_variance` | `f32` | `0.6` | How tall the silhouette's peaks are relative to its valleys, as a fraction of `base_reach_px` (`0.0` = a perfect circle, `1.0` = valleys can pinch all the way to zero reach). |
+| `silhouette_speed` | `f32` | `0.25` | How fast the whole silhouette morphs over transport time. `0.0` freezes it to a single (still ragged, just static) shape. |
+| `base_reach_px` | `f32` | `90.0` | The silhouette's average reach in canvas px, before `reach_variance` ripples it. |
+| `streak_freq` | `f32` | `10.0` | Angular frequency of the internal streak texture — higher reads as finer, more numerous streaks around the circle. |
+| `streak_scale_px` | `f32` | `20.0` | Radial feature size (canvas px) of the internal streak texture. |
+| `streakiness` | `f32` | `0.7` | Internal streak-texture contrast (`0.0`-`1.0`): `0.0` = a perfectly smooth corona, `1.0` = strongly streaked. |
+| `core_frac` | `f32` | `0.15` | Fraction of `base_reach_px` that renders as a fully solid body before the tip-fray falloff begins (`0.0`-`1.0`); `0.0` is an entirely soft/ragged corona with no solid interior. |
+| `tip_softness_px` | `f32` | `20.0` | How raggedly the corona's tips dissipate past their silhouette reach, in canvas px — an exponential fray rather than a hard cutoff. |
+| `intensity` | `f32` | `1.0` | Overall brightness multiplier on the whole flame-corona contribution, independent of `FlashSpec::brightness`. The effect's on/off switch — `intensity <= 0.0` is fully off, same "zero is the no-op" convention `RingSpec::intensity` uses. |
+| `flicker_speed` | `f32` | `1.5` | How fast the corona's overall brightness pulses over time — same value-noise mechanism as `FlashSpec::flicker_speed`, just for this effect. |
+| `flicker_intensity` | `f32` | `0.35` | How much the flicker dims the corona at its darkest point (`0.0` never dims, `1.0` can dim to fully dark). |
+| `flicker_independence` | `f32` | `0.0` | Blends the flicker between one shared pulse for the whole corona (`0.0`) and an independent phase per tongue (`1.0`, tied to the same angular sampling `lobes` drives) — see below. |
 
-Beams sit on `count` fixed, evenly-spaced angular slots, with no angular *wander* (see
-`docs/narratives/fmstyle-history.md` for why wander was tried and rejected).
-`rotation_speed_deg_per_sec` is a rigid whole-pattern spin, a different and much subtler motion
-than wander would have been. Instead each beam's own reach breathes in and out over time via
-seeded value noise
-(`pulse_speed`/`pulse_amount`), on top of an internal streak texture along its length
-(`streakiness`) and a separate whole-beam brightness flicker (`flicker_speed`/`flicker_intensity`)
-so individual beams gutter and reappear rather than staying uniformly "on".
+The raggedness *is* the shape, not an overlay on top of a smooth beam: how far the flame extends
+at each angle is itself a low-frequency fractal-noise silhouette (`lobes`/`reach_variance`/
+`silhouette_speed`), textured internally by a second, independent noise field (`streak_freq`/
+`streak_scale_px`/`streakiness`) that stays fixed in time rather than flowing outward — a texture
+visibly flowing outward from the center reads as material streaming out, which a real light source
+doesn't do. Instead the corona's *brightness* pulses over time
+(`flicker_speed`/`flicker_intensity`/`flicker_independence`), reading as a real flame or plasma
+light guttering. At `flicker_independence: 1.0`, different tongues gutter on their own phase
+rather than the whole corona brightening/dimming in lockstep, tied to the same noise-sampling
+circle `lobes` sizes — more lobes means more independently flickering regions.
 
-Unlike `StrandSpec`'s fixed strand-count loop (capped at 8), beam selection
-(`render::effects::god_ray_strength`/`effects.wgsl`'s WGSL port of the same formula) is a direct
-per-pixel angle-to-slot computation, not a loop over `count` beams — `count` has no practical
-upper cap, and the cost of a beam is the same O(1) regardless of how many slots share the circle.
+`render::effects::flame_corona_strength`/`effects.wgsl`'s WGSL port of the same formula compute
+this as a direct per-pixel function of angle and radius, not a loop over discrete beams the way an
+earlier `GodRaySpec` design did — `lobes` has no practical upper cap, and the cost is the same O(1)
+regardless of how many tongues appear to be around the circle.
 
-`count`/`length_px`/etc. are plain `f32`/`u32` (not `ScalarBinding`), unlike `radius_x_px`/
+`lobes`/`base_reach_px`/etc. are plain `f32` (not `ScalarBinding`), unlike `radius_x_px`/
 `brightness`/etc. — these are a style-wide look, not something that typically varies per
 triggering note, same precedent as `GlowLayer::amplitude`/`sigma_px`.
 
@@ -611,11 +616,11 @@ A faint colored ring at a fixed radius around a flash's center — a common lens
 ### Chromatic aberration
 
 `FlashSpec::chromatic_aberration: f32` (default `0.0`) adds lens-dispersion-style color
-fringing: rather than a flat color tint, the entire light stack (corona + god rays + ring) is
+fringing: rather than a flat color tint, the entire light stack (corona + flame corona + ring) is
 re-evaluated once per color channel (`render::effects`'s `total_strength`/`effects.wgsl`'s
 `total_strength`), each sampled at `offset * (1.0 ± chromatic_aberration)` — the same "error grows
 with distance from center" shape real lens chromatic aberration has, so the fringe shows up at the
-outer edge of the light (the rim of the corona, the tips of the god rays, the ring), not as a
+outer edge of the light (the rim of the corona, the tips of the flame corona, the ring), not as a
 uniform wash over the whole flash. `0.0` is an exact no-op: a single unsplit strength sample, roughly a third of the fragment cost of
 a non-zero value (which samples the whole light stack three times). Typical useful values are small,
 e.g. `0.03`-`0.1` — larger values visibly separate the channels into distinct colored ghosts rather
@@ -623,11 +628,11 @@ than a subtle fringe.
 
 ### `TurbulenceSpec`
 
-Grainy/turbulent roughness applied to a flash's entire light stack (corona + god rays + ring)
+Grainy/turbulent roughness applied to a flash's entire light stack (corona + flame corona + ring)
 before any of it is evaluated — aimed at the irregular, scintillating look of a real photograph of
 a bright light source, as opposed to the perfectly smooth analytic falloffs `core_strength`/
-`god_ray_strength`/`ring_strength` produce on their own. `FlashSpec::turbulence: None` (default)
-renders the light stack exactly as it did before this field existed.
+`flame_corona_strength`/`ring_strength` produce on their own. `FlashSpec::turbulence: None`
+(default) renders the light stack exactly as it did before this field existed.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
@@ -637,12 +642,12 @@ renders the light stack exactly as it did before this field existed.
 
 Mechanically (`render::effects`'s `domain_warp`/`effects.wgsl`'s WGSL port of the same formula):
 each fragment's sample point is displaced by two independent 2D value-noise samples (the same
-`hash21`/`noise2` construction `GodRaySpec`'s beam streak/flicker and `barrier.wgsl`'s strand
-flicker already use) before `core_strength`/`god_ray_strength`/`ring_strength` run, so the light's
-shape itself becomes ragged rather than a perfect ellipse/circle, and continues evolving over time
-rather than sitting static. `strength_px`/`scale_px`/`speed` are plain `f32` (not `ScalarBinding`),
-same precedent as `GodRaySpec`'s own fields — a style-wide look, not something that typically
-varies per triggering note.
+`hash21`/`noise2` construction `FlameCoronaSpec`'s internal streak texture and `barrier.wgsl`'s
+strand flicker already use) before `core_strength`/`flame_corona_strength`/`ring_strength` run, so
+the light's shape itself becomes ragged rather than a perfect ellipse/circle, and continues
+evolving over time rather than sitting static. `strength_px`/`scale_px`/`speed` are plain `f32`
+(not `ScalarBinding`), same precedent as `FlameCoronaSpec`'s own fields — a style-wide look, not
+something that typically varies per triggering note.
 
 ### `FlashColor`
 

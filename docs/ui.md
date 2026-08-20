@@ -148,8 +148,8 @@ The tab is organized into the same sections as the schema itself:
   fall speed, black-key fill mode, alpha (`style.notes`).
 - **Barrier** — color, thickness, show/hide the solid bar, optional glow/pulse/wavy edge (with an
   optional strand bundle), (`style.barrier`).
-- **Transitions** — particle bursts and/or a barrier-hit flash, including god rays/ring/chromatic
-  aberration on the flash (`style.transition`).
+- **Transitions** — particle bursts and/or a barrier-hit flash, including a flame corona/ring/
+  chromatic aberration on the flash (`style.transition`).
 
 All of this is built from a shared widget library in `app/src/style_ui.rs`: one editor function per
 schema shape, reused everywhere that shape appears (`edit_color_binding`/`edit_scalar_binding` for

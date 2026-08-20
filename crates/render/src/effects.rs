@@ -6,7 +6,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use project::{
-    ColorBinding, EmissionMode, FlashColor, FlashMode, FlashSpec, GodRaySpec, ParticleColor,
+    ColorBinding, EmissionMode, FlameCoronaSpec, FlashColor, FlashMode, FlashSpec, ParticleColor,
     ParticleSpec, RingSpec, TransitionKind, TransitionLayer, TurbulenceSpec,
 };
 
@@ -34,8 +34,8 @@ const GLOW_CUTOFF_SIGMAS: f32 = 5.0;
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ViewUniform {
     transform: [f32; 16],
-    /// x = transport time (seconds), read by `effects.wgsl`'s Phase V god-ray pulse/flicker/
-    /// rotation noise — yzw unused, packed into a vec4 (rather than a bare trailing f32) to match
+    /// x = transport time (seconds), read by `effects.wgsl`'s flame-corona silhouette/streak/
+    /// flicker noise — yzw unused, packed into a vec4 (rather than a bare trailing f32) to match
     /// this codebase's uniform-buffer convention and avoid manual tail padding.
     time: [f32; 4],
 }
@@ -73,16 +73,18 @@ impl Default for ViewUniform {
 /// ever has one color) simply has every stop set equal, which interpolates to that one color
 /// everywhere and is pixel-identical to a plain `color: vec3<f32>` field would have been.
 ///
-/// `godray_a`/`godray_b`/`godray_c`/`ring_chromatic` (Phase V) carry `project::GodRaySpec`/
-/// `RingSpec`/`FlashSpec::chromatic_aberration`, packed 1:1 with `effects.wgsl`'s `Instance`
-/// fields of the same names — see that shader's doc comments for the packing layout. Only
-/// `spawn_flash` ever fills these with non-zero data; every particle instance leaves them zeroed
-/// (`ZERO_GOD_RAYS`/`ZERO_RING_CHROMATIC` below), which `fs_glow` treats as "effect off" (`count <
-/// 0.5`, `ring_intensity <= 0.0`, `chromatic_amount <= 0.0`), reproducing the pre-Phase-V corona
-/// exactly. `project::TurbulenceSpec` (added later, same "zeroed is off" convention) has no
+/// `flame_a`/`flame_b`/`flame_c`/`ring_chromatic` carry `project::FlameCoronaSpec`/`RingSpec`/
+/// `FlashSpec::chromatic_aberration`, packed 1:1 with `effects.wgsl`'s `Instance` fields of the
+/// same names — see that shader's doc comments for the packing layout. Only `spawn_flash` ever
+/// fills these with non-zero data; every particle instance leaves them zeroed
+/// (`ZERO_FLAME_CORONA`/`ZERO_RING_CHROMATIC` below), which `fs_glow` treats as "effect off"
+/// (`intensity <= 0.0`, `ring_intensity <= 0.0`, `chromatic_amount <= 0.0`), reproducing a plain
+/// elliptical corona exactly. `project::TurbulenceSpec` (same "zeroed is off" convention) has no
 /// dedicated field — wgpu caps a pipeline at 16 vertex attribute locations and this struct was
 /// already at that limit, so its three floats are packed into `core_radius.zw` (strength_px,
-/// scale_px) and `layer_amp.w` (speed) instead, widening those two fields from vec2/vec3 to vec4 —
+/// scale_px) and `layer_amp.w` (speed) instead, widening those two fields from vec2/vec3 to vec4;
+/// `flame_corona`'s own thirteenth field (`flicker_independence`, beyond the twelve that fit in
+/// `flame_a`/`b`/`c`) is packed the same way into `layer_sigma.w`, widening it from vec3 to vec4 —
 /// see `effects.wgsl`'s `Instance` struct doc comment for the shader-side unpacking.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -98,17 +100,18 @@ struct EffectInstance {
     /// (a plain multiply, not a `hot_color` mix — additive saturation whitens for free). w =
     /// turbulence `speed`.
     layer_amp: [f32; 4],
-    layer_sigma: [f32; 3],
-    godray_a: [f32; 4],
-    godray_b: [f32; 4],
-    godray_c: [f32; 4],
+    /// xyz = additive corona layer sigmas (px); w = flame corona `flicker_independence`.
+    layer_sigma: [f32; 4],
+    flame_a: [f32; 4],
+    flame_b: [f32; 4],
+    flame_c: [f32; 4],
     ring_chromatic: [f32; 4],
 }
 
-/// Zero-filled god-ray/ring/chromatic-aberration params — every non-flash `EffectInstance` (all
-/// particles) carries these unchanged, which `fs_glow` reads as "effect off" (see
+/// Zero-filled flame-corona/ring/chromatic-aberration params — every non-flash `EffectInstance`
+/// (all particles) carries these unchanged, which `fs_glow` reads as "effect off" (see
 /// `EffectInstance`'s own doc comment).
-const ZERO_GOD_RAYS: ([f32; 4], [f32; 4], [f32; 4]) = ([0.0; 4], [0.0; 4], [0.0; 4]);
+const ZERO_FLAME_CORONA: ([f32; 4], [f32; 4], [f32; 4]) = ([0.0; 4], [0.0; 4], [0.0; 4]);
 const ZERO_RING_CHROMATIC: [f32; 4] = [0.0; 4];
 /// `Flash::turbulence`'s own zero value (`resolve_turbulence_params`'s "no turbulence" case) — a
 /// separate constant from `EffectInstance`'s own packed representation, since `Flash` keeps
@@ -139,10 +142,10 @@ impl EffectInstance {
             8 => Float32x3,  // color_stops[3]
             9 => Float32x3,  // color_stops[4]
             10 => Float32x4, // layer_amp (xyz = amplitudes, w = turbulence speed)
-            11 => Float32x3, // layer_sigma
-            12 => Float32x4, // godray_a
-            13 => Float32x4, // godray_b
-            14 => Float32x4, // godray_c
+            11 => Float32x4, // layer_sigma (xyz = sigmas, w = flame corona flicker_independence)
+            12 => Float32x4, // flame_a
+            13 => Float32x4, // flame_b
+            14 => Float32x4, // flame_c
             15 => Float32x4, // ring_chromatic
         ]
     }
@@ -286,13 +289,17 @@ struct Flash {
     /// Random per-spawn seed so simultaneous flashes don't flicker in lockstep — see
     /// `flash_flicker`'s `seed` parameter.
     flicker_seed: f32,
-    /// Phase V god-ray/ring/chromatic-aberration params, resolved once at spawn time from
-    /// `FlashSpec::god_rays`/`ring`/`chromatic_aberration` — see `EffectInstance`'s doc comment
-    /// for the packing layout. `ZERO_GOD_RAYS`/`ZERO_RING_CHROMATIC` for a flash with none of
-    /// these set, which `fs_glow` renders identically to a pre-Phase-V flash.
-    godray_a: [f32; 4],
-    godray_b: [f32; 4],
-    godray_c: [f32; 4],
+    /// Flame-corona/ring/chromatic-aberration params, resolved once at spawn time from
+    /// `FlashSpec::flame_corona`/`ring`/`chromatic_aberration` — see `EffectInstance`'s doc
+    /// comment for the packing layout. `ZERO_FLAME_CORONA`/`ZERO_RING_CHROMATIC` for a flash with
+    /// none of these set, which `fs_glow` renders as a plain elliptical corona.
+    flame_a: [f32; 4],
+    flame_b: [f32; 4],
+    flame_c: [f32; 4],
+    /// `FlameCoronaSpec::flicker_independence`, folded into `EffectInstance::layer_sigma.w` only
+    /// at `rebuild_instances` time — kept as its own field here rather than packed early since
+    /// `Flash`'s own `layer_sigma` is the unrelated additive-corona sigma.
+    flame_flicker_independence: f32,
     ring_chromatic: [f32; 4],
     /// `FlashSpec::turbulence`, resolved once at spawn time — `ZERO_TURBULENCE` for a flash with
     /// none set.
@@ -309,34 +316,36 @@ fn resolve_turbulence_params(spec: Option<&TurbulenceSpec>) -> [f32; 4] {
     }
 }
 
-/// `EffectInstance::godray_a`/`b`/`c` from a `project::GodRaySpec`, or `ZERO_GOD_RAYS` if the
-/// flash has none — see that struct's own field docs for what each packed slot means.
-fn resolve_god_ray_params(spec: Option<&GodRaySpec>) -> ([f32; 4], [f32; 4], [f32; 4]) {
-    let Some(g) = spec else {
-        return ZERO_GOD_RAYS;
+/// `EffectInstance::flame_a`/`b`/`c` plus `flicker_independence` from a `project::FlameCoronaSpec`,
+/// or `ZERO_FLAME_CORONA`/`0.0` if the flash has none — see that struct's own field docs for what
+/// each packed slot means. `intensity <= 0.0` (in `flame_c.y`) is `effects.wgsl`'s off switch for
+/// the whole effect, same "zero is the no-op" convention `resolve_ring_chromatic_params` uses.
+fn resolve_flame_corona_params(
+    spec: Option<&FlameCoronaSpec>,
+) -> ([f32; 4], [f32; 4], [f32; 4], f32) {
+    let Some(f) = spec else {
+        return (
+            ZERO_FLAME_CORONA.0,
+            ZERO_FLAME_CORONA.1,
+            ZERO_FLAME_CORONA.2,
+            0.0,
+        );
     };
     (
         [
-            // `count` gates the whole effect on/off in `fs_glow` (`count < 0.5` == off) — clamp
-            // to at least 1 so a `Some(GodRaySpec { .. })` with a bare `count: 0` (nonsensical but
-            // representable) doesn't silently disable itself.
-            (g.count.max(1)) as f32,
-            g.length_px,
-            g.length_jitter,
-            g.softness,
+            f.lobes,
+            f.reach_variance,
+            f.silhouette_speed,
+            f.base_reach_px,
         ],
+        [f.streak_freq, f.streak_scale_px, f.streakiness, f.core_frac],
         [
-            g.rotation_offset_deg,
-            g.rotation_speed_deg_per_sec,
-            g.pulse_speed,
-            g.pulse_amount,
+            f.tip_softness_px,
+            f.intensity.max(0.0),
+            f.flicker_speed,
+            f.flicker_intensity,
         ],
-        [
-            g.streakiness,
-            g.flicker_speed,
-            g.flicker_intensity,
-            g.intensity,
-        ],
+        f.flicker_independence,
     )
 }
 
@@ -507,9 +516,9 @@ impl EffectsRenderer {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     // `VERTEX` alone was enough before Phase V — `fs_glow` now also reads
-                    // `view_uniform.time.x` directly (the god-ray pulse/flicker/rotation noise is
-                    // per-pixel, so it can't be baked into a vertex-stage-only value), so the
-                    // fragment stage needs visibility into this binding too.
+                    // `view_uniform.time.x` directly (the flame-corona silhouette/streak/flicker
+                    // noise is per-pixel, so it can't be baked into a vertex-stage-only value), so
+                    // the fragment stage needs visibility into this binding too.
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -1085,26 +1094,28 @@ impl EffectsRenderer {
             spec.layers[1].sigma_px,
             spec.layers[2].sigma_px,
         ];
-        let (godray_a, godray_b, godray_c) = resolve_god_ray_params(spec.god_rays.as_ref());
+        let (flame_a, flame_b, flame_c, flame_flicker_independence) =
+            resolve_flame_corona_params(spec.flame_corona.as_ref());
         let ring_chromatic =
             resolve_ring_chromatic_params(spec.ring.as_ref(), spec.chromatic_aberration);
         let turbulence = resolve_turbulence_params(spec.turbulence.as_ref());
         // The quad must reach as far as the farthest-visible effect, not just the corona layers —
-        // a god ray's own length (`godray_a[1]`, before the `* 1.5` jitter headroom and `* 1.15`
-        // outer-cut falloff in `effects.wgsl`'s `god_ray_strength`) or the ring's outer edge
-        // (`ring_chromatic[0] + ring_chromatic[1]`) can both reach well past the base corona,
-        // otherwise the quad edge would visibly clip the rays/ring. `turbulence[0]` (strength_px)
-        // can displace any of those sample points by up to that many px in either direction, so it
-        // needs doubling (both directions) and adding on top rather than just `max`-ed in.
+        // the flame corona's own silhouette reach (`flame_a[3]` widened by its own
+        // `reach_variance`, `flame_a[1]`, plus a `GLOW_CUTOFF_SIGMAS`-sigma allowance for the
+        // tip-fray falloff past that, `flame_c[0]`) or the ring's outer edge (`ring_chromatic[0] +
+        // ring_chromatic[1]`) can both reach well past the base corona, otherwise the quad edge
+        // would visibly clip the corona/ring. `turbulence[0]` (strength_px) can displace any of
+        // those sample points by up to that many px in either direction, so it needs doubling
+        // (both directions) and adding on top rather than just `max`-ed in.
         let corona_margin_px = spec
             .layers
             .iter()
             .fold(0.0f32, |acc, layer| acc.max(layer.sigma_px))
             * GLOW_CUTOFF_SIGMAS;
-        let god_ray_margin_px = godray_a[1] * 2.0;
+        let flame_margin_px = flame_a[3] * (1.0 + flame_a[1]) + flame_c[0] * GLOW_CUTOFF_SIGMAS;
         let ring_margin_px = ring_chromatic[0] + ring_chromatic[1];
         let margin_px =
-            corona_margin_px.max(god_ray_margin_px).max(ring_margin_px) + turbulence[0] * 2.0;
+            corona_margin_px.max(flame_margin_px).max(ring_margin_px) + turbulence[0] * 2.0;
         self.flashes.push(Flash {
             pos: [x_px, y_px],
             decay_start_seconds,
@@ -1118,9 +1129,10 @@ impl EffectsRenderer {
             flicker_speed,
             flicker_intensity: flicker_intensity.clamp(0.0, 1.0),
             flicker_seed,
-            godray_a,
-            godray_b,
-            godray_c,
+            flame_a,
+            flame_b,
+            flame_c,
+            flame_flicker_independence,
             ring_chromatic,
             turbulence,
         });
@@ -1186,10 +1198,17 @@ impl EffectsRenderer {
                     flash.layer_amp[2],
                     flash.turbulence[2],
                 ],
-                layer_sigma: flash.layer_sigma,
-                godray_a: flash.godray_a,
-                godray_b: flash.godray_b,
-                godray_c: flash.godray_c,
+                // w = flame corona flicker_independence — see `EffectInstance`'s own doc comment
+                // for why it's packed into this field's spare component.
+                layer_sigma: [
+                    flash.layer_sigma[0],
+                    flash.layer_sigma[1],
+                    flash.layer_sigma[2],
+                    flash.flame_flicker_independence,
+                ],
+                flame_a: flash.flame_a,
+                flame_b: flash.flame_b,
+                flame_c: flash.flame_c,
                 ring_chromatic: flash.ring_chromatic,
             });
         }
@@ -1217,10 +1236,15 @@ impl EffectsRenderer {
                     particle.layer_amp[2],
                     0.0,
                 ],
-                layer_sigma: particle.layer_sigma,
-                godray_a: ZERO_GOD_RAYS.0,
-                godray_b: ZERO_GOD_RAYS.1,
-                godray_c: ZERO_GOD_RAYS.2,
+                layer_sigma: [
+                    particle.layer_sigma[0],
+                    particle.layer_sigma[1],
+                    particle.layer_sigma[2],
+                    0.0,
+                ],
+                flame_a: ZERO_FLAME_CORONA.0,
+                flame_b: ZERO_FLAME_CORONA.1,
+                flame_c: ZERO_FLAME_CORONA.2,
                 ring_chromatic: ZERO_RING_CHROMATIC,
             });
         }
